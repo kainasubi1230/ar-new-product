@@ -4,7 +4,11 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "react-native start",
+    "android": "react-native run-android",
+    "ios": "react-native run-ios",
+    "typecheck": "tsc --noEmit",
+    "test": "echo \"No tests yet\""
   },
   "repository": {
     "type": "git",
@@ -19,10 +23,14 @@
   },
   "homepage": "https://github.com/kainasubi1230/ar-new-product#readme",
   "dependencies": {
-    "react": "^19.2.6",
+    "react": "19.2.3",
     "react-native": "^0.85.3"
   },
   "devDependencies": {
+    "@react-native-community/cli": "^20.1.0",
+    "@react-native-community/cli-platform-android": "^20.1.0",
+    "@react-native/babel-preset": "^0.85.3",
+    "@react-native/metro-config": "^0.85.3",
     "@types/react": "^19.2.14",
     "@types/react-native": "^0.72.8",
     "typescript": "^6.0.3"

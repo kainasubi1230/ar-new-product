@@ -34,8 +34,10 @@ DerivedData/
 
 # Android / Gradle
 android/.gradle/
+android/.kotlin/
 android/build/
 android/app/build/
+android/app/.cxx/
 *.iml
 local.properties
 
@@ -43,4 +45,3 @@ local.properties
 dist/
 build/
 coverage/
-
