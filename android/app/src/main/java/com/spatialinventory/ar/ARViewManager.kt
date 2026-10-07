@@ -12,6 +12,26 @@ class ARViewManager : SimpleViewManager<ARViewWrapper>() {
     return ARViewWrapper(reactContext)
   }
 
+  @ReactProp(name = "cardTitle")
+  fun setCardTitle(view: ARViewWrapper, title: String?) {
+    view.setCardTitle(title ?: "")
+  }
+
+  @ReactProp(name = "cardDescription")
+  fun setCardDescription(view: ARViewWrapper, desc: String?) {
+    view.setCardDescription(desc ?: "")
+  }
+
+  @ReactProp(name = "cardColor")
+  fun setCardColor(view: ARViewWrapper, color: String?) {
+    view.setCardColor(color ?: "")
+  }
+
+  @ReactProp(name = "cardIcon")
+  fun setCardIcon(view: ARViewWrapper, icon: String?) {
+    view.setCardIcon(icon ?: "")
+  }
+
   @ReactProp(name = "selectedModelUrl")
   fun setSelectedModelUrl(view: ARViewWrapper, selectedModelUrl: String?) {
     view.setSelectedModelUrl(selectedModelUrl ?: "")
@@ -19,6 +39,8 @@ class ARViewManager : SimpleViewManager<ARViewWrapper>() {
 
   override fun getExportedCustomDirectEventTypeConstants(): MutableMap<String, Any> {
     return MapBuilder.of(
+      "onCardPlaced",
+      MapBuilder.of("registrationName", "onCardPlaced"),
       "onModelPlaced",
       MapBuilder.of("registrationName", "onModelPlaced")
     )
@@ -33,3 +55,4 @@ class ARViewManager : SimpleViewManager<ARViewWrapper>() {
     const val REACT_CLASS = "ARViewManager"
   }
 }
+

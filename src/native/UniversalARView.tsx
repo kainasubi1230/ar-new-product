@@ -6,8 +6,11 @@ import {
   ViewStyle,
 } from 'react-native';
 
-export type ModelPlacedEvent = {
-  modelUrl: string;
+export type CardPlacedEvent = {
+  cardTitle: string;
+  cardDescription: string;
+  cardColor: string;
+  cardIcon: string;
   x: number;
   y: number;
   z: number;
@@ -15,8 +18,13 @@ export type ModelPlacedEvent = {
 
 export type UniversalARViewProps = {
   style?: StyleProp<ViewStyle>;
-  selectedModelUrl: string;
-  onModelPlaced?: (event: NativeSyntheticEvent<ModelPlacedEvent>) => void;
+  cardTitle: string;
+  cardDescription: string;
+  cardColor: string;
+  cardIcon: string;
+  selectedModelUrl?: string;
+  onCardPlaced?: (event: NativeSyntheticEvent<CardPlacedEvent>) => void;
+  onModelPlaced?: (event: NativeSyntheticEvent<any>) => void;
 };
 
 const NativeARView = requireNativeComponent<UniversalARViewProps>('ARViewManager');
@@ -24,3 +32,4 @@ const NativeARView = requireNativeComponent<UniversalARViewProps>('ARViewManager
 export function UniversalARView(props: UniversalARViewProps): React.JSX.Element {
   return <NativeARView {...props} />;
 }
+
