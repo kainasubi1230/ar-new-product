@@ -1,187 +1,224 @@
 import React, { useState } from 'react';
 import {
+  Image,
+  Platform,
   SafeAreaView,
-  ScrollView,
   StatusBar,
   StyleSheet,
   Text,
-  TextInput,
   TouchableOpacity,
   View,
 } from 'react-native';
+
+import { DiscoveryRadarScreen } from './src/components/DiscoveryRadarScreen';
+import { MyPageScreen } from './src/components/MyPageScreen';
+import { NotificationScreen } from './src/components/NotificationScreen';
+import { PostModal } from './src/components/PostModal';
+import { TagManageModal } from './src/components/TagManageModal';
 import { UniversalARView } from './src/native/UniversalARView';
+import { Icons } from './src/assets/icons';
 
-type CardPreset = {
-  id: string;
-  label: string;
-  icon: string;
-  title: string;
-  description: string;
-  color: string;
-};
+type TabType = 'home' | 'radar' | 'notifications' | 'mypage';
 
-const PRESETS: CardPreset[] = [
-  {
-    id: 'spot',
-    label: '📌 スポット案内',
-    icon: '📌',
-    title: '会議室 Alpha',
-    description: '定員 10名 • プロジェクター / ホワイトボード完備',
-    color: '#00E5FF',
-  },
-  {
-    id: 'product',
-    label: '🏷️ 商品情報',
-    icon: '🏷️',
-    title: 'スマート空気清浄機 Pro',
-    description: '¥34,800 • HEPA 13 フィルター • 22dB 静音動作',
-    color: '#00E676',
-  },
-  {
-    id: 'warning',
-    label: '⚠️ 注意事項',
-    icon: '⚠️',
-    title: '足元注意：清掃作業中',
-    description: '床面が濡れて滑りやすくなっております',
-    color: '#FF3D00',
-  },
-  {
-    id: 'custom',
-    label: '✏️ カスタムメモ',
-    icon: '💡',
-    title: 'ARメモカード',
-    description: '自由にメッセージを入力してAR空間に投影',
-    color: '#AA00FF',
-  },
-];
+export default function App(): React.JSX.Element {
+  // ホームはAR機能そのもの
+  const [activeTab, setActiveTab] = useState<TabType>('home');
+  const [isPostModalVisible, setIsPostModalVisible] = useState<boolean>(false);
+  const [isTagModalVisible, setIsTagModalVisible] = useState<boolean>(false);
 
-function App(): React.JSX.Element {
-  const [selectedPresetId, setSelectedPresetId] = useState<string>(PRESETS[0].id);
-  const [customTitle, setCustomTitle] = useState<string>(PRESETS[0].title);
-  const [customDescription, setCustomDescription] = useState<string>(PRESETS[0].description);
-  const [customColor, setCustomColor] = useState<string>(PRESETS[0].color);
-  const [customIcon, setCustomIcon] = useState<string>(PRESETS[0].icon);
-  const [lastPlacedMessage, setLastPlacedMessage] = useState<string>('まだ配置されていません');
+  // AR Card Data
+  const [currentMessage, setCurrentMessage] = useState<string>('ここの席、午後の光が最高。');
+  const [currentAuthor] = useState<string>('sora');
+  const [currentHandle] = useState<string>('@sora');
+  const [selectedTag, setSelectedTag] = useState<string>('#カフェ');
+  const [placeTrigger, setPlaceTrigger] = useState<number>(0);
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const toastTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const handleSelectPreset = (preset: CardPreset) => {
-    setSelectedPresetId(preset.id);
-    setCustomTitle(preset.title);
-    setCustomDescription(preset.description);
-    setCustomColor(preset.color);
-    setCustomIcon(preset.icon);
+  const showToast = (msg: string) => {
+    if (toastTimerRef.current) {
+      clearTimeout(toastTimerRef.current);
+    }
+    setToastMessage(msg);
+    toastTimerRef.current = setTimeout(() => {
+      setToastMessage(null);
+    }, 3000);
+  };
+
+  const handlePostSubmit = (data: { message: string; tags: string[]; category: string }) => {
+    setIsPostModalVisible(false);
+    setCurrentMessage(data.message);
+    if (data.tags[0]) setSelectedTag(data.tags[0]);
+    // Trigger spatial placement in AR
+    setPlaceTrigger((prev) => prev + 1);
+    showToast('言葉を空間に配置しました！');
   };
 
   return (
     <SafeAreaView style={styles.root}>
-      <StatusBar barStyle="light-content" />
+      <StatusBar
+        barStyle={activeTab === 'home' ? 'light-content' : 'dark-content'}
+        translucent
+        backgroundColor="transparent"
+      />
 
-      {/* AR View Header Status */}
-      <View style={styles.topHeader}>
-        <View style={styles.badge}>
-          <Text style={styles.badgeText}>AR SPATIAL CARD PROJECTOR</Text>
-        </View>
-        <Text style={styles.headerHint}>画面の平面をタップしてカードを投影</Text>
+      {/* Main View Area */}
+      <View style={styles.mainContainer}>
+        {/* 1. Home = Pure AR Camera Screen (No remote timeline - in-place only) */}
+        {activeTab === 'home' && (
+          <View style={styles.arContainer}>
+            <UniversalARView
+              style={StyleSheet.absoluteFill}
+              cardTitle={currentAuthor}
+              cardDescription={currentMessage}
+              cardColor="#10B981"
+              cardIcon={currentHandle}
+              placeTrigger={placeTrigger}
+              onScreenTapped={() => {
+                // Tap on space to compose message
+                setIsPostModalVisible(true);
+              }}
+              onCardPlaced={(event) => {
+                const { cardDescription } = event.nativeEvent;
+                showToast(`「${cardDescription}」を配置しました`);
+              }}
+            />
+
+            {/* Top AR Header */}
+            <View style={styles.arTopHeader}>
+              <View style={styles.logoPill}>
+                <Text style={styles.logoPillText}>Loca</Text>
+              </View>
+            </View>
+
+            {/* Toast Message */}
+            {toastMessage && (
+              <View style={styles.toastContainer} pointerEvents="none">
+                <View style={styles.toastCard}>
+                  <Text style={styles.toastText}>{toastMessage}</Text>
+                </View>
+              </View>
+            )}
+          </View>
+        )}
+
+        {/* 2. Discovery Radar Screen (Walking navigation) */}
+        {activeTab === 'radar' && (
+          <DiscoveryRadarScreen
+            onBack={() => setActiveTab('home')}
+            onStartNavigation={() => setActiveTab('home')}
+          />
+        )}
+
+        {/* 3. Notifications Screen (Pocket alerts) */}
+        {activeTab === 'notifications' && (
+          <NotificationScreen
+            onOpenARWithTag={(tag) => {
+              setSelectedTag(tag);
+              setActiveTab('home');
+            }}
+          />
+        )}
+
+        {/* 4. MyPage Screen (Profile & history) */}
+        {activeTab === 'mypage' && (
+          <MyPageScreen
+            onOpenARLens={() => setActiveTab('home')}
+            onOpenTagManage={() => setIsTagModalVisible(true)}
+          />
+        )}
       </View>
 
-      {/* AR View Camera Canvas */}
-      <View style={styles.arContainer}>
-        <UniversalARView
-          style={StyleSheet.absoluteFill}
-          cardTitle={customTitle}
-          cardDescription={customDescription}
-          cardColor={customColor}
-          cardIcon={customIcon}
-          onCardPlaced={(event) => {
-            const { cardTitle, x, y, z } = event.nativeEvent;
-            setLastPlacedMessage(
-              `「${cardTitle}」 @ (${x.toFixed(2)}, ${y.toFixed(2)}, ${z.toFixed(2)})m`,
-            );
-          }}
-          onModelPlaced={(event) => {
-            if (event.nativeEvent?.x !== undefined) {
-              const { x, y, z } = event.nativeEvent;
-              setLastPlacedMessage(
-                `カード投影 @ (${x.toFixed(2)}, ${y.toFixed(2)}, ${z.toFixed(2)})m`,
-              );
-            }
-          }}
-        />
-      </View>
-
-      {/* Control Panel Bottom Sheet */}
-      <View style={styles.bottomSheet}>
-        <View style={styles.sheetHeaderRow}>
-          <Text style={styles.sheetTitle}>AR 空間情報カード設定</Text>
-          <Text style={styles.lastPlacedText}>直近配置: {lastPlacedMessage}</Text>
-        </View>
-
-        {/* Preset Selector */}
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={styles.presetList}
+      {/* Global Bottom Navigation Bar */}
+      <View style={styles.bottomNav}>
+        <TouchableOpacity
+          style={styles.navItem}
+          onPress={() => setActiveTab('home')}
+          activeOpacity={0.7}
         >
-          {PRESETS.map((preset) => {
-            const isSelected = preset.id === selectedPresetId;
-            return (
-              <TouchableOpacity
-                key={preset.id}
-                style={[
-                  styles.presetChip,
-                  isSelected && {
-                    borderColor: preset.color,
-                    backgroundColor: `${preset.color}25`,
-                  },
-                ]}
-                onPress={() => handleSelectPreset(preset)}
-                activeOpacity={0.8}
-              >
-                <Text
-                  style={[
-                    styles.presetChipText,
-                    isSelected && { color: preset.color, fontWeight: '700' },
-                  ]}
-                >
-                  {preset.label}
-                </Text>
-              </TouchableOpacity>
-            );
-          })}
-        </ScrollView>
+          <Image
+            source={Icons.home}
+            style={[styles.navIcon, activeTab === 'home' && styles.navIconActive]}
+            resizeMode="contain"
+          />
+          <Text style={[styles.navLabel, activeTab === 'home' && styles.navLabelActive]}>
+            ホーム
+          </Text>
+        </TouchableOpacity>
 
-        {/* Card Content Customizer */}
-        <View style={styles.inputContainer}>
-          <View style={styles.inputRow}>
-            <Text style={styles.inputLabel}>アイコン</Text>
-            <TextInput
-              style={styles.iconInput}
-              value={customIcon}
-              onChangeText={setCustomIcon}
-              maxLength={4}
-            />
-            <Text style={[styles.inputLabel, { marginLeft: 12 }]}>タイトル</Text>
-            <TextInput
-              style={[styles.textInput, styles.titleInput]}
-              value={customTitle}
-              onChangeText={setCustomTitle}
-              placeholder="タイトルを入力"
-              placeholderTextColor="#5A6E8C"
-            />
-          </View>
+        <TouchableOpacity
+          style={styles.navItem}
+          onPress={() => setActiveTab('radar')}
+          activeOpacity={0.7}
+        >
+          <Image
+            source={Icons.search}
+            style={[styles.navIcon, activeTab === 'radar' && styles.navIconActive]}
+            resizeMode="contain"
+          />
+          <Text style={[styles.navLabel, activeTab === 'radar' && styles.navLabelActive]}>
+            探索
+          </Text>
+        </TouchableOpacity>
 
-          <View style={styles.inputRow}>
-            <Text style={styles.inputLabel}>詳細説明</Text>
-            <TextInput
-              style={[styles.textInput, styles.descInput]}
-              value={customDescription}
-              onChangeText={setCustomDescription}
-              placeholder="詳細情報やメッセージを入力"
-              placeholderTextColor="#5A6E8C"
-              multiline
-            />
-          </View>
-        </View>
+        {/* Center Plus Button (Emerald Green circle) */}
+        <TouchableOpacity
+          style={styles.centerPlusButton}
+          onPress={() => {
+            setActiveTab('home');
+            setIsPostModalVisible(true);
+          }}
+          activeOpacity={0.85}
+        >
+          <Text style={styles.centerPlusIcon}>＋</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={styles.navItem}
+          onPress={() => setActiveTab('notifications')}
+          activeOpacity={0.7}
+        >
+          <Image
+            source={Icons.notice}
+            style={[styles.navIcon, activeTab === 'notifications' && styles.navIconActive]}
+            resizeMode="contain"
+          />
+          <Text style={[styles.navLabel, activeTab === 'notifications' && styles.navLabelActive]}>
+            通知
+          </Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={styles.navItem}
+          onPress={() => setActiveTab('mypage')}
+          activeOpacity={0.7}
+        >
+          <Image
+            source={Icons.mypage}
+            style={[styles.navIcon, activeTab === 'mypage' && styles.navIconActive]}
+            resizeMode="contain"
+          />
+          <Text style={[styles.navLabel, activeTab === 'mypage' && styles.navLabelActive]}>
+            マイページ
+          </Text>
+        </TouchableOpacity>
       </View>
+
+      {/* Post Modal (AI suggestions, message input) */}
+      <PostModal
+        visible={isPostModalVisible}
+        onClose={() => setIsPostModalVisible(false)}
+        onSubmit={handlePostSubmit}
+      />
+
+      {/* Tag Management Modal (Tag filter / Calm settings) */}
+      <TagManageModal
+        visible={isTagModalVisible}
+        onClose={() => setIsTagModalVisible(false)}
+        onSave={(tags) => {
+          if (tags[0]) setSelectedTag(tags[0]);
+        }}
+      />
     </SafeAreaView>
   );
 }
@@ -189,126 +226,137 @@ function App(): React.JSX.Element {
 const styles = StyleSheet.create({
   root: {
     flex: 1,
-    backgroundColor: '#07090E',
+    backgroundColor: '#F8FAFC',
   },
-  topHeader: {
-    position: 'absolute',
-    top: 50,
-    left: 16,
-    right: 16,
-    zIndex: 10,
-    alignItems: 'center',
-    pointerEvents: 'none',
-  },
-  badge: {
-    backgroundColor: 'rgba(0, 229, 255, 0.2)',
-    paddingHorizontal: 12,
-    paddingVertical: 4,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: '#00E5FF',
-    marginBottom: 6,
-  },
-  badgeText: {
-    color: '#00E5FF',
-    fontSize: 11,
-    fontWeight: '800',
-    letterSpacing: 1.2,
-  },
-  headerHint: {
-    color: '#FFFFFF',
-    fontSize: 13,
-    fontWeight: '600',
-    textShadowColor: 'rgba(0,0,0,0.8)',
-    textShadowOffset: { width: 0, height: 1 },
-    textShadowRadius: 4,
+  mainContainer: {
+    flex: 1,
   },
   arContainer: {
     flex: 1,
+    position: 'relative',
+    backgroundColor: '#000000',
   },
-  bottomSheet: {
-    backgroundColor: '#0E131F',
-    paddingTop: 14,
-    paddingBottom: 24,
+
+  // AR Top Header
+  arTopHeader: {
+    position: 'absolute',
+    top: Platform.OS === 'ios' ? 50 : 20,
+    left: 16,
+    right: 16,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    zIndex: 20,
+  },
+  logoPill: {
+    backgroundColor: 'rgba(255, 255, 255, 0.92)',
     paddingHorizontal: 16,
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    borderTopWidth: 1,
-    borderColor: '#1F2B42',
+    paddingVertical: 7,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: 'rgba(226, 232, 240, 0.8)',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 3,
   },
-  sheetHeaderRow: {
-    marginBottom: 10,
-  },
-  sheetTitle: {
-    color: '#F0F4FF',
+  logoPillText: {
+    color: '#0F172A',
     fontSize: 16,
+    fontWeight: '800',
+    letterSpacing: 0.5,
+  },
+
+  // Toast
+  toastContainer: {
+    position: 'absolute',
+    top: '46%',
+    left: 20,
+    right: 20,
+    alignItems: 'center',
+    zIndex: 25,
+  },
+  toastCard: {
+    backgroundColor: 'rgba(255, 255, 255, 0.96)',
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    borderRadius: 22,
+    borderWidth: 1.5,
+    borderColor: '#10B981',
+    shadowColor: '#10B981',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.2,
+    shadowRadius: 8,
+    elevation: 6,
+  },
+  toastText: {
+    color: '#0F172A',
+    fontSize: 14,
     fontWeight: '700',
   },
-  lastPlacedText: {
-    color: '#8A99B5',
-    fontSize: 12,
-    marginTop: 2,
-  },
-  presetList: {
-    gap: 8,
-    paddingVertical: 6,
-  },
-  presetChip: {
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: 20,
-    backgroundColor: '#151C2C',
-    borderWidth: 1,
-    borderColor: '#24324D',
-  },
-  presetChipText: {
-    color: '#A0B0D0',
-    fontSize: 13,
-  },
-  inputContainer: {
-    marginTop: 12,
-    gap: 10,
-  },
-  inputRow: {
+
+  // Global Bottom Navigation Bar
+  bottomNav: {
     flexDirection: 'row',
+    backgroundColor: '#FFFFFF',
+    borderTopWidth: 1,
+    borderColor: '#E2E8F0',
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    justifyContent: 'space-around',
     alignItems: 'center',
+    zIndex: 30,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: -2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 6,
+    elevation: 8,
   },
-  inputLabel: {
-    color: '#7C8BA5',
-    fontSize: 12,
-    marginRight: 8,
+  navItem: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 4,
+    minWidth: 50,
+  },
+  navIcon: {
+    width: 22,
+    height: 22,
+    tintColor: '#94A3B8',
+  },
+  navIconActive: {
+    tintColor: '#10B981',
+  },
+  navLabel: {
+    color: '#94A3B8',
+    fontSize: 10,
+    marginTop: 2,
     fontWeight: '600',
   },
-  iconInput: {
-    backgroundColor: '#161E30',
+  navLabelActive: {
+    color: '#059669',
+    fontWeight: '700',
+  },
+  centerPlusButton: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: '#10B981',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginTop: -20,
+    shadowColor: '#10B981',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.45,
+    shadowRadius: 12,
+    elevation: 10,
+    borderWidth: 4,
+    borderColor: '#FFFFFF',
+  },
+  centerPlusIcon: {
     color: '#FFFFFF',
-    borderRadius: 8,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    fontSize: 16,
-    borderWidth: 1,
-    borderColor: '#24324D',
-    textAlign: 'center',
-    width: 44,
-  },
-  textInput: {
-    backgroundColor: '#161E30',
-    color: '#FFFFFF',
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    fontSize: 13,
-    borderWidth: 1,
-    borderColor: '#24324D',
-  },
-  titleInput: {
-    flex: 1,
-  },
-  descInput: {
-    flex: 1,
-    height: 40,
+    fontSize: 34,
+    fontWeight: '700',
+    lineHeight: 36,
   },
 });
-
-export default App;
-

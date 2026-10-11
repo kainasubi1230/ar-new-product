@@ -51,19 +51,6 @@ class ARViewWrapper(private val reactContext: ReactContext) : FrameLayout(reactC
       Log.e(TAG, "AR session failed: ${error.message}", error)
     }
 
-    // Billboard loop: Rotate placed card nodes to face camera on every frame
-    arSceneView.onFrame = { _ ->
-      val cameraNode = arSceneView.cameraNode
-      val cameraPos = cameraNode.worldPosition
-      placedCardNodes.forEach { node ->
-        try {
-          node.lookAt(cameraPos)
-        } catch (_: Throwable) {
-          // Ignore if node is detached
-        }
-      }
-    }
-
     setupTapPlacement()
   }
 
@@ -157,25 +144,59 @@ class ARViewWrapper(private val reactContext: ReactContext) : FrameLayout(reactC
     return false
   }
 
+  private var lastTapX: Float? = null
+  private var lastTapY: Float? = null
+
   private fun setupTapPlacement() {
     arSceneView.setOnTouchListener { _, event ->
       if (event.action == MotionEvent.ACTION_UP) {
-        placeCardOnPlane(event.x, event.y)
+        lastTapX = event.x
+        lastTapY = event.y
+        val params = Arguments.createMap().apply {
+          putDouble("x", event.x.toDouble())
+          putDouble("y", event.y.toDouble())
+        }
+        val emitter = reactContext.getJSModule(RCTEventEmitter::class.java)
+        emitter.receiveEvent(id, "onScreenTapped", params)
       }
       false
     }
   }
 
-  private fun placeCardOnPlane(x: Float, y: Float) {
-    val frame = arSceneView.frame ?: return
-    val hitResult =
-      frame.hitTest(x, y).firstOrNull { hit ->
-        val trackable = hit.trackable
-        trackable is Plane && trackable.isPoseInPolygon(hit.hitPose)
-      } ?: return
+  fun placeCardAtCenter() {
+    post {
+      val targetX = lastTapX ?: (width / 2f)
+      val targetY = lastTapY ?: (height / 2f)
+      lastTapX = null
+      lastTapY = null
+      placeCardOnPlane(targetX, targetY)
+    }
+  }
 
-    val anchor = hitResult.createAnchor()
-    val anchorNode = AnchorNode(arSceneView.engine, anchor)
+  private fun placeCardOnPlane(x: Float, y: Float) {
+    val frame = arSceneView.frame
+    val hitResult = frame?.hitTest(x, y)?.firstOrNull { hit ->
+      val trackable = hit.trackable
+      trackable is Plane && trackable.isPoseInPolygon(hit.hitPose)
+    }
+
+    val anchor = hitResult?.createAnchor()
+    val anchorNode = if (anchor != null) {
+      AnchorNode(arSceneView.engine, anchor)
+    } else {
+      // Fallback: place in front of camera (0.7m)
+      val cameraPos = arSceneView.cameraNode.worldPosition
+      val cameraRot = arSceneView.cameraNode.worldRotation
+      val forward = arSceneView.cameraNode.forward
+      val fallbackNode = AnchorNode(arSceneView.engine)
+      fallbackNode.worldPosition = Float3(
+        cameraPos.x + forward.x * 0.7f,
+        cameraPos.y + forward.y * 0.7f,
+        cameraPos.z + forward.z * 0.7f
+      )
+      fallbackNode
+    }
+
     anchorNode.isEditable = true
 
     val cardNode = createCardNode()
@@ -183,20 +204,28 @@ class ARViewWrapper(private val reactContext: ReactContext) : FrameLayout(reactC
     cardNode.isPositionEditable = true
     cardNode.isRotationEditable = true
 
+    // Look at camera once at placement, then stay fixed
+    try {
+      cardNode.lookAt(arSceneView.cameraNode.worldPosition)
+    } catch (_: Throwable) {}
+
     anchorNode.addChildNode(cardNode)
     arSceneView.addChildNode(anchorNode)
     placedCardNodes.add(cardNode)
 
-    val pose = hitResult.hitPose
+    val poseX = hitResult?.hitPose?.tx()?.toDouble() ?: anchorNode.worldPosition.x.toDouble()
+    val poseY = hitResult?.hitPose?.ty()?.toDouble() ?: anchorNode.worldPosition.y.toDouble()
+    val poseZ = hitResult?.hitPose?.tz()?.toDouble() ?: anchorNode.worldPosition.z.toDouble()
+
     val params = Arguments.createMap().apply {
       putString("cardTitle", cardTitle)
       putString("cardDescription", cardDescription)
       putString("cardColor", cardColor)
       putString("cardIcon", cardIcon)
       putString("modelUrl", cardTitle)
-      putDouble("x", pose.tx().toDouble())
-      putDouble("y", pose.ty().toDouble())
-      putDouble("z", pose.tz().toDouble())
+      putDouble("x", poseX)
+      putDouble("y", poseY)
+      putDouble("z", poseZ)
     }
 
     val emitter = reactContext.getJSModule(RCTEventEmitter::class.java)
@@ -206,23 +235,31 @@ class ARViewWrapper(private val reactContext: ReactContext) : FrameLayout(reactC
 
   private fun createCardNode(): Node {
     val parsedColor = try {
-      Color.parseColor(if (cardColor.startsWith("#")) cardColor else "#00E5FF")
+      Color.parseColor(if (cardColor.startsWith("#")) cardColor else "#29B6F6")
     } catch (_: Throwable) {
-      Color.parseColor("#00E5FF")
+      Color.parseColor("#29B6F6")
     }
 
-    val material = arSceneView.materialLoader.createColorInstance(
+    val defaultMaterial = arSceneView.materialLoader.createColorInstance(
       parsedColor,
-      0.1f,
-      0.9f,
+      0.2f,
+      0.8f,
       0.1f
     )
 
+    // Card only (no blue cube)
+    val cardMaterial = try {
+      val bitmap = createCardBitmap(cardTitle, cardDescription, cardIcon, cardColor)
+      arSceneView.materialLoader.createBitmapInstance(bitmap)
+    } catch (_: Throwable) {
+      defaultMaterial
+    }
+
     val cardNode = CubeNode(
       arSceneView.engine,
-      Float3(0.36f, 0.22f, 0.01f),
-      Float3(0.0f, 0.11f, 0.0f),
-      material
+      Float3(0.38f, 0.24f, 0.005f),
+      Float3(0.0f, 0.0f, 0.0f),
+      cardMaterial
     )
     return cardNode
   }
@@ -238,61 +275,86 @@ class ARViewWrapper(private val reactContext: ReactContext) : FrameLayout(reactC
     val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
     val canvas = Canvas(bitmap)
 
-    val accentColor = try {
-      Color.parseColor(if (hexColor.startsWith("#")) hexColor else "#00E5FF")
+    val strokeColor = try {
+      Color.parseColor(if (hexColor.startsWith("#")) hexColor else "#10B981")
     } catch (_: Throwable) {
-      Color.parseColor("#00E5FF")
+      Color.parseColor("#10B981")
     }
 
+    // Frosted Glass Body (semi-transparent white)
+    val cardRect = RectF(14f, 14f, (width - 14).toFloat(), (height - 14).toFloat())
     val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-      color = Color.argb(242, 13, 19, 34)
+      color = Color.argb(210, 255, 255, 255) // 82% white
       style = Paint.Style.FILL
     }
-    val cardRect = RectF(16f, 16f, (width - 16).toFloat(), (height - 16).toFloat())
-    canvas.drawRoundRect(cardRect, 32f, 32f, bgPaint)
+    canvas.drawRoundRect(cardRect, 36f, 36f, bgPaint)
 
+    // Soft Glowing Border
     val borderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-      color = accentColor
+      color = strokeColor
       style = Paint.Style.STROKE
       strokeWidth = 6f
     }
-    canvas.drawRoundRect(cardRect, 32f, 32f, borderPaint)
+    canvas.drawRoundRect(cardRect, 36f, 36f, borderPaint)
 
-    val barPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-      color = accentColor
+    // Top Subtle Reflection
+    val shinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+      color = Color.argb(180, 255, 255, 255)
       style = Paint.Style.FILL
     }
-    canvas.drawRoundRect(RectF(40f, 44f, 52f, 104f), 6f, 6f, barPaint)
+    val shineRect = RectF(36f, 18f, (width - 36).toFloat(), 21f)
+    canvas.drawRoundRect(shineRect, 2f, 2f, shinePaint)
 
-    val titlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-      color = Color.WHITE
+    // Message Body Text (Large, prominent)
+    val displayText = if (description.isNotBlank()) description else "ここの席、午後の光が最高。"
+    val descTextPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+      color = Color.rgb(30, 41, 59)
       textSize = 42f
       typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
     }
-    val displayTitle = if (icon.isNotBlank()) "$icon  $title" else title
-    canvas.drawText(displayTitle, 72f, 88f, titlePaint)
-
-    val dividerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-      color = Color.argb(50, 255, 255, 255)
-      strokeWidth = 3f
-    }
-    canvas.drawLine(40f, 124f, (width - 40).toFloat(), 124f, dividerPaint)
-
-    val descTextPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
-      color = Color.rgb(200, 215, 240)
-      textSize = 30f
-    }
-    val descWidth = width - 80
+    val descWidth = width - 88
     val staticLayout = StaticLayout.Builder
-      .obtain(description, 0, description.length, descTextPaint, descWidth)
+      .obtain(displayText, 0, displayText.length, descTextPaint, descWidth)
       .setAlignment(Layout.Alignment.ALIGN_NORMAL)
       .setLineSpacing(0f, 1.2f)
       .build()
 
     canvas.save()
-    canvas.translate(40f, 144f)
+    canvas.translate(44f, 48f)
     staticLayout.draw(canvas)
     canvas.restore()
+
+    // Tags Row ("#カフェ  #日常")
+    val tagPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+      color = Color.rgb(16, 185, 129) // Emerald Green
+      textSize = 30f
+      typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+    }
+    canvas.drawText("#カフェ  #日常", 44f, 290f, tagPaint)
+
+    // Divider line
+    val dividerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+      color = Color.argb(180, 226, 232, 240)
+      strokeWidth = 2f
+    }
+    canvas.drawLine(44f, 335f, (width - 44).toFloat(), 335f, dividerPaint)
+
+    // Author Name ("sora")
+    val authorName = if (title.isNotBlank()) title else "sora"
+    val namePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+      color = Color.rgb(51, 65, 85)
+      textSize = 32f
+      typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+    }
+    canvas.drawText(authorName, 100f, 390f, namePaint)
+
+    // Likes ("♡ 42")
+    val likesPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+      color = Color.rgb(148, 163, 184)
+      textSize = 30f
+      typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+    }
+    canvas.drawText("♡ 42", (width - 140).toFloat(), 390f, likesPaint)
 
     return bitmap
   }

@@ -32,6 +32,13 @@ class ARViewManager : SimpleViewManager<ARViewWrapper>() {
     view.setCardIcon(icon ?: "")
   }
 
+  @ReactProp(name = "placeTrigger")
+  fun setPlaceTrigger(view: ARViewWrapper, trigger: Int?) {
+    if (trigger != null && trigger > 0) {
+      view.placeCardAtCenter()
+    }
+  }
+
   @ReactProp(name = "selectedModelUrl")
   fun setSelectedModelUrl(view: ARViewWrapper, selectedModelUrl: String?) {
     view.setSelectedModelUrl(selectedModelUrl ?: "")
@@ -39,6 +46,8 @@ class ARViewManager : SimpleViewManager<ARViewWrapper>() {
 
   override fun getExportedCustomDirectEventTypeConstants(): MutableMap<String, Any> {
     return MapBuilder.of(
+      "onScreenTapped",
+      MapBuilder.of("registrationName", "onScreenTapped"),
       "onCardPlaced",
       MapBuilder.of("registrationName", "onCardPlaced"),
       "onModelPlaced",

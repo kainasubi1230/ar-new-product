@@ -1,6 +1,7 @@
 import React from 'react';
 import {
   NativeSyntheticEvent,
+  Platform,
   requireNativeComponent,
   StyleProp,
   ViewStyle,
@@ -22,12 +23,15 @@ export type UniversalARViewProps = {
   cardDescription: string;
   cardColor: string;
   cardIcon: string;
+  placeTrigger?: number;
   selectedModelUrl?: string;
+  onScreenTapped?: (event: NativeSyntheticEvent<{ x: number; y: number }>) => void;
   onCardPlaced?: (event: NativeSyntheticEvent<CardPlacedEvent>) => void;
   onModelPlaced?: (event: NativeSyntheticEvent<any>) => void;
 };
 
-const NativeARView = requireNativeComponent<UniversalARViewProps>('ARViewManager');
+const COMPONENT_NAME = Platform.OS === 'ios' ? 'ARView' : 'ARViewManager';
+const NativeARView = requireNativeComponent<UniversalARViewProps>(COMPONENT_NAME);
 
 export function UniversalARView(props: UniversalARViewProps): React.JSX.Element {
   return <NativeARView {...props} />;
