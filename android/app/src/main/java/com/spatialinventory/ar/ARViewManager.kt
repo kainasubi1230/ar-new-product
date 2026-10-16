@@ -39,6 +39,11 @@ class ARViewManager : SimpleViewManager<ARViewWrapper>() {
     }
   }
 
+  @ReactProp(name = "isPreviewActive")
+  fun setIsPreviewActive(view: ARViewWrapper, active: Boolean?) {
+    // Handle preview active state on Android
+  }
+
   @ReactProp(name = "selectedModelUrl")
   fun setSelectedModelUrl(view: ARViewWrapper, selectedModelUrl: String?) {
     view.setSelectedModelUrl(selectedModelUrl ?: "")

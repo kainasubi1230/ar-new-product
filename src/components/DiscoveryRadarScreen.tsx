@@ -8,6 +8,9 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import { ScreenHeader } from './ScreenHeader';
+import { NotificationCard } from './NotificationCard';
+import { NOTIFICATIONS } from '../data/notifications';
 
 const { width } = Dimensions.get('window');
 
@@ -17,6 +20,7 @@ type Props = {
 };
 
 export function DiscoveryRadarScreen({ onBack, onStartNavigation }: Props): React.JSX.Element {
+  const latestNotice = NOTIFICATIONS[0];
   // アニメーション: レーダー回転スキャン ＆ 矢印の浮遊
   const radarScanAnim = useRef(new Animated.Value(0)).current;
   const arrowFloatAnim = useRef(new Animated.Value(0)).current;
@@ -77,21 +81,15 @@ export function DiscoveryRadarScreen({ onBack, onStartNavigation }: Props): Reac
 
   return (
     <View style={styles.container}>
-      {/* Top Header */}
-      <View style={styles.header}>
-        <Text style={styles.headerTitle}>探索</Text>
-      </View>
-
-      {/* Top Alert Banner */}
-      <View style={styles.alertBanner}>
-        <View style={styles.alertIconCircle}>
-          <Text style={styles.alertPin}>📍</Text>
+      {/* Top Section (Header + Latest Notification Card) */}
+      <View style={styles.topSection}>
+        <ScreenHeader title="探索" />
+        <View style={styles.topCardWrapper}>
+          <NotificationCard
+            item={latestNotice}
+            onPress={onStartNavigation}
+          />
         </View>
-        <View style={styles.alertTextGroup}>
-          <Text style={styles.alertTitle}>近くに</Text>
-          <Text style={styles.alertSubtitle}>新しいメッセージがあります！</Text>
-        </View>
-        <Text style={styles.alertDistance}>120 m</Text>
       </View>
 
       {/* Center Radar Canvas */}
@@ -128,28 +126,8 @@ export function DiscoveryRadarScreen({ onBack, onStartNavigation }: Props): Reac
         </View>
       </View>
 
-      {/* Bottom Target Card & Navigation CTA */}
+      {/* Bottom Navigation CTA */}
       <View style={styles.bottomSection}>
-        <View style={styles.targetCard}>
-          <View style={styles.cardThumbnailPlaceholder}>
-            <Text style={styles.thumbnailIcon}>🏢</Text>
-          </View>
-
-          <View style={styles.cardTextGroup}>
-            <Text style={styles.cardTitle}>天神ビルのベンチ</Text>
-            <Text style={styles.cardSnippet}>「ランチが美味しかった…」</Text>
-            <View style={styles.cardTagsRow}>
-              <View style={styles.cardTagPill}>
-                <Text style={styles.cardTagText}>#グルメ</Text>
-              </View>
-              <View style={styles.cardTagPill}>
-                <Text style={styles.cardTagText}>#日常</Text>
-              </View>
-              <Text style={styles.cardDistanceText}>📍 120 m</Text>
-            </View>
-          </View>
-        </View>
-
         {/* Start Navigation Button */}
         <TouchableOpacity
           style={styles.navButton}
@@ -170,66 +148,14 @@ const styles = StyleSheet.create({
     backgroundColor: '#F8FAFC',
     justifyContent: 'space-between',
   },
-  header: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 16,
-    paddingTop: 12,
-    paddingBottom: 8,
-    borderBottomWidth: 1,
-    borderColor: '#E2E8F0',
-  },
-  headerTitle: {
-    color: '#0F172A',
-    fontSize: 17,
-    fontWeight: '700',
-  },
 
-  // Alert Banner
-  alertBanner: {
-    marginHorizontal: 16,
-    backgroundColor: '#FFFFFF',
-    borderRadius: 20,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    flexDirection: 'row',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.05,
-    shadowRadius: 6,
-    elevation: 2,
+
+  topSection: {
+    width: '100%',
   },
-  alertIconCircle: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: 'rgba(16, 185, 129, 0.15)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: 10,
-  },
-  alertPin: {
-    fontSize: 16,
-  },
-  alertTextGroup: {
-    flex: 1,
-  },
-  alertTitle: {
-    color: '#0F172A',
-    fontSize: 13,
-    fontWeight: '700',
-  },
-  alertSubtitle: {
-    color: '#475569',
-    fontSize: 12,
-  },
-  alertDistance: {
-    color: '#059669',
-    fontSize: 12,
-    fontWeight: '700',
+  topCardWrapper: {
+    paddingHorizontal: 16,
+    marginTop: 12,
   },
 
   // Center Radar
@@ -330,69 +256,6 @@ const styles = StyleSheet.create({
   bottomSection: {
     paddingHorizontal: 16,
     paddingBottom: 24,
-  },
-  targetCard: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 20,
-    padding: 14,
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 14,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.05,
-    shadowRadius: 6,
-    elevation: 2,
-  },
-  cardThumbnailPlaceholder: {
-    width: 60,
-    height: 60,
-    borderRadius: 14,
-    backgroundColor: '#F1F5F9',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: 12,
-  },
-  thumbnailIcon: {
-    fontSize: 26,
-  },
-  cardTextGroup: {
-    flex: 1,
-  },
-  cardTitle: {
-    color: '#0F172A',
-    fontSize: 14,
-    fontWeight: '700',
-  },
-  cardSnippet: {
-    color: '#475569',
-    fontSize: 12,
-    marginTop: 2,
-  },
-  cardTagsRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    marginTop: 6,
-  },
-  cardTagPill: {
-    backgroundColor: '#F1F5F9',
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: 8,
-  },
-  cardTagText: {
-    color: '#64748B',
-    fontSize: 11,
-    fontWeight: '600',
-  },
-  cardDistanceText: {
-    color: '#059669',
-    fontSize: 11,
-    fontWeight: '700',
-    marginLeft: 'auto',
   },
   navButton: {
     backgroundColor: '#10B981',

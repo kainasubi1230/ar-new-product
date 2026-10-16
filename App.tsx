@@ -16,6 +16,7 @@ import { NotificationScreen } from './src/components/NotificationScreen';
 import { PostModal } from './src/components/PostModal';
 import { TagManageModal } from './src/components/TagManageModal';
 import { UniversalARView } from './src/native/UniversalARView';
+import { ScreenHeader } from './src/components/ScreenHeader';
 import { Icons } from './src/assets/icons';
 
 type TabType = 'home' | 'radar' | 'notifications' | 'mypage';
@@ -32,6 +33,7 @@ export default function App(): React.JSX.Element {
   const [currentHandle] = useState<string>('@sora');
   const [selectedTag, setSelectedTag] = useState<string>('#カフェ');
   const [placeTrigger, setPlaceTrigger] = useState<number>(0);
+  const [isPlacementMode, setIsPlacementMode] = useState<boolean>(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const toastTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -49,15 +51,23 @@ export default function App(): React.JSX.Element {
     setIsPostModalVisible(false);
     setCurrentMessage(data.message);
     if (data.tags[0]) setSelectedTag(data.tags[0]);
-    // Trigger spatial placement in AR
+    // 投稿内容をセットして、リアルタイムプレビュー＆配置決定モードへ
+    setIsPlacementMode(true);
+  };
+
+  const handleConfirmPlacement = () => {
+    // プレビュー位置に確定配置
     setPlaceTrigger((prev) => prev + 1);
-    showToast('言葉を空間に配置しました！');
+  };
+
+  const handleCancelPlacement = () => {
+    setIsPlacementMode(false);
   };
 
   return (
     <SafeAreaView style={styles.root}>
       <StatusBar
-        barStyle={activeTab === 'home' ? 'light-content' : 'dark-content'}
+        barStyle="dark-content"
         translucent
         backgroundColor="transparent"
       />
@@ -65,42 +75,76 @@ export default function App(): React.JSX.Element {
       {/* Main View Area */}
       <View style={styles.mainContainer}>
         {/* 1. Home = Pure AR Camera Screen (No remote timeline - in-place only) */}
-        {activeTab === 'home' && (
-          <View style={styles.arContainer}>
-            <UniversalARView
-              style={StyleSheet.absoluteFill}
-              cardTitle={currentAuthor}
-              cardDescription={currentMessage}
-              cardColor="#10B981"
-              cardIcon={currentHandle}
-              placeTrigger={placeTrigger}
-              onScreenTapped={() => {
-                // Tap on space to compose message
+        <View
+          style={[
+            styles.arContainer,
+            activeTab !== 'home' && styles.hiddenContainer,
+          ]}
+          pointerEvents={activeTab === 'home' ? 'auto' : 'none'}
+        >
+          <UniversalARView
+            style={StyleSheet.absoluteFill}
+            cardTitle={currentAuthor}
+            cardDescription={currentMessage}
+            cardColor="#10B981"
+            cardIcon={currentHandle}
+            placeTrigger={placeTrigger}
+            isPreviewActive={isPlacementMode}
+            onScreenTapped={() => {
+              // 配置モード中でなければモーダルを開いて投稿作成
+              if (!isPlacementMode) {
                 setIsPostModalVisible(true);
-              }}
-              onCardPlaced={(event) => {
-                const { cardDescription } = event.nativeEvent;
-                showToast(`「${cardDescription}」を配置しました`);
-              }}
-            />
+              }
+            }}
+            onCardPlaced={(event) => {
+              setIsPlacementMode(false);
+              const { cardDescription } = event.nativeEvent;
+              showToast(`「${cardDescription}」を配置しました！`);
+            }}
+          />
 
-            {/* Top AR Header */}
-            <View style={styles.arTopHeader}>
-              <View style={styles.logoPill}>
-                <Text style={styles.logoPillText}>Loca</Text>
+          {/* Top Screen Header */}
+          <ScreenHeader title="ホーム" style={styles.homeHeader} />
+
+          {/* Placement Mode HUD (Guide Banner & Confirmation Action Bar) */}
+          {isPlacementMode && (
+            <>
+              <View style={styles.placementGuidePill} pointerEvents="none">
+                <Text style={styles.placementGuideText}>
+                  📍 カメラを向けて置く場所を合わせ、「ここに設置する」を押してください
+                </Text>
+              </View>
+
+              <View style={styles.placementActionBar}>
+                <TouchableOpacity
+                  style={styles.placementCancelBtn}
+                  onPress={handleCancelPlacement}
+                  activeOpacity={0.8}
+                >
+                  <Text style={styles.placementCancelText}>✕ やめる</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.placementConfirmBtn}
+                  onPress={handleConfirmPlacement}
+                  activeOpacity={0.85}
+                >
+                  <Text style={styles.placementConfirmIcon}>✨</Text>
+                  <Text style={styles.placementConfirmText}>ここに設置する</Text>
+                </TouchableOpacity>
+              </View>
+            </>
+          )}
+
+          {/* Toast Message */}
+          {toastMessage && (
+            <View style={styles.toastContainer} pointerEvents="none">
+              <View style={styles.toastCard}>
+                <Text style={styles.toastText}>{toastMessage}</Text>
               </View>
             </View>
-
-            {/* Toast Message */}
-            {toastMessage && (
-              <View style={styles.toastContainer} pointerEvents="none">
-                <View style={styles.toastCard}>
-                  <Text style={styles.toastText}>{toastMessage}</Text>
-                </View>
-              </View>
-            )}
-          </View>
-        )}
+          )}
+        </View>
 
         {/* 2. Discovery Radar Screen (Walking navigation) */}
         {activeTab === 'radar' && (
@@ -170,7 +214,8 @@ export default function App(): React.JSX.Element {
           }}
           activeOpacity={0.85}
         >
-          <Text style={styles.centerPlusIcon}>＋</Text>
+          <View style={styles.plusBarH} />
+          <View style={styles.plusBarV} />
         </TouchableOpacity>
 
         <TouchableOpacity
@@ -226,7 +271,7 @@ export default function App(): React.JSX.Element {
 const styles = StyleSheet.create({
   root: {
     flex: 1,
-    backgroundColor: '#F8FAFC',
+    backgroundColor: '#FFFFFF',
   },
   mainContainer: {
     flex: 1,
@@ -236,33 +281,91 @@ const styles = StyleSheet.create({
     position: 'relative',
     backgroundColor: '#000000',
   },
+  hiddenContainer: {
+    display: 'none',
+  },
 
-  // AR Top Header
-  arTopHeader: {
+  // Home Screen Header
+  homeHeader: {
+    backgroundColor: 'rgba(255, 255, 255, 0.95)',
+    zIndex: 20,
+  },
+
+  // Placement Mode HUD
+  placementGuidePill: {
     position: 'absolute',
-    top: Platform.OS === 'ios' ? 50 : 20,
+    top: 68,
+    left: 20,
+    right: 20,
+    backgroundColor: 'rgba(15, 23, 42, 0.86)',
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    borderRadius: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 25,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.25,
+    shadowRadius: 8,
+  },
+  placementGuideText: {
+    color: '#F8FAFC',
+    fontSize: 13,
+    fontWeight: '600',
+    textAlign: 'center',
+    lineHeight: 18,
+  },
+  placementActionBar: {
+    position: 'absolute',
+    bottom: 24,
     left: 16,
     right: 16,
     flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
-    zIndex: 20,
+    justifyContent: 'center',
+    gap: 12,
+    zIndex: 35,
   },
-  logoPill: {
-    backgroundColor: 'rgba(255, 255, 255, 0.92)',
-    paddingHorizontal: 16,
-    paddingVertical: 7,
-    borderRadius: 20,
+  placementCancelBtn: {
+    backgroundColor: 'rgba(255, 255, 255, 0.95)',
+    paddingVertical: 15,
+    paddingHorizontal: 20,
+    borderRadius: 28,
     borderWidth: 1,
-    borderColor: 'rgba(226, 232, 240, 0.8)',
+    borderColor: '#E2E8F0',
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 3,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.12,
+    shadowRadius: 6,
+    elevation: 4,
   },
-  logoPillText: {
-    color: '#0F172A',
+  placementCancelText: {
+    color: '#64748B',
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  placementConfirmBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    backgroundColor: '#10B981',
+    paddingVertical: 15,
+    paddingHorizontal: 24,
+    borderRadius: 28,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#10B981',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.45,
+    shadowRadius: 10,
+    elevation: 6,
+  },
+  placementConfirmIcon: {
+    fontSize: 18,
+    marginRight: 6,
+  },
+  placementConfirmText: {
+    color: '#FFFFFF',
     fontSize: 16,
     fontWeight: '800',
     letterSpacing: 0.5,
@@ -302,8 +405,9 @@ const styles = StyleSheet.create({
     backgroundColor: '#FFFFFF',
     borderTopWidth: 1,
     borderColor: '#E2E8F0',
-    paddingVertical: 6,
-    paddingHorizontal: 12,
+    paddingTop: 10,
+    paddingBottom: Platform.OS === 'ios' ? 24 : 12,
+    paddingHorizontal: 16,
     justifyContent: 'space-around',
     alignItems: 'center',
     zIndex: 30,
@@ -316,12 +420,12 @@ const styles = StyleSheet.create({
   navItem: {
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 4,
-    minWidth: 50,
+    paddingVertical: 6,
+    minWidth: 56,
   },
   navIcon: {
-    width: 22,
-    height: 22,
+    width: 26,
+    height: 26,
     tintColor: '#94A3B8',
   },
   navIconActive: {
@@ -329,8 +433,8 @@ const styles = StyleSheet.create({
   },
   navLabel: {
     color: '#94A3B8',
-    fontSize: 10,
-    marginTop: 2,
+    fontSize: 11,
+    marginTop: 4,
     fontWeight: '600',
   },
   navLabelActive: {
@@ -338,13 +442,13 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   centerPlusButton: {
-    width: 64,
-    height: 64,
-    borderRadius: 32,
+    width: 68,
+    height: 68,
+    borderRadius: 34,
     backgroundColor: '#10B981',
     justifyContent: 'center',
     alignItems: 'center',
-    marginTop: -20,
+    marginTop: -24,
     shadowColor: '#10B981',
     shadowOffset: { width: 0, height: 6 },
     shadowOpacity: 0.45,
@@ -353,10 +457,18 @@ const styles = StyleSheet.create({
     borderWidth: 4,
     borderColor: '#FFFFFF',
   },
-  centerPlusIcon: {
-    color: '#FFFFFF',
-    fontSize: 34,
-    fontWeight: '700',
-    lineHeight: 36,
+  plusBarH: {
+    position: 'absolute',
+    width: 22,
+    height: 3.5,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 2,
+  },
+  plusBarV: {
+    position: 'absolute',
+    width: 3.5,
+    height: 22,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 2,
   },
 });

@@ -24,6 +24,7 @@ export type UniversalARViewProps = {
   cardColor: string;
   cardIcon: string;
   placeTrigger?: number;
+  isPreviewActive?: boolean;
   selectedModelUrl?: string;
   onScreenTapped?: (event: NativeSyntheticEvent<{ x: number; y: number }>) => void;
   onCardPlaced?: (event: NativeSyntheticEvent<CardPlacedEvent>) => void;

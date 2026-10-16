@@ -6,4 +6,23 @@ export const Icons = {
   notice: require('./notice.png'),
   mypage: require('./mypage.png'),
   setting: require('./setting.png'),
+  herb: require('./herb.png'),
+  logo: require('./logo.png'),
+  title: require('./title.png'),
+  aplicalm: require('./aplicalm.png'),
+  calendar: require('./calendar.png'),
+  pin: require('./pin.png'),
+  hourglass: require('./hourglass.png'),
+  footprints: require('./footprints.png'),
+  walking: require('./walking.png'),
+  cafe: require('./cafe.png'),
+  everyday: require('./everyday.png'),
+  book: require('./book.png'),
+  gourmet: require('./gourmet.png'),
+  history: require('./history.png'),
+  art: require('./art.png'),
+  view: require('./view.png'),
 };
+
+
+
