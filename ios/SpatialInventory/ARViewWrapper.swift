@@ -4,7 +4,8 @@ import RealityKit
 import React
 import UIKit
 
-final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate {
+final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDelegate {
+  private static let worldMapBucket = "worldmaps"
   @objc var cardTitle: NSString = "" {
     didSet {
       currentCardTitle = cardTitle as String
@@ -63,9 +64,29 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate {
     didSet { currentModelUrl = selectedModelUrl as String }
   }
 
+  // { requestId, postId, anchorId, supabase } 配置済みカードのアンカーを投稿IDで確定し、地図を保存する
+  @objc var worldMapSaveRequest: NSDictionary? {
+    didSet {
+      DispatchQueue.main.async { [weak self] in
+        self?.handleWorldMapSaveRequest()
+      }
+    }
+  }
+
+  // { postId, worldMapPath, cardTitle, cardDescription, cardIcon, cardColor, supabase } この投稿の地図で再位置合わせする
+  @objc var relocalizeTarget: NSDictionary? {
+    didSet {
+      DispatchQueue.main.async { [weak self] in
+        self?.handleRelocalizeTargetChanged()
+      }
+    }
+  }
+
   @objc var onScreenTapped: RCTDirectEventBlock?
   @objc var onCardPlaced: RCTDirectEventBlock?
   @objc var onModelPlaced: RCTDirectEventBlock?
+  @objc var onWorldMapStatus: RCTDirectEventBlock?
+  @objc var onRelocalizationStatus: RCTDirectEventBlock?
 
   private let arView = ARView(frame: .zero)
   private let coachingOverlay = ARCoachingOverlayView()
@@ -80,6 +101,32 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate {
   private var reticleEntity: ModelEntity?
   private var ghostCardEntity: ModelEntity?
   private var updateCancellable: Cancellable?
+
+  // ARWorldMap 関連
+  private struct MappingJob {
+    let postId: String
+    let objectPath: String
+    let storage: SupabaseStorage
+    let startedAt: Date
+    var lastStatus: ARFrame.WorldMappingStatus?
+    var isCapturing = false
+  }
+
+  private struct RelocalizationTarget {
+    let postId: String
+    let cardTitle: String
+    let cardDescription: String
+    let cardIcon: String
+    let cardColor: String
+    var didFindAnchor = false
+  }
+
+  private var lastSaveRequestId: Double?
+  // 投稿IDが決まる前の仮アンカー（anchorId → アンカー）
+  private var pendingCardAnchors: [String: (arAnchor: ARAnchor, entity: AnchorEntity)] = [:]
+  private var placedCardEntities: [AnchorEntity] = []
+  private var mappingJob: MappingJob?
+  private var relocalization: RelocalizationTarget?
 
   override init(frame: CGRect) {
     super.init(frame: frame)
@@ -111,21 +158,27 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate {
     arView.scene.addAnchor(rootAnchor)
     arView.scene.addAnchor(previewAnchor)
 
-    let config = ARWorldTrackingConfiguration()
-    config.planeDetection = [.horizontal, .vertical]
-    config.environmentTexturing = .automatic
-
     if ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh) {
-      config.sceneReconstruction = .mesh
       arView.environment.sceneUnderstanding.options.insert(.occlusion)
     }
 
     arView.environment.lighting.intensityExponent = 1.0
 
-    arView.session.run(config, options: [.resetTracking, .removeExistingAnchors])
+    arView.session.delegate = self
+    arView.session.run(makeTrackingConfiguration(), options: [.resetTracking, .removeExistingAnchors])
 
     setupPreviewEntities()
     setupPreviewSubscription()
+  }
+
+  private func makeTrackingConfiguration() -> ARWorldTrackingConfiguration {
+    let config = ARWorldTrackingConfiguration()
+    config.planeDetection = [.horizontal, .vertical]
+    config.environmentTexturing = .automatic
+    if ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh) {
+      config.sceneReconstruction = .mesh
+    }
+    return config
   }
 
   private func setupPreviewEntities() {
@@ -197,6 +250,7 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate {
   private func setupPreviewSubscription() {
     updateCancellable = arView.scene.subscribe(to: SceneEvents.Update.self) { [weak self] _ in
       self?.updatePreview()
+      self?.checkWorldMappingProgress()
     }
   }
 
@@ -390,28 +444,40 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate {
   }
 
   private func spawnCardEntity(at position: SIMD3<Float>, exactOrientation: simd_quatf? = nil) {
-    let anchor = AnchorEntity(world: position)
-
-    let cardEntity = makeCardEntity()
-
-    if let orientation = exactOrientation {
-      cardEntity.orientation = orientation
+    let orientation: simd_quatf
+    if let exactOrientation {
+      orientation = exactOrientation
     } else if let cameraTransform = arView.session.currentFrame?.camera.transform {
       let cameraPosition = SIMD3<Float>(
         cameraTransform.columns.3.x,
         cameraTransform.columns.3.y,
         cameraTransform.columns.3.z
       )
-      // Look at camera position initially
-      cardEntity.look(at: cameraPosition, from: position, relativeTo: nil)
-      // Rotate 180 degrees around Y so textured front faces the user
-      cardEntity.orientation = cardEntity.orientation * simd_quatf(angle: .pi, axis: SIMD3<Float>(0, 1, 0))
+      // Look at camera position, then rotate 180 degrees around Y so textured front faces the user
+      let probe = Entity()
+      probe.look(at: cameraPosition, from: position, relativeTo: nil)
+      orientation = probe.orientation * simd_quatf(angle: .pi, axis: SIMD3<Float>(0, 1, 0))
+    } else {
+      orientation = simd_quatf(angle: 0, axis: SIMD3<Float>(0, 1, 0))
     }
 
-    anchor.addChild(cardEntity)
-    arView.scene.addAnchor(anchor)
+    // ARWorldMap に保存されるよう、座標直指定ではなく ARAnchor の上にカードを乗せる。
+    // 投稿IDはまだ無いので仮の名前で置き、worldMapSaveRequest で投稿IDの名前に付け替える。
+    let anchorId = UUID().uuidString
+    let transform = Transform(scale: .one, rotation: orientation, translation: position).matrix
+    let arAnchor = ARAnchor(name: "pending:\(anchorId)", transform: transform)
+    arView.session.add(anchor: arAnchor)
 
-    arView.installGestures([.translation, .rotation], for: cardEntity)
+    let anchorEntity = AnchorEntity(anchor: arAnchor)
+    anchorEntity.addChild(makeCardEntity(
+      title: currentCardTitle,
+      description: currentCardDescription,
+      handle: currentCardIcon,
+      color: currentCardColor
+    ))
+    arView.scene.addAnchor(anchorEntity)
+    pendingCardAnchors[anchorId] = (arAnchor, anchorEntity)
+    placedCardEntities.append(anchorEntity)
 
     let eventData: [String: Any] = [
       "cardTitle": currentCardTitle,
@@ -419,6 +485,7 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate {
       "cardColor": currentCardColor,
       "cardIcon": currentCardIcon,
       "modelUrl": currentCardTitle,
+      "anchorId": anchorId,
       "x": position.x,
       "y": position.y,
       "z": position.z,
@@ -428,11 +495,11 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate {
     onModelPlaced?(eventData)
   }
 
-  private func makeCardEntity() -> ModelEntity {
-    let authorName = currentCardTitle.isEmpty ? "Ken" : currentCardTitle
-    let messageText = currentCardDescription.isEmpty ? "テスト2" : currentCardDescription
-    let handle = currentCardIcon.isEmpty ? "@ken_loca" : currentCardIcon
-    let accentColor = currentCardColor.isEmpty ? "#29B6F6" : currentCardColor
+  private func makeCardEntity(title: String, description: String, handle: String, color: String) -> ModelEntity {
+    let authorName = title.isEmpty ? "Ken" : title
+    let messageText = description.isEmpty ? "テスト2" : description
+    let handle = handle.isEmpty ? "@ken_loca" : handle
+    let accentColor = color.isEmpty ? "#29B6F6" : color
 
     let cardImage = createCardImage(
       name: authorName,
@@ -669,5 +736,291 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate {
       hintText.draw(in: CGRect(x: 52, y: 390, width: size.width - 104, height: 40), withAttributes: hintAttrs)
     }
   }
+
+  // MARK: - ARWorldMap: 保存
+
+  private static func postAnchorName(_ postId: String) -> String {
+    return "post:\(postId)"
+  }
+
+  private static func stringValue(_ value: Any?) -> String? {
+    if let string = value as? String, !string.isEmpty { return string }
+    if let number = value as? NSNumber { return number.stringValue }
+    return nil
+  }
+
+  private func handleWorldMapSaveRequest() {
+    guard let request = worldMapSaveRequest,
+          let requestId = (request["requestId"] as? NSNumber)?.doubleValue,
+          requestId != lastSaveRequestId else { return }
+    lastSaveRequestId = requestId
+
+    guard let postId = Self.stringValue(request["postId"]) else { return }
+    guard let anchorId = request["anchorId"] as? String,
+          let pending = pendingCardAnchors.removeValue(forKey: anchorId) else {
+      emitWorldMapStatus("failed", postId: postId, extra: ["message": "配置したカードのアンカーが見つかりません"])
+      return
+    }
+    guard let storage = SupabaseStorage(request["supabase"] as? NSDictionary) else {
+      emitWorldMapStatus("failed", postId: postId, extra: ["message": "Supabaseの接続情報がありません"])
+      return
+    }
+
+    // ARAnchor の名前は変更できないので、同じ位置に投稿IDの名前で作り直してカードを付け替える
+    let namedAnchor = ARAnchor(name: Self.postAnchorName(postId), transform: pending.arAnchor.transform)
+    arView.session.remove(anchor: pending.arAnchor)
+    arView.session.add(anchor: namedAnchor)
+
+    let namedEntity = AnchorEntity(anchor: namedAnchor)
+    for child in Array(pending.entity.children) {
+      namedEntity.addChild(child)
+    }
+    arView.scene.removeAnchor(pending.entity)
+    arView.scene.addAnchor(namedEntity)
+    placedCardEntities.removeAll { $0 === pending.entity }
+    placedCardEntities.append(namedEntity)
+
+    mappingJob = MappingJob(
+      postId: postId,
+      objectPath: "\(postId).worldmap",
+      storage: storage,
+      startedAt: Date()
+    )
+    emitWorldMapStatus("mapping", postId: postId, extra: [
+      "mappingStatus": Self.mappingStatusName(arView.session.currentFrame?.worldMappingStatus),
+    ])
+  }
+
+  // 毎フレーム呼ばれ、まわりを十分に覚えた（mapped）ら地図を書き出す
+  private func checkWorldMappingProgress() {
+    guard var job = mappingJob, !job.isCapturing,
+          let status = arView.session.currentFrame?.worldMappingStatus else { return }
+
+    if status != job.lastStatus {
+      job.lastStatus = status
+      mappingJob = job
+      emitWorldMapStatus("mapping", postId: job.postId, extra: [
+        "mappingStatus": Self.mappingStatusName(status),
+      ])
+    }
+
+    let elapsed = Date().timeIntervalSince(job.startedAt)
+    // mapped が理想。しばらく待っても extending 止まりなら、それで妥協して保存する
+    if status == .mapped || (status == .extending && elapsed > 20) {
+      job.isCapturing = true
+      mappingJob = job
+      captureAndUploadWorldMap(job)
+    } else if elapsed > 60 {
+      mappingJob = nil
+      emitWorldMapStatus("failed", postId: job.postId, extra: [
+        "message": "まわりの景色を十分に記録できませんでした",
+      ])
+    }
+  }
+
+  private func captureAndUploadWorldMap(_ job: MappingJob) {
+    arView.session.getCurrentWorldMap { [weak self] worldMap, error in
+      DispatchQueue.main.async {
+        guard let self else { return }
+        guard let worldMap else {
+          self.mappingJob = nil
+          self.emitWorldMapStatus("failed", postId: job.postId, extra: [
+            "message": "地図の取得に失敗しました: \(error?.localizedDescription ?? "不明なエラー")",
+          ])
+          return
+        }
+
+        let data: Data
+        do {
+          data = try NSKeyedArchiver.archivedData(withRootObject: worldMap, requiringSecureCoding: true)
+        } catch {
+          self.mappingJob = nil
+          self.emitWorldMapStatus("failed", postId: job.postId, extra: [
+            "message": "地図の書き出しに失敗しました: \(error.localizedDescription)",
+          ])
+          return
+        }
+
+        self.emitWorldMapStatus("uploading", postId: job.postId, extra: ["bytes": data.count])
+        job.storage.upload(data, bucket: Self.worldMapBucket, path: job.objectPath) { result in
+          DispatchQueue.main.async {
+            if self.mappingJob?.postId == job.postId {
+              self.mappingJob = nil
+            }
+            switch result {
+            case .success:
+              self.emitWorldMapStatus("saved", postId: job.postId, extra: [
+                "path": job.objectPath,
+                "bytes": data.count,
+              ])
+            case .failure(let error):
+              self.emitWorldMapStatus("failed", postId: job.postId, extra: [
+                "message": "地図のアップロードに失敗しました: \(error.localizedDescription)",
+              ])
+            }
+          }
+        }
+      }
+    }
+  }
+
+  private static func mappingStatusName(_ status: ARFrame.WorldMappingStatus?) -> String {
+    switch status {
+    case .mapped: return "mapped"
+    case .extending: return "extending"
+    case .limited: return "limited"
+    default: return "notAvailable"
+    }
+  }
+
+  private func emitWorldMapStatus(_ phase: String, postId: String, extra: [String: Any] = [:]) {
+    var payload: [String: Any] = ["phase": phase, "postId": postId]
+    payload.merge(extra) { _, new in new }
+    onWorldMapStatus?(payload)
+  }
+
+  // MARK: - ARWorldMap: 読み込みと再位置合わせ
+
+  private func handleRelocalizeTargetChanged() {
+    guard let target = relocalizeTarget,
+          let postId = Self.stringValue(target["postId"]),
+          let worldMapPath = target["worldMapPath"] as? String else { return }
+    if relocalization?.postId == postId { return }
+
+    guard let storage = SupabaseStorage(target["supabase"] as? NSDictionary) else {
+      emitRelocalizationStatus("failed", postId: postId, extra: ["message": "Supabaseの接続情報がありません"])
+      return
+    }
+
+    relocalization = RelocalizationTarget(
+      postId: postId,
+      cardTitle: target["cardTitle"] as? String ?? "",
+      cardDescription: target["cardDescription"] as? String ?? "",
+      cardIcon: target["cardIcon"] as? String ?? "",
+      cardColor: target["cardColor"] as? String ?? ""
+    )
+    emitRelocalizationStatus("downloading", postId: postId)
+
+    storage.download(bucket: Self.worldMapBucket, path: worldMapPath) { [weak self] result in
+      DispatchQueue.main.async {
+        guard let self, self.relocalization?.postId == postId else { return }
+        do {
+          let data = try result.get()
+          guard let worldMap = try NSKeyedUnarchiver.unarchivedObject(ofClass: ARWorldMap.self, from: data) else {
+            throw SupabaseStorage.StorageError(message: "地図ファイルを読み込めません")
+          }
+          self.startRelocalization(with: worldMap, postId: postId)
+        } catch {
+          self.relocalization = nil
+          self.emitRelocalizationStatus("failed", postId: postId, extra: [
+            "message": "地図の読み込みに失敗しました: \(error.localizedDescription)",
+          ])
+        }
+      }
+    }
+  }
+
+  private func startRelocalization(with worldMap: ARWorldMap, postId: String) {
+    // セッションをやり直すので、このセッションで置いたカードは片付ける
+    placedCardEntities.forEach { arView.scene.removeAnchor($0) }
+    placedCardEntities.removeAll()
+    pendingCardAnchors.removeAll()
+    mappingJob = nil
+
+    let config = makeTrackingConfiguration()
+    config.initialWorldMap = worldMap
+    arView.session.run(config, options: [.resetTracking, .removeExistingAnchors])
+    emitRelocalizationStatus("relocalizing", postId: postId)
+  }
+
+  // 再位置合わせに成功すると、地図に入っていた名前付きアンカーがここに戻ってくる
+  func session(_ session: ARSession, didAdd anchors: [ARAnchor]) {
+    guard var target = relocalization, !target.didFindAnchor else { return }
+    let expectedName = Self.postAnchorName(target.postId)
+    guard let anchor = anchors.first(where: { $0.name == expectedName }) else { return }
+
+    target.didFindAnchor = true
+    relocalization = target
+
+    let anchorEntity = AnchorEntity(anchor: anchor)
+    anchorEntity.addChild(makeCardEntity(
+      title: target.cardTitle,
+      description: target.cardDescription,
+      handle: target.cardIcon,
+      color: target.cardColor
+    ))
+    arView.scene.addAnchor(anchorEntity)
+    placedCardEntities.append(anchorEntity)
+    emitRelocalizationStatus("found", postId: target.postId)
+  }
+
+  private func emitRelocalizationStatus(_ phase: String, postId: String, extra: [String: Any] = [:]) {
+    var payload: [String: Any] = ["phase": phase, "postId": postId]
+    payload.merge(extra) { _, new in new }
+    onRelocalizationStatus?(payload)
+  }
 }
 
+// 地図は数MBあるので、RNを経由せずネイティブから直接 Supabase Storage とやり取りする
+private struct SupabaseStorage {
+  struct StorageError: LocalizedError {
+    let message: String
+    var errorDescription: String? { message }
+  }
+
+  let baseURL: String
+  let apiKey: String
+  let accessToken: String?
+
+  init?(_ dict: NSDictionary?) {
+    guard let dict,
+          let url = dict["url"] as? String,
+          let apiKey = dict["apiKey"] as? String else { return nil }
+    self.baseURL = url.hasSuffix("/") ? String(url.dropLast()) : url
+    self.apiKey = apiKey
+    self.accessToken = dict["accessToken"] as? String
+  }
+
+  func upload(_ data: Data, bucket: String, path: String, completion: @escaping (Result<Void, Error>) -> Void) {
+    guard var request = makeRequest("\(baseURL)/storage/v1/object/\(bucket)/\(path)") else {
+      completion(.failure(StorageError(message: "URLが不正です")))
+      return
+    }
+    request.httpMethod = "POST"
+    request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+    request.setValue("true", forHTTPHeaderField: "x-upsert")
+    URLSession.shared.uploadTask(with: request, from: data) { body, response, error in
+      completion(Self.check(body, response, error).map { _ in () })
+    }.resume()
+  }
+
+  func download(bucket: String, path: String, completion: @escaping (Result<Data, Error>) -> Void) {
+    guard let request = makeRequest("\(baseURL)/storage/v1/object/authenticated/\(bucket)/\(path)") else {
+      completion(.failure(StorageError(message: "URLが不正です")))
+      return
+    }
+    URLSession.shared.dataTask(with: request) { body, response, error in
+      completion(Self.check(body, response, error))
+    }.resume()
+  }
+
+  private func makeRequest(_ urlString: String) -> URLRequest? {
+    guard let url = URL(string: urlString) else { return nil }
+    var request = URLRequest(url: url)
+    request.setValue(apiKey, forHTTPHeaderField: "apikey")
+    if let accessToken {
+      request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+    }
+    return request
+  }
+
+  private static func check(_ body: Data?, _ response: URLResponse?, _ error: Error?) -> Result<Data, Error> {
+    if let error { return .failure(error) }
+    let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
+    guard (200..<300).contains(statusCode) else {
+      let text = body.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+      return .failure(StorageError(message: "HTTP \(statusCode) \(text)"))
+    }
+    return .success(body ?? Data())
+  }
+}

@@ -1,7 +1,5 @@
 import React, { useEffect, useState } from 'react';
 import {
-  ActivityIndicator,
-  Alert,
   Image,
   Platform,
   SafeAreaView,
@@ -18,14 +16,28 @@ import { MyPageScreen } from './src/components/MyPageScreen';
 import { NotificationScreen } from './src/components/NotificationScreen';
 import { PostModal } from './src/components/PostModal';
 import { TagManageModal } from './src/components/TagManageModal';
-import { UniversalARView } from './src/native/UniversalARView';
+import {
+  UniversalARView,
+  type RelocalizationStatusEvent,
+  type RelocalizeTarget,
+  type WorldMapSaveRequest,
+  type WorldMapStatusEvent,
+} from './src/native/UniversalARView';
 import { ScreenHeader } from './src/components/ScreenHeader';
 import { Icons } from './src/assets/icons';
 import { insertPostWithCurrentLocation } from './src/services/postService';
 import { signOut } from './src/services/authService';
+import {
+  findNearestPostWithWorldMap,
+  getNativeSupabaseConfig,
+  updatePostWorldMapPath,
+} from './src/services/worldMapService';
 import { supabase } from './src/lib/supabase';
 
 type TabType = 'home' | 'radar' | 'notifications' | 'mypage';
+
+// ARWorldMap による「置いた場所の再現」は iOS (ARKit) のみ
+const isWorldMapSupported = Platform.OS === 'ios';
 
 export default function App(): React.JSX.Element {
   // ホームはAR機能そのもの
@@ -45,8 +57,16 @@ export default function App(): React.JSX.Element {
   const [placeTrigger, setPlaceTrigger] = useState<number>(0);
   const [isPlacementMode, setIsPlacementMode] = useState<boolean>(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
-  const [isSavingTest, setIsSavingTest] = useState<boolean>(false);
   const toastTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // ARWorldMap
+  const [worldMapSaveRequest, setWorldMapSaveRequest] = useState<WorldMapSaveRequest | null>(null);
+  const [worldMapPhase, setWorldMapPhase] = useState<WorldMapStatusEvent['phase'] | null>(null);
+  const [relocalizeTarget, setRelocalizeTarget] = useState<RelocalizeTarget | null>(null);
+  const [relocalizationPhase, setRelocalizationPhase] =
+    useState<RelocalizationStatusEvent['phase'] | null>(null);
+  // 自分がこのセッションで置いた投稿は、地図を読み込み直す対象から外す
+  const ownPostIdsRef = React.useRef<Set<string>>(new Set());
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -63,6 +83,66 @@ export default function App(): React.JSX.Element {
       subscription.unsubscribe();
     };
   }, []);
+
+  // ホーム（カメラ）を開いたとき、30m以内に地図付きの投稿があればその地図を読み込む
+  const isMappingInProgress = worldMapPhase === 'mapping' || worldMapPhase === 'uploading';
+  useEffect(() => {
+    if (!isWorldMapSupported || activeTab !== 'home' || isPlacementMode || isMappingInProgress || relocalizeTarget) {
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const post = await findNearestPostWithWorldMap(ownPostIdsRef.current);
+        if (cancelled || !post) return;
+        const supabaseConfig = await getNativeSupabaseConfig();
+        if (cancelled) return;
+        setRelocalizeTarget({
+          postId: String(post.id),
+          worldMapPath: post.worldmap_path,
+          cardTitle: post.author ?? 'guest',
+          cardDescription: post.message ?? '',
+          cardIcon: post.handle ?? '',
+          cardColor: '#10B981',
+          supabase: supabaseConfig,
+        });
+      } catch (err) {
+        console.warn('近くの地図の検索に失敗しました:', err);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTab, isPlacementMode, isMappingInProgress, relocalizeTarget]);
+
+  const handleWorldMapStatus = async (event: WorldMapStatusEvent) => {
+    setWorldMapPhase(event.phase);
+    if (event.phase === 'saved' && event.path) {
+      try {
+        await updatePostWorldMapPath(event.postId, event.path);
+        showToast('🗺️ この場所の地図を保存しました');
+      } catch (err: any) {
+        showToast(`❌ ${err?.message || '地図の保存に失敗しました'}`);
+      }
+      setWorldMapPhase(null);
+    } else if (event.phase === 'failed') {
+      showToast(`❌ ${event.message || '地図の保存に失敗しました'}`);
+      setWorldMapPhase(null);
+    }
+  };
+
+  const handleRelocalizationStatus = (event: RelocalizationStatusEvent) => {
+    if (event.phase === 'found') {
+      setRelocalizationPhase(null);
+      showToast(`📖 ${relocalizeTarget?.cardTitle ?? ''}さんのメッセージが見つかりました`);
+    } else if (event.phase === 'failed') {
+      setRelocalizationPhase(null);
+      console.warn('再位置合わせに失敗しました:', event.message);
+      showToast(`❌ ${event.message || '地図の読み込みに失敗しました'}`);
+    } else {
+      setRelocalizationPhase(event.phase);
+    }
+  };
 
   const handleOpenPostCreation = () => {
     if (!user) {
@@ -81,25 +161,6 @@ export default function App(): React.JSX.Element {
     toastTimerRef.current = setTimeout(() => {
       setToastMessage(null);
     }, 3000);
-  };
-
-  const handleTestSave = async () => {
-    try {
-      setIsSavingTest(true);
-      showToast('現在地を取得してSupabaseへ送信中...');
-      const result = await insertPostWithCurrentLocation('テスト・現在地');
-      showToast('✅ Supabaseに保存しました！');
-      Alert.alert(
-        '保存成功！',
-        `Supabaseのpostsテーブルに保存されました。\n\n内容: テスト・現在地\n緯度: ${result.coords.latitude}\n経度: ${result.coords.longitude}\nID: ${result.post?.id ?? 'OK'}`
-      );
-    } catch (error: any) {
-      const msg = error?.message || '保存に失敗しました';
-      showToast(`❌ エラー: ${msg}`);
-      Alert.alert('エラー', msg);
-    } finally {
-      setIsSavingTest(false);
-    }
   };
 
   const handlePostSubmit = (data: { message: string; tags: string[]; category: string }) => {
@@ -155,7 +216,7 @@ export default function App(): React.JSX.Element {
             }}
             onCardPlaced={async (event) => {
               setIsPlacementMode(false);
-              const { cardDescription, x, y, z } = event.nativeEvent;
+              const { cardDescription, anchorId, x, y, z } = event.nativeEvent;
               const messageToSave = cardDescription || currentMessage;
               const authorName =
                 user?.user_metadata?.username || user?.email?.split('@')[0] || currentAuthor;
@@ -163,7 +224,7 @@ export default function App(): React.JSX.Element {
 
               showToast(`📍 現在地を取得して「${messageToSave}」を保存中...`);
               try {
-                await insertPostWithCurrentLocation({
+                const { post } = await insertPostWithCurrentLocation({
                   message: messageToSave,
                   author: authorName,
                   handle: authorHandle,
@@ -173,33 +234,50 @@ export default function App(): React.JSX.Element {
                   ar_z: z,
                 });
                 showToast(`✅ 「${messageToSave}」をSupabaseに保存しました！`);
+
+                // 置いたカードのアンカーを投稿IDで確定し、この場所の地図を保存する
+                if (isWorldMapSupported && anchorId && post?.id != null) {
+                  const postId = String(post.id);
+                  ownPostIdsRef.current.add(postId);
+                  setWorldMapSaveRequest({
+                    requestId: Date.now(),
+                    postId,
+                    anchorId,
+                    supabase: await getNativeSupabaseConfig(),
+                  });
+                }
               } catch (err: any) {
                 const errMsg = err?.message || '保存に失敗しました';
                 console.error('onCardPlaced Supabase保存エラー:', err);
                 showToast(`❌ 保存失敗: ${errMsg}`);
               }
             }}
+            worldMapSaveRequest={worldMapSaveRequest}
+            relocalizeTarget={relocalizeTarget}
+            onWorldMapStatus={(event) => handleWorldMapStatus(event.nativeEvent)}
+            onRelocalizationStatus={(event) => handleRelocalizationStatus(event.nativeEvent)}
           />
 
           {/* Top Screen Header */}
           <ScreenHeader
             title="ホーム"
             style={styles.homeHeader}
-            rightAction={
-              <TouchableOpacity
-                style={styles.testBtn}
-                onPress={handleTestSave}
-                disabled={isSavingTest}
-                activeOpacity={0.8}
-              >
-                {isSavingTest ? (
-                  <ActivityIndicator size="small" color="#FFFFFF" />
-                ) : (
-                  <Text style={styles.testBtnText}>📍 DB保存</Text>
-                )}
-              </TouchableOpacity>
-            }
           />
+
+          {/* ARWorldMap Guide Banner (地図の記録中 / 読み込み・再位置合わせ中) */}
+          {!isPlacementMode && (isMappingInProgress || relocalizationPhase) && (
+            <View style={styles.placementGuidePill} pointerEvents="none">
+              <Text style={styles.placementGuideText}>
+                {worldMapPhase === 'mapping'
+                  ? '🗺️ この場所を記録中です。周りをゆっくり見回してください'
+                  : worldMapPhase === 'uploading'
+                    ? '☁️ この場所の地図をアップロード中...'
+                    : relocalizationPhase === 'downloading'
+                      ? '🗺️ 近くのメッセージの地図を読み込み中...'
+                      : '📷 置いたときと同じ景色にカメラを向けてください'}
+              </Text>
+            </View>
+          )}
 
           {/* Placement Mode HUD (Guide Banner & Confirmation Action Bar) */}
           {isPlacementMode && (
@@ -570,26 +648,5 @@ const styles = StyleSheet.create({
     height: 22,
     backgroundColor: '#FFFFFF',
     borderRadius: 2,
-  },
-  testBtn: {
-    backgroundColor: '#10B981',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 16,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    minWidth: 78,
-    shadowColor: '#10B981',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.25,
-    shadowRadius: 4,
-    elevation: 3,
-  },
-  testBtnText: {
-    color: '#FFFFFF',
-    fontSize: 12,
-    fontWeight: '700',
-    letterSpacing: -0.2,
   },
 });

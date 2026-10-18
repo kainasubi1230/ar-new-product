@@ -19,31 +19,28 @@ export interface PostPayload {
 
 /**
  * 現在の位置情報を取得する
+ *
+ * requestAuthorization は使わない。iOS 版は「権限の状態が変わったとき」にしかコールバックを呼ばないため、
+ * 2回目以降（すでに許可済み）の呼び出しは永遠に返ってこない。
+ * getCurrentPosition は必要なら自分で権限を求め、timeout で必ず結果が返る。
  */
 export const getCurrentLocation = (): Promise<LocationCoords> => {
   return new Promise((resolve, reject) => {
-    Geolocation.requestAuthorization(
-      () => {
-        Geolocation.getCurrentPosition(
-          (position) => {
-            resolve({
-              latitude: position.coords.latitude,
-              longitude: position.coords.longitude,
-              accuracy: position.coords.accuracy,
-            });
-          },
-          (error) => {
-            reject(new Error(`位置情報の取得に失敗しました: ${error.message} (code: ${error.code})`));
-          },
-          {
-            enableHighAccuracy: true,
-            timeout: 15000,
-            maximumAge: 10000,
-          }
-        );
+    Geolocation.getCurrentPosition(
+      (position) => {
+        resolve({
+          latitude: position.coords.latitude,
+          longitude: position.coords.longitude,
+          accuracy: position.coords.accuracy,
+        });
       },
       (error) => {
-        reject(new Error(`位置情報の権限取得に失敗しました: ${error.message}`));
+        reject(new Error(`位置情報の取得に失敗しました: ${error.message} (code: ${error.code})`));
+      },
+      {
+        enableHighAccuracy: true,
+        timeout: 15000,
+        maximumAge: 10000,
       }
     );
   });
