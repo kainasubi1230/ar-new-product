@@ -1,19 +1,27 @@
-import React, { useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
+  ActivityIndicator,
   Alert,
   Dimensions,
   Image,
   ImageSourcePropType,
+  KeyboardAvoidingView,
+  Platform,
+  RefreshControl,
   ScrollView,
   StyleSheet,
   Switch,
   Text,
+  TextInput,
   TouchableOpacity,
   View,
 } from 'react-native';
 
+import type { User } from '@supabase/supabase-js';
 import { Icons } from '../assets/icons';
 import { ScreenHeader } from './ScreenHeader';
+import { signInWithEmail, signUpWithEmail } from '../services/authService';
+import { supabase } from '../lib/supabase';
 
 const { width } = Dimensions.get('window');
 
@@ -54,76 +62,13 @@ type InterestTag = {
 type Props = {
   onOpenARLens: () => void;
   onOpenTagManage: () => void;
+  user?: User | null;
+  onSignOut?: () => void;
 };
 
-const INITIAL_PLACED: PlacedMemory[] = [
-  {
-    id: 'mem-1',
-    placeName: '天神ビルのベンチ',
-    locationHint: '1Fエントランス横の木製ベンチ',
-    message: '夕暮れ時のここ、風が抜けて気持ちいいよ。深呼吸して帰ろう。',
-    tag: '#日常',
-    placedAt: '2026/10/09',
-    readCount: 4,
-    expiresIn: '残り3日',
-    mapCoord: { xPercent: 58, yPercent: 42 },
-  },
-  {
-    id: 'mem-2',
-    placeName: 'スターバックス天神店',
-    locationHint: '2F奥の窓際カウンター席',
-    message: '窓側の席、日当たり良くて作業が捗るよ。充電席は一番右端。',
-    tag: '#カフェ',
-    placedAt: '2026/10/05',
-    readCount: 7,
-    expiresIn: '無期限',
-    mapCoord: { xPercent: 35, yPercent: 62 },
-  },
-  {
-    id: 'mem-3',
-    placeName: '警固公園の楠の木の下',
-    locationHint: '大きな木の足元の石段',
-    message: '雨上がりの土の匂いがする。ベンチで少し本を読みました。',
-    tag: '#散歩',
-    placedAt: '2026/10/01',
-    readCount: 2,
-    expiresIn: '残り16時間',
-    mapCoord: { xPercent: 72, yPercent: 28 },
-  },
-];
-
-const INITIAL_COLLECTED: CollectedWord[] = [
-  {
-    id: 'col-1',
-    collectedAt: '2026年10月11日',
-    placeName: '天神ビルのベンチ',
-    author: 'Ken',
-    handle: '@ken_loca',
-    message: 'ランチが美味しかった…午後の仕事もがんばろう',
-    tag: '#グルメ',
-    stampIcon: '💮',
-  },
-  {
-    id: 'col-2',
-    collectedAt: '2026年10月07日',
-    placeName: '大濠公園の遊歩道',
-    author: 'Yuki',
-    handle: '@yuki_walk',
-    message: '夕方ここから見える水面の反射が息を呑むほど綺麗です。',
-    tag: '#自然',
-    stampIcon: '🍃',
-  },
-  {
-    id: 'col-3',
-    collectedAt: '2026年09月30日',
-    placeName: '六本松 蔦屋書店カフェ',
-    author: 'Taro',
-    handle: '@taro_street',
-    message: 'この小道、夜になると行灯が灯る。読書のお供に珈琲を。',
-    tag: '#本',
-    stampIcon: '📖',
-  },
-];
+// 初期表示用（Supabaseから読み込むため初期値は空）
+const INITIAL_PLACED: PlacedMemory[] = [];
+const INITIAL_COLLECTED: CollectedWord[] = [];
 
 const INITIAL_TAGS: InterestTag[] = [
   { id: 't1', name: '散歩', icon: Icons.walking, enabled: true, desc: '街歩きや小道、おすすめの休憩スポット' },
@@ -165,7 +110,12 @@ export const getTagIcon = (tag: string): ImageSourcePropType => {
   }
 };
 
-export function MyPageScreen({ onOpenARLens, onOpenTagManage }: Props): React.JSX.Element {
+export function MyPageScreen({
+  onOpenARLens,
+  onOpenTagManage,
+  user,
+  onSignOut,
+}: Props): React.JSX.Element {
   const [activeTab, setActiveTab] = useState<'placed' | 'collected' | 'tags'>('placed');
   const [placedViewMode, setPlacedViewMode] = useState<'list' | 'map'>('list');
 
@@ -173,8 +123,67 @@ export function MyPageScreen({ onOpenARLens, onOpenTagManage }: Props): React.JS
   const [placedList, setPlacedList] = useState<PlacedMemory[]>(INITIAL_PLACED);
   const [collectedList] = useState<CollectedWord[]>(INITIAL_COLLECTED);
   const [tags, setTags] = useState<InterestTag[]>(INITIAL_TAGS);
-  const [selectedMapPin, setSelectedMapPin] = useState<PlacedMemory | null>(INITIAL_PLACED[0]);
+  const [selectedMapPin, setSelectedMapPin] = useState<PlacedMemory | null>(null);
   const [isPocketNoticeOn, setIsPocketNoticeOn] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+
+  // Supabaseから自分の投稿を取得する
+  const fetchPosts = useCallback(async () => {
+    if (!user) return;
+    try {
+      const displayName = user.user_metadata?.username || user.email?.split('@')[0] || '';
+      const userHandle = user.email ? `@${user.email.split('@')[0]}` : '';
+
+      const { data, error } = await supabase
+        .from('posts')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      if (error) throw error;
+
+      // ユーザー自身の投稿（または開発テスト用として全体）
+      const myPosts = (data || []).filter(
+        (p) =>
+          p.author === displayName ||
+          p.handle === userHandle ||
+          p.author === 'sora' ||
+          p.author === 'guest' ||
+          !p.author
+      );
+
+      const formatted: PlacedMemory[] = myPosts.map((p, idx) => ({
+        id: p.id,
+        placeName: `位置 (${p.lat?.toFixed(3)}, ${p.lng?.toFixed(3)})`,
+        locationHint: `GPS精度: 約${Math.round(p.accuracy_m || 10)}m`,
+        message: p.message,
+        tag: p.tags?.[0] || '#日常',
+        placedAt: new Date(p.created_at).toLocaleDateString('ja-JP'),
+        readCount: 0,
+        expiresIn: '無期限',
+        mapCoord: {
+          xPercent: 50 + (((idx * 17) % 60) - 30),
+          yPercent: 50 + (((idx * 23) % 60) - 30),
+        },
+      }));
+
+      setPlacedList(formatted);
+      if (formatted.length > 0) {
+        setSelectedMapPin((prev) => prev ?? formatted[0]);
+      }
+    } catch (e) {
+      console.warn('投稿取得エラー:', e);
+    }
+  }, [user]);
+
+  useEffect(() => {
+    fetchPosts();
+  }, [fetchPosts]);
+
+  const onRefresh = async () => {
+    setIsRefreshing(true);
+    await fetchPosts();
+    setIsRefreshing(false);
+  };
 
   // 1. 言葉の削除
   const handleDeleteMemory = (id: string, placeName: string) => {
@@ -186,10 +195,15 @@ export function MyPageScreen({ onOpenARLens, onOpenTagManage }: Props): React.JS
         {
           text: '削除する',
           style: 'destructive',
-          onPress: () => {
+          onPress: async () => {
             setPlacedList((prev) => prev.filter((item) => item.id !== id));
             if (selectedMapPin?.id === id) {
               setSelectedMapPin(null);
+            }
+            try {
+              await supabase.from('posts').delete().eq('id', id);
+            } catch (err) {
+              console.warn('Supabase削除エラー:', err);
             }
           },
         },
@@ -217,20 +231,211 @@ export function MyPageScreen({ onOpenARLens, onOpenTagManage }: Props): React.JS
     );
   };
 
+  // 未ログイン時の認証フォーム用ステート
+  const [authMode, setAuthMode] = useState<'signin' | 'signup'>('signin');
+  const [authEmail, setAuthEmail] = useState('');
+  const [authPassword, setAuthPassword] = useState('');
+  const [authUsername, setAuthUsername] = useState('');
+  const [authLoading, setAuthLoading] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
+
+  const handleAuthSubmit = async () => {
+    if (!authEmail.trim() || !authPassword) {
+      setAuthError('メールアドレスとパスワードを入力してください');
+      return;
+    }
+    if (authPassword.length < 6) {
+      setAuthError('パスワードは6文字以上で入力してください');
+      return;
+    }
+    setAuthLoading(true);
+    setAuthError(null);
+    try {
+      if (authMode === 'signup') {
+        const result = await signUpWithEmail(authEmail, authPassword, authUsername);
+        if (result.session) {
+          Alert.alert('登録完了', 'アカウントを登録し、ログインしました！');
+        } else {
+          Alert.alert(
+            '確認メールを送信しました',
+            'ご入力いただいたメールアドレスに確認用リンクを送信しました。メール内のリンクを開いて登録を完了してください。'
+          );
+        }
+      } else {
+        await signInWithEmail(authEmail, authPassword);
+      }
+    } catch (err: any) {
+      let msg = err?.message || 'エラーが発生しました';
+      if (msg.includes('Invalid login credentials')) {
+        msg = 'メールアドレスまたはパスワードが正しくありません';
+      } else if (msg.includes('User already registered')) {
+        msg = 'このメールアドレスは既に登録されています。ログインをお試しください';
+      } else if (msg.includes('Password should be at least')) {
+        msg = 'パスワードは6文字以上で入力してください';
+      }
+      setAuthError(msg);
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  // 1. 未ログインの場合：マイページ全体をログイン・新規登録画面にする
+  if (!user) {
+    return (
+      <View style={styles.container}>
+        <ScreenHeader title="マイページ" showTitleLogo={true} />
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          style={{ flex: 1 }}
+        >
+          <ScrollView
+            contentContainerStyle={styles.fullAuthContainer}
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
+          >
+            <View style={styles.authHero}>
+              <View style={styles.authHeroIconCircle}>
+                <Image source={Icons.mypage} style={styles.authHeroIcon} resizeMode="contain" />
+              </View>
+              <Text style={styles.authHeroTitle}>
+                {authMode === 'signin' ? 'マイページへログイン' : '新規アカウント作成'}
+              </Text>
+              <Text style={styles.authHeroSubtitle}>
+                ログインすると、街に残した言葉や出会った記憶を保存・同期できます
+              </Text>
+            </View>
+
+            {/* Tab Switcher */}
+            <View style={styles.authTabSwitch}>
+              <TouchableOpacity
+                style={[styles.authTabBtn, authMode === 'signin' && styles.authTabBtnActive]}
+                onPress={() => {
+                  setAuthMode('signin');
+                  setAuthError(null);
+                }}
+                activeOpacity={0.8}
+              >
+                <Text style={[styles.authTabText, authMode === 'signin' && styles.authTabTextActive]}>
+                  ログイン
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.authTabBtn, authMode === 'signup' && styles.authTabBtnActive]}
+                onPress={() => {
+                  setAuthMode('signup');
+                  setAuthError(null);
+                }}
+                activeOpacity={0.8}
+              >
+                <Text style={[styles.authTabText, authMode === 'signup' && styles.authTabTextActive]}>
+                  新規登録
+                </Text>
+              </TouchableOpacity>
+            </View>
+
+            {/* Form */}
+            <View style={styles.authForm}>
+              {authMode === 'signup' && (
+                <View style={styles.authField}>
+                  <Text style={styles.authFieldLabel}>ユーザーネーム（任意）</Text>
+                  <TextInput
+                    style={styles.authInput}
+                    placeholder="例: sora"
+                    placeholderTextColor="#94A3B8"
+                    value={authUsername}
+                    onChangeText={setAuthUsername}
+                    autoCapitalize="none"
+                  />
+                </View>
+              )}
+
+              <View style={styles.authField}>
+                <Text style={styles.authFieldLabel}>メールアドレス</Text>
+                <TextInput
+                  style={styles.authInput}
+                  placeholder="example@email.com"
+                  placeholderTextColor="#94A3B8"
+                  value={authEmail}
+                  onChangeText={setAuthEmail}
+                  keyboardType="email-address"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                />
+              </View>
+
+              <View style={styles.authField}>
+                <Text style={styles.authFieldLabel}>パスワード（6文字以上）</Text>
+                <TextInput
+                  style={styles.authInput}
+                  placeholder="••••••••"
+                  placeholderTextColor="#94A3B8"
+                  value={authPassword}
+                  onChangeText={setAuthPassword}
+                  secureTextEntry
+                  autoCapitalize="none"
+                />
+              </View>
+
+              {authError && (
+                <View style={styles.authErrorCard}>
+                  <Text style={styles.authErrorText}>⚠️ {authError}</Text>
+                </View>
+              )}
+
+              <TouchableOpacity
+                style={[styles.authSubmitBtn, authLoading && styles.authSubmitBtnDisabled]}
+                onPress={handleAuthSubmit}
+                disabled={authLoading}
+                activeOpacity={0.85}
+              >
+                {authLoading ? (
+                  <ActivityIndicator color="#FFFFFF" size="small" />
+                ) : (
+                  <Text style={styles.authSubmitBtnText}>
+                    {authMode === 'signin' ? 'ログインする' : '登録してはじめる'}
+                  </Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </ScrollView>
+        </KeyboardAvoidingView>
+      </View>
+    );
+  }
+
+  // 2. ログイン済みの場合：通常のマイページを表示
+  const displayName =
+    user.user_metadata?.username || user.email?.split('@')[0] || 'ユーザー';
+
   return (
     <View style={styles.container}>
       {/* Header */}
       <ScreenHeader
         title="マイページ"
         rightAction={
-          <TouchableOpacity style={styles.settingsBtn} onPress={onOpenTagManage} activeOpacity={0.7}>
-            <Image source={Icons.setting} style={styles.settingsIcon} resizeMode="contain" />
-          </TouchableOpacity>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+            <TouchableOpacity
+              style={styles.headerLogoutBtn}
+              onPress={onSignOut}
+              activeOpacity={0.7}
+            >
+              <Text style={styles.headerLogoutText}>ログアウト</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.settingsBtn} onPress={onOpenTagManage} activeOpacity={0.7}>
+              <Image source={Icons.setting} style={styles.settingsIcon} resizeMode="contain" />
+            </TouchableOpacity>
+          </View>
         }
       />
 
-      <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
-        {/* Profile Card (温かい足跡重視・承認欲求メーターなし) */}
+      <ScrollView
+        contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl refreshing={isRefreshing} onRefresh={onRefresh} tintColor="#10B981" />
+        }
+      >
+        {/* Profile Card */}
         <View style={styles.profileSection}>
           <View style={styles.avatarCircle}>
             <Image
@@ -239,8 +444,8 @@ export function MyPageScreen({ onOpenARLens, onOpenTagManage }: Props): React.JS
               resizeMode="contain"
             />
           </View>
-          <Text style={styles.userName}>sora</Text>
-          <Text style={styles.userBio}>日常に、ちょっとした発見を。</Text>
+          <Text style={styles.userName}>{displayName}</Text>
+          <Text style={styles.userBio}>{user.email}</Text>
 
           {/* Footprint Count Summary */}
           <View style={styles.statsRow}>
@@ -1326,5 +1531,146 @@ const styles = StyleSheet.create({
     fontSize: 12,
     textAlign: 'center',
     lineHeight: 17,
+  },
+  headerLogoutBtn: {
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    backgroundColor: '#F1F5F9',
+    borderRadius: 12,
+  },
+  headerLogoutText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#64748B',
+  },
+  // Full-screen Auth on MyPage
+  fullAuthContainer: {
+    padding: 24,
+    paddingTop: 36,
+    paddingBottom: 48,
+    alignItems: 'center',
+  },
+  authHero: {
+    alignItems: 'center',
+    marginBottom: 28,
+  },
+  authHeroIconCircle: {
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    backgroundColor: '#ECFDF5',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 16,
+    shadowColor: '#10B981',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 10,
+  },
+  authHeroIcon: {
+    width: 36,
+    height: 36,
+    tintColor: '#10B981',
+  },
+  authHeroTitle: {
+    fontSize: 22,
+    fontWeight: '800',
+    color: '#0F172A',
+    marginBottom: 8,
+  },
+  authHeroSubtitle: {
+    fontSize: 13,
+    color: '#64748B',
+    textAlign: 'center',
+    lineHeight: 18,
+    maxWidth: 280,
+  },
+  authTabSwitch: {
+    flexDirection: 'row',
+    backgroundColor: '#F1F5F9',
+    borderRadius: 14,
+    padding: 4,
+    width: '100%',
+    maxWidth: 360,
+    marginBottom: 24,
+  },
+  authTabBtn: {
+    flex: 1,
+    paddingVertical: 10,
+    alignItems: 'center',
+    borderRadius: 10,
+  },
+  authTabBtnActive: {
+    backgroundColor: '#FFFFFF',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.08,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  authTabText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#64748B',
+  },
+  authTabTextActive: {
+    color: '#10B981',
+    fontWeight: '700',
+  },
+  authForm: {
+    width: '100%',
+    maxWidth: 360,
+    gap: 16,
+  },
+  authField: {
+    gap: 6,
+  },
+  authFieldLabel: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#334155',
+  },
+  authInput: {
+    backgroundColor: '#F8FAFC',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    borderRadius: 14,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    fontSize: 15,
+    color: '#0F172A',
+  },
+  authErrorCard: {
+    backgroundColor: '#FEF2F2',
+    borderWidth: 1,
+    borderColor: '#FEE2E2',
+    borderRadius: 12,
+    padding: 12,
+  },
+  authErrorText: {
+    color: '#EF4444',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  authSubmitBtn: {
+    backgroundColor: '#10B981',
+    borderRadius: 16,
+    paddingVertical: 15,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 8,
+    shadowColor: '#10B981',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.35,
+    shadowRadius: 10,
+    elevation: 5,
+  },
+  authSubmitBtnDisabled: {
+    opacity: 0.65,
+  },
+  authSubmitBtnText: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '700',
   },
 });

@@ -1,5 +1,7 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
+  ActivityIndicator,
+  Alert,
   Image,
   Platform,
   SafeAreaView,
@@ -10,6 +12,7 @@ import {
   View,
 } from 'react-native';
 
+import type { User } from '@supabase/supabase-js';
 import { DiscoveryRadarScreen } from './src/components/DiscoveryRadarScreen';
 import { MyPageScreen } from './src/components/MyPageScreen';
 import { NotificationScreen } from './src/components/NotificationScreen';
@@ -18,6 +21,9 @@ import { TagManageModal } from './src/components/TagManageModal';
 import { UniversalARView } from './src/native/UniversalARView';
 import { ScreenHeader } from './src/components/ScreenHeader';
 import { Icons } from './src/assets/icons';
+import { insertPostWithCurrentLocation } from './src/services/postService';
+import { signOut } from './src/services/authService';
+import { supabase } from './src/lib/supabase';
 
 type TabType = 'home' | 'radar' | 'notifications' | 'mypage';
 
@@ -27,15 +33,45 @@ export default function App(): React.JSX.Element {
   const [isPostModalVisible, setIsPostModalVisible] = useState<boolean>(false);
   const [isTagModalVisible, setIsTagModalVisible] = useState<boolean>(false);
 
+  // Auth User
+  const [user, setUser] = useState<User | null>(null);
+
   // AR Card Data
   const [currentMessage, setCurrentMessage] = useState<string>('ここの席、午後の光が最高。');
   const [currentAuthor] = useState<string>('sora');
   const [currentHandle] = useState<string>('@sora');
   const [selectedTag, setSelectedTag] = useState<string>('#カフェ');
+  const [selectedTags, setSelectedTags] = useState<string[]>(['#カフェ']);
   const [placeTrigger, setPlaceTrigger] = useState<number>(0);
   const [isPlacementMode, setIsPlacementMode] = useState<boolean>(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [isSavingTest, setIsSavingTest] = useState<boolean>(false);
   const toastTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setUser(session?.user ?? null);
+    });
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user ?? null);
+    });
+
+    return () => {
+      subscription.unsubscribe();
+    };
+  }, []);
+
+  const handleOpenPostCreation = () => {
+    if (!user) {
+      showToast('📍 メッセージを置くにはログインが必要です');
+      setActiveTab('mypage');
+      return;
+    }
+    setIsPostModalVisible(true);
+  };
 
   const showToast = (msg: string) => {
     if (toastTimerRef.current) {
@@ -47,10 +83,31 @@ export default function App(): React.JSX.Element {
     }, 3000);
   };
 
+  const handleTestSave = async () => {
+    try {
+      setIsSavingTest(true);
+      showToast('現在地を取得してSupabaseへ送信中...');
+      const result = await insertPostWithCurrentLocation('テスト・現在地');
+      showToast('✅ Supabaseに保存しました！');
+      Alert.alert(
+        '保存成功！',
+        `Supabaseのpostsテーブルに保存されました。\n\n内容: テスト・現在地\n緯度: ${result.coords.latitude}\n経度: ${result.coords.longitude}\nID: ${result.post?.id ?? 'OK'}`
+      );
+    } catch (error: any) {
+      const msg = error?.message || '保存に失敗しました';
+      showToast(`❌ エラー: ${msg}`);
+      Alert.alert('エラー', msg);
+    } finally {
+      setIsSavingTest(false);
+    }
+  };
+
   const handlePostSubmit = (data: { message: string; tags: string[]; category: string }) => {
     setIsPostModalVisible(false);
     setCurrentMessage(data.message);
-    if (data.tags[0]) setSelectedTag(data.tags[0]);
+    const tags = data.tags && data.tags.length > 0 ? data.tags : [selectedTag];
+    setSelectedTags(tags);
+    if (tags[0]) setSelectedTag(tags[0]);
     // 投稿内容をセットして、リアルタイムプレビュー＆配置決定モードへ
     setIsPlacementMode(true);
   };
@@ -91,20 +148,58 @@ export default function App(): React.JSX.Element {
             placeTrigger={placeTrigger}
             isPreviewActive={isPlacementMode}
             onScreenTapped={() => {
-              // 配置モード中でなければモーダルを開いて投稿作成
+              // 配置モード中でなければログインチェックして投稿作成
               if (!isPlacementMode) {
-                setIsPostModalVisible(true);
+                handleOpenPostCreation();
               }
             }}
-            onCardPlaced={(event) => {
+            onCardPlaced={async (event) => {
               setIsPlacementMode(false);
-              const { cardDescription } = event.nativeEvent;
-              showToast(`「${cardDescription}」を配置しました！`);
+              const { cardDescription, x, y, z } = event.nativeEvent;
+              const messageToSave = cardDescription || currentMessage;
+              const authorName =
+                user?.user_metadata?.username || user?.email?.split('@')[0] || currentAuthor;
+              const authorHandle = user?.email ? `@${user.email.split('@')[0]}` : currentHandle;
+
+              showToast(`📍 現在地を取得して「${messageToSave}」を保存中...`);
+              try {
+                await insertPostWithCurrentLocation({
+                  message: messageToSave,
+                  author: authorName,
+                  handle: authorHandle,
+                  tags: selectedTags,
+                  ar_x: x,
+                  ar_y: y,
+                  ar_z: z,
+                });
+                showToast(`✅ 「${messageToSave}」をSupabaseに保存しました！`);
+              } catch (err: any) {
+                const errMsg = err?.message || '保存に失敗しました';
+                console.error('onCardPlaced Supabase保存エラー:', err);
+                showToast(`❌ 保存失敗: ${errMsg}`);
+              }
             }}
           />
 
           {/* Top Screen Header */}
-          <ScreenHeader title="ホーム" style={styles.homeHeader} />
+          <ScreenHeader
+            title="ホーム"
+            style={styles.homeHeader}
+            rightAction={
+              <TouchableOpacity
+                style={styles.testBtn}
+                onPress={handleTestSave}
+                disabled={isSavingTest}
+                activeOpacity={0.8}
+              >
+                {isSavingTest ? (
+                  <ActivityIndicator size="small" color="#FFFFFF" />
+                ) : (
+                  <Text style={styles.testBtnText}>📍 DB保存</Text>
+                )}
+              </TouchableOpacity>
+            }
+          />
 
           {/* Placement Mode HUD (Guide Banner & Confirmation Action Bar) */}
           {isPlacementMode && (
@@ -164,11 +259,16 @@ export default function App(): React.JSX.Element {
           />
         )}
 
-        {/* 4. MyPage Screen (Profile & history) */}
+        {/* 4. MyPage Screen (Profile & history / Auth screen if not logged in) */}
         {activeTab === 'mypage' && (
           <MyPageScreen
             onOpenARLens={() => setActiveTab('home')}
             onOpenTagManage={() => setIsTagModalVisible(true)}
+            user={user}
+            onSignOut={async () => {
+              await signOut();
+              showToast('ログアウトしました');
+            }}
           />
         )}
       </View>
@@ -210,7 +310,7 @@ export default function App(): React.JSX.Element {
           style={styles.centerPlusButton}
           onPress={() => {
             setActiveTab('home');
-            setIsPostModalVisible(true);
+            handleOpenPostCreation();
           }}
           activeOpacity={0.85}
         >
@@ -470,5 +570,26 @@ const styles = StyleSheet.create({
     height: 22,
     backgroundColor: '#FFFFFF',
     borderRadius: 2,
+  },
+  testBtn: {
+    backgroundColor: '#10B981',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    minWidth: 78,
+    shadowColor: '#10B981',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  testBtnText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '700',
+    letterSpacing: -0.2,
   },
 });
