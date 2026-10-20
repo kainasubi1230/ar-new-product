@@ -6,6 +6,13 @@ import UIKit
 
 final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDelegate {
   private static let worldMapBucket = "worldmaps"
+  private static let relocalizationTimeout: TimeInterval = 15
+  // 地図を育てる（照合した人が見回した分を足して保存し直す）条件
+  private static let mapGrowthInterval: TimeInterval = 15
+  private static let mapGrowthMinMove: Float = 1.0
+  private static let mapGrowthMinTurnCos: Float = 0.5 // 60°
+  private static let mapGrowthMaxSaves = 3
+  private static let mapGrowthMaxBytes = 10 * 1024 * 1024
   @objc var cardTitle: NSString = "" {
     didSet {
       currentCardTitle = cardTitle as String
@@ -74,6 +81,7 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
   }
 
   // { postId, worldMapPath, cardTitle, cardDescription, cardIcon, cardColor, supabase } この投稿の地図で再位置合わせする
+  // null にすると、まだカードが見つかっていない再位置合わせを中止する
   @objc var relocalizeTarget: NSDictionary? {
     didSet {
       DispatchQueue.main.async { [weak self] in
@@ -105,6 +113,9 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
   // ARWorldMap 関連
   private struct MappingJob {
     let postId: String
+    // 投稿IDの名前に付け替えたアンカー。セッションに反映されてから地図を書き出す
+    let anchorIdentifier: UUID
+    let pendingAnchorIdentifier: UUID
     let objectPath: String
     let storage: SupabaseStorage
     let startedAt: Date
@@ -112,13 +123,23 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
     var isCapturing = false
   }
 
+  private struct RelocalizationCard {
+    let title: String
+    let description: String
+    let icon: String
+    let color: String
+  }
+
   private struct RelocalizationTarget {
+    // 読み込む地図の投稿ID
     let postId: String
-    let cardTitle: String
-    let cardDescription: String
-    let cardIcon: String
-    let cardColor: String
-    var didFindAnchor = false
+    let worldMapPath: String
+    let storage: SupabaseStorage
+    // この地図に入っているかもしれない投稿（postId → カード内容）
+    let cards: [String: RelocalizationCard]
+    var foundPostIds: Set<String> = []
+    var didReportRelocalized = false
+    var didFindAnchor: Bool { !foundPostIds.isEmpty }
   }
 
   private var lastSaveRequestId: Double?
@@ -127,6 +148,20 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
   private var placedCardEntities: [AnchorEntity] = []
   private var mappingJob: MappingJob?
   private var relocalization: RelocalizationTarget?
+  // initialWorldMap 付きでセッションを走らせているか
+  private var isRunningWithWorldMap = false
+
+  private struct MapGrowth {
+    let mapPostId: String
+    let objectPath: String
+    let storage: SupabaseStorage
+    var lastSavedAt: Date
+    var lastCameraPosition: SIMD3<Float>
+    var lastCameraForward: SIMD3<Float>
+    var saveCount = 0
+    var isSaving = false
+  }
+  private var mapGrowth: MapGrowth?
 
   override init(frame: CGRect) {
     super.init(frame: frame)
@@ -155,6 +190,8 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
   private func setupARView() {
     addSubview(arView)
     arView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+    // セッションは自前で設定する（RealityKit に設定し直されると initialWorldMap が外れる）
+    arView.automaticallyConfigureSession = false
     arView.scene.addAnchor(rootAnchor)
     arView.scene.addAnchor(previewAnchor)
 
@@ -251,6 +288,7 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
     updateCancellable = arView.scene.subscribe(to: SceneEvents.Update.self) { [weak self] _ in
       self?.updatePreview()
       self?.checkWorldMappingProgress()
+      self?.checkMapGrowth()
     }
   }
 
@@ -782,6 +820,8 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
 
     mappingJob = MappingJob(
       postId: postId,
+      anchorIdentifier: namedAnchor.identifier,
+      pendingAnchorIdentifier: pending.arAnchor.identifier,
       objectPath: "\(postId).worldmap",
       storage: storage,
       startedAt: Date()
@@ -794,7 +834,11 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
   // 毎フレーム呼ばれ、まわりを十分に覚えた（mapped）ら地図を書き出す
   private func checkWorldMappingProgress() {
     guard var job = mappingJob, !job.isCapturing,
-          let status = arView.session.currentFrame?.worldMappingStatus else { return }
+          let frame = arView.session.currentFrame else { return }
+    let status = frame.worldMappingStatus
+    // session.add / remove はすぐには反映されない。付け替え前の地図を書き出さないよう、反映を待つ
+    let isAnchorRenamed = frame.anchors.contains { $0.identifier == job.anchorIdentifier }
+      && !frame.anchors.contains { $0.identifier == job.pendingAnchorIdentifier }
 
     if status != job.lastStatus {
       job.lastStatus = status
@@ -805,8 +849,8 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
     }
 
     let elapsed = Date().timeIntervalSince(job.startedAt)
-    // mapped が理想。しばらく待っても extending 止まりなら、それで妥協して保存する
-    if status == .mapped || (status == .extending && elapsed > 20) {
+    // mapped が理想。カード周りは配置操作の間に覚えているので、extending なら少し待って妥協する
+    if isAnchorRenamed && (status == .mapped || (status == .extending && elapsed > 5)) {
       job.isCapturing = true
       mappingJob = job
       captureAndUploadWorldMap(job)
@@ -827,6 +871,15 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
           self.emitWorldMapStatus("failed", postId: job.postId, extra: [
             "message": "地図の取得に失敗しました: \(error?.localizedDescription ?? "不明なエラー")",
           ])
+          return
+        }
+
+        // 念のため、投稿IDのアンカーが地図に入っているか確かめる。入っていなければ次のフレームで取り直す
+        let anchorName = Self.postAnchorName(job.postId)
+        guard worldMap.anchors.contains(where: { $0.name == anchorName }) else {
+          if self.mappingJob?.postId == job.postId {
+            self.mappingJob?.isCapturing = false
+          }
           return
         }
 
@@ -882,6 +935,10 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
   // MARK: - ARWorldMap: 読み込みと再位置合わせ
 
   private func handleRelocalizeTargetChanged() {
+    guard relocalizeTarget != nil else {
+      cancelRelocalization()
+      return
+    }
     guard let target = relocalizeTarget,
           let postId = Self.stringValue(target["postId"]),
           let worldMapPath = target["worldMapPath"] as? String else { return }
@@ -892,13 +949,17 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
       return
     }
 
-    relocalization = RelocalizationTarget(
-      postId: postId,
-      cardTitle: target["cardTitle"] as? String ?? "",
-      cardDescription: target["cardDescription"] as? String ?? "",
-      cardIcon: target["cardIcon"] as? String ?? "",
-      cardColor: target["cardColor"] as? String ?? ""
-    )
+    var cards: [String: RelocalizationCard] = [:]
+    for case let card as NSDictionary in (target["cards"] as? NSArray ?? []) {
+      guard let cardPostId = Self.stringValue(card["postId"]) else { continue }
+      cards[cardPostId] = RelocalizationCard(
+        title: card["cardTitle"] as? String ?? "",
+        description: card["cardDescription"] as? String ?? "",
+        icon: card["cardIcon"] as? String ?? "",
+        color: card["cardColor"] as? String ?? ""
+      )
+    }
+    relocalization = RelocalizationTarget(postId: postId, worldMapPath: worldMapPath, storage: storage, cards: cards)
     emitRelocalizationStatus("downloading", postId: postId)
 
     storage.download(bucket: Self.worldMapBucket, path: worldMapPath) { [weak self] result in
@@ -921,37 +982,174 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
   }
 
   private func startRelocalization(with worldMap: ARWorldMap, postId: String) {
+    // 投稿したカードの保存中にセッションをやり直すと、保存待ちのアンカーが消えてしまう
+    if mappingJob != nil || !pendingCardAnchors.isEmpty {
+      relocalization = nil
+      emitRelocalizationStatus("cancelled", postId: postId)
+      return
+    }
+
     // セッションをやり直すので、このセッションで置いたカードは片付ける
     placedCardEntities.forEach { arView.scene.removeAnchor($0) }
     placedCardEntities.removeAll()
+    mapGrowth = nil
     pendingCardAnchors.removeAll()
     mappingJob = nil
 
     let config = makeTrackingConfiguration()
     config.initialWorldMap = worldMap
     arView.session.run(config, options: [.resetTracking, .removeExistingAnchors])
+    isRunningWithWorldMap = true
     emitRelocalizationStatus("relocalizing", postId: postId)
+
+    // 照合中は位置が定まらず平面検出も止まるので、見つからなければあきらめて通常のセッションに戻す
+    DispatchQueue.main.asyncAfter(deadline: .now() + Self.relocalizationTimeout) { [weak self] in
+      guard let self, self.isRunningWithWorldMap,
+            let target = self.relocalization, target.postId == postId, !target.didFindAnchor else { return }
+      if case .normal = self.arView.session.currentFrame?.camera.trackingState { return }
+      self.relocalization = nil
+      self.isRunningWithWorldMap = false
+      self.arView.session.run(self.makeTrackingConfiguration(), options: [.resetTracking, .removeExistingAnchors])
+      self.emitRelocalizationStatus("timeout", postId: postId)
+    }
   }
 
-  // 再位置合わせに成功すると、地図に入っていた名前付きアンカーがここに戻ってくる
+  private func cancelRelocalization() {
+    guard let target = relocalization, !target.didFindAnchor else { return }
+    relocalization = nil
+    // 再位置合わせ待ちのままだと座標系が後でずれるので、地図なしのセッションに戻す
+    if isRunningWithWorldMap {
+      isRunningWithWorldMap = false
+      arView.session.run(makeTrackingConfiguration(), options: [.resetTracking, .removeExistingAnchors])
+    }
+    emitRelocalizationStatus("cancelled", postId: target.postId)
+  }
+
+  // 再位置合わせに成功すると、地図に入っていた名前付きアンカーがここに戻ってくる。
+  // 同じ起動中に置いた投稿は後の地図にもまとめて入っているので、知っている投稿のアンカーはすべてカードにする
   func session(_ session: ARSession, didAdd anchors: [ARAnchor]) {
-    guard var target = relocalization, !target.didFindAnchor else { return }
-    let expectedName = Self.postAnchorName(target.postId)
-    guard let anchor = anchors.first(where: { $0.name == expectedName }) else { return }
+    guard var target = relocalization else { return }
+    for anchor in anchors {
+      guard let name = anchor.name, name.hasPrefix("post:") else { continue }
+      let postId = String(name.dropFirst("post:".count))
+      guard let card = target.cards[postId], !target.foundPostIds.contains(postId) else { continue }
 
-    target.didFindAnchor = true
+      if !target.didFindAnchor {
+        startMapGrowth(for: target)
+      }
+      target.foundPostIds.insert(postId)
+      let anchorEntity = AnchorEntity(anchor: anchor)
+      anchorEntity.addChild(makeCardEntity(
+        title: card.title,
+        description: card.description,
+        handle: card.icon,
+        color: card.color
+      ))
+      arView.scene.addAnchor(anchorEntity)
+      placedCardEntities.append(anchorEntity)
+      emitRelocalizationStatus("found", postId: postId)
+    }
     relocalization = target
+  }
 
-    let anchorEntity = AnchorEntity(anchor: anchor)
-    anchorEntity.addChild(makeCardEntity(
-      title: target.cardTitle,
-      description: target.cardDescription,
-      handle: target.cardIcon,
-      color: target.cardColor
-    ))
-    arView.scene.addAnchor(anchorEntity)
-    placedCardEntities.append(anchorEntity)
-    emitRelocalizationStatus("found", postId: target.postId)
+  // 位置合わせ自体はできたのにカードのアンカーが来ない場合を知らせる（原因の切り分け用）
+  func session(_ session: ARSession, cameraDidChangeTrackingState camera: ARCamera) {
+    guard isRunningWithWorldMap, case .normal = camera.trackingState,
+          let target = relocalization, !target.didReportRelocalized else { return }
+    relocalization?.didReportRelocalized = true
+    DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+      guard let self, let current = self.relocalization, current.postId == target.postId,
+            !current.didFindAnchor else { return }
+      let anchorNames = self.arView.session.currentFrame?.anchors.compactMap(\.name) ?? []
+      self.emitRelocalizationStatus("relocalizedWithoutCard", postId: target.postId, extra: [
+        "message": "位置合わせはできましたが、カードのアンカーが見つかりません（\(anchorNames.joined(separator: ", "))）",
+      ])
+    }
+  }
+
+  // MARK: - ARWorldMap: 地図を育てる
+  // 照合に成功した人がその場で見回すと、別の角度の景色が地図に足される。それを同じファイルに保存し直し、
+  // 次に来た人がいろんな角度から照合できるようにする（posts.worldmap_path は変わらない）
+
+  private static func cameraPose(_ frame: ARFrame) -> (position: SIMD3<Float>, forward: SIMD3<Float>) {
+    let t = frame.camera.transform
+    return (
+      SIMD3<Float>(t.columns.3.x, t.columns.3.y, t.columns.3.z),
+      -SIMD3<Float>(t.columns.2.x, t.columns.2.y, t.columns.2.z)
+    )
+  }
+
+  private func startMapGrowth(for target: RelocalizationTarget) {
+    // 地図の上書きにはログインが必要（Storage のポリシー）
+    guard target.storage.accessToken != nil,
+          let frame = arView.session.currentFrame else { return }
+    let pose = Self.cameraPose(frame)
+    mapGrowth = MapGrowth(
+      mapPostId: target.postId,
+      objectPath: target.worldMapPath,
+      storage: target.storage,
+      lastSavedAt: Date(),
+      lastCameraPosition: pose.position,
+      lastCameraForward: pose.forward
+    )
+  }
+
+  private func checkMapGrowth() {
+    guard var growth = mapGrowth, !growth.isSaving, growth.saveCount < Self.mapGrowthMaxSaves,
+          isRunningWithWorldMap,
+          // 自分の投稿の保存中は触らない（保存待ちの仮アンカーが地図に混ざる）
+          mappingJob == nil, pendingCardAnchors.isEmpty,
+          let frame = arView.session.currentFrame,
+          case .normal = frame.camera.trackingState,
+          frame.worldMappingStatus == .mapped,
+          Date().timeIntervalSince(growth.lastSavedAt) >= Self.mapGrowthInterval else { return }
+
+    // 前回保存したときから、歩いたか向きを大きく変えたときだけ（同じ景色なら足すものが無い）
+    let pose = Self.cameraPose(frame)
+    let moved = simd_distance(pose.position, growth.lastCameraPosition) >= Self.mapGrowthMinMove
+    let turned = simd_dot(simd_normalize(pose.forward), simd_normalize(growth.lastCameraForward)) <= Self.mapGrowthMinTurnCos
+    guard moved || turned else { return }
+
+    growth.isSaving = true
+    mapGrowth = growth
+    arView.session.getCurrentWorldMap { [weak self] worldMap, _ in
+      DispatchQueue.main.async {
+        self?.uploadGrownMap(worldMap, capturedAt: pose)
+      }
+    }
+  }
+
+  private func uploadGrownMap(_ worldMap: ARWorldMap?, capturedAt pose: (position: SIMD3<Float>, forward: SIMD3<Float>)) {
+    guard var growth = mapGrowth else { return }
+    // うまくいかなくても、次は間隔をあけて試す
+    growth.isSaving = false
+    growth.lastSavedAt = Date()
+    mapGrowth = growth
+
+    // 読み込んだ地図の続きであることを確かめる（元の投稿のアンカーが入っているか）
+    let anchorName = Self.postAnchorName(growth.mapPostId)
+    guard let worldMap, worldMap.anchors.contains(where: { $0.name == anchorName }),
+          let data = try? NSKeyedArchiver.archivedData(withRootObject: worldMap, requiringSecureCoding: true) else { return }
+    guard data.count <= Self.mapGrowthMaxBytes else {
+      // 大きくなりすぎたら、このセッションではもう育てない
+      mapGrowth?.saveCount = Self.mapGrowthMaxSaves
+      return
+    }
+
+    mapGrowth?.isSaving = true
+    growth.storage.upload(data, bucket: Self.worldMapBucket, path: growth.objectPath) { [weak self] result in
+      DispatchQueue.main.async {
+        guard let self, self.mapGrowth?.mapPostId == growth.mapPostId else { return }
+        self.mapGrowth?.isSaving = false
+        self.mapGrowth?.lastSavedAt = Date()
+        if case .success = result {
+          self.mapGrowth?.saveCount += 1
+          self.mapGrowth?.lastCameraPosition = pose.position
+          self.mapGrowth?.lastCameraForward = pose.forward
+          self.emitRelocalizationStatus("mapExtended", postId: growth.mapPostId, extra: ["bytes": data.count])
+        }
+      }
+    }
   }
 
   private func emitRelocalizationStatus(_ phase: String, postId: String, extra: [String: Any] = [:]) {

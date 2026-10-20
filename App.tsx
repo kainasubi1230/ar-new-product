@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import Geolocation from '@react-native-community/geolocation';
 import {
   Image,
   Platform,
@@ -27,8 +28,11 @@ import { ScreenHeader } from './src/components/ScreenHeader';
 import { Icons } from './src/assets/icons';
 import { insertPostWithCurrentLocation } from './src/services/postService';
 import { signOut } from './src/services/authService';
+import type { LocationCoords } from './src/services/postService';
 import {
-  findNearestPostWithWorldMap,
+  WORLDMAP_RADIUS_M,
+  distanceInMeters,
+  findNearbyWorldMapPosts,
   getNativeSupabaseConfig,
   updatePostWorldMapPath,
 } from './src/services/worldMapService';
@@ -65,8 +69,19 @@ export default function App(): React.JSX.Element {
   const [relocalizeTarget, setRelocalizeTarget] = useState<RelocalizeTarget | null>(null);
   const [relocalizationPhase, setRelocalizationPhase] =
     useState<RelocalizationStatusEvent['phase'] | null>(null);
-  // 自分がこのセッションで置いた投稿は、地図を読み込み直す対象から外す
+  // いまの AR セッションで自分が置いた投稿（画面に出ている）。その地図を読み込み直すとカードが一度消えるので、読み込む地図には選ばない。
+  // 表示するカードの一覧には含める（読み込んだ地図に入っていれば出す）
   const ownPostIdsRef = React.useRef<Set<string>>(new Set());
+  // 投稿を始めたら、ホームを離れるか WORLDMAP_RADIUS_M 以上移動するまで近くの地図を自動で読み込まない（置いたカードが消えるため）
+  const [isRelocalizeSuppressed, setIsRelocalizeSuppressed] = useState<boolean>(false);
+  const suppressedAtRef = React.useRef<LocationCoords | null>(null);
+  // ホーム表示中に追いかけている現在地（移動したら近くの地図を探し直す）
+  const [currentCoords, setCurrentCoords] = useState<LocationCoords | null>(null);
+  const relocalizeTargetRef = React.useRef<RelocalizeTarget | null>(null);
+  relocalizeTargetRef.current = relocalizeTarget;
+  const relocalizeTargetMessage =
+    relocalizeTarget?.cards.find((c) => c.postId === relocalizeTarget.postId)?.cardDescription ?? '';
+  const isRelocalizing = relocalizationPhase === 'downloading' || relocalizationPhase === 'relocalizing';
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -84,26 +99,85 @@ export default function App(): React.JSX.Element {
     };
   }, []);
 
-  // ホーム（カメラ）を開いたとき、30m以内に地図付きの投稿があればその地図を読み込む
+  // ホーム（カメラ）を開いている間は現在地を追いかけ、30m以内に地図付きの投稿があればその地図を読み込む
   const isMappingInProgress = worldMapPhase === 'mapping' || worldMapPhase === 'uploading';
   useEffect(() => {
-    if (!isWorldMapSupported || activeTab !== 'home' || isPlacementMode || isMappingInProgress || relocalizeTarget) {
+    if (activeTab !== 'home') {
+      setIsRelocalizeSuppressed(false);
+      // AR ビューが作り直されると自分の置いたカードも消えるので、読み込み対象に戻す
+      ownPostIdsRef.current.clear();
+      // ホームの AR ビューは display: none の間に破棄され、戻ると作り直される（新アーキテクチャの挙動）。
+      // 途中だった地図の記録・照合は消えるので状態を戻す。relocalizeTarget は残し、作り直されたビューで照合し直す
+      setWorldMapPhase(null);
+      setRelocalizationPhase(null);
+    }
+  }, [activeTab]);
+
+  useEffect(() => {
+    if (!isWorldMapSupported || activeTab !== 'home') {
+      return;
+    }
+    const watchId = Geolocation.watchPosition(
+      (position) => {
+        const coords = {
+          latitude: position.coords.latitude,
+          longitude: position.coords.longitude,
+          accuracy: position.coords.accuracy,
+        };
+        setCurrentCoords(coords);
+        const suppressedAt = suppressedAtRef.current;
+        if (
+          suppressedAt &&
+          distanceInMeters(suppressedAt.latitude, suppressedAt.longitude, coords.latitude, coords.longitude) >
+            WORLDMAP_RADIUS_M
+        ) {
+          suppressedAtRef.current = null;
+          setIsRelocalizeSuppressed(false);
+        }
+      },
+      (error) => console.warn('現在地の追跡に失敗しました:', error.message),
+      { enableHighAccuracy: true, distanceFilter: 15 }
+    );
+    return () => Geolocation.clearWatch(watchId);
+  }, [activeTab]);
+
+  useEffect(() => {
+    if (
+      !isWorldMapSupported ||
+      activeTab !== 'home' ||
+      !currentCoords ||
+      isRelocalizeSuppressed ||
+      isPostModalVisible ||
+      isPlacementMode ||
+      isMappingInProgress
+    ) {
       return;
     }
     let cancelled = false;
     (async () => {
       try {
-        const post = await findNearestPostWithWorldMap(ownPostIdsRef.current);
-        if (cancelled || !post) return;
+        const posts = await findNearbyWorldMapPosts(currentCoords);
+        // 新しい地図ほど多くのカードが入っている。ただし今のセッションで自分が置いた投稿の地図は選ばない
+        const mapPost = posts.find((post) => !ownPostIdsRef.current.has(String(post.id)));
+        if (cancelled || !mapPost) return;
+        // いま読み込んでいる地図の範囲内なら何もしない（読み直すと出ているカードが消える）
+        const current = relocalizeTargetRef.current;
+        if (current?.cards.some((card) => card.postId === String(mapPost.id))) return;
+
         const supabaseConfig = await getNativeSupabaseConfig();
         if (cancelled) return;
+        // 新しい地図を読み込むとセッションがやり直しになり、自分の置いたカードも消える
+        ownPostIdsRef.current.clear();
         setRelocalizeTarget({
-          postId: String(post.id),
-          worldMapPath: post.worldmap_path,
-          cardTitle: post.author ?? 'guest',
-          cardDescription: post.message ?? '',
-          cardIcon: post.handle ?? '',
-          cardColor: '#10B981',
+          postId: String(mapPost.id),
+          worldMapPath: mapPost.worldmap_path,
+          cards: posts.map((post) => ({
+            postId: String(post.id),
+            cardTitle: post.author ?? 'guest',
+            cardDescription: post.message ?? '',
+            cardIcon: post.handle ?? '',
+            cardColor: '#10B981',
+          })),
           supabase: supabaseConfig,
         });
       } catch (err) {
@@ -113,9 +187,18 @@ export default function App(): React.JSX.Element {
     return () => {
       cancelled = true;
     };
-  }, [activeTab, isPlacementMode, isMappingInProgress, relocalizeTarget]);
+  }, [
+    activeTab,
+    currentCoords,
+    isRelocalizeSuppressed,
+    isPostModalVisible,
+    isPlacementMode,
+    isMappingInProgress,
+  ]);
 
   const handleWorldMapStatus = async (event: WorldMapStatusEvent) => {
+    // 依頼は受け取ってもらえたので消す。残すと、作り直された AR ビューが古い依頼をもう一度処理してしまう
+    setWorldMapSaveRequest(null);
     setWorldMapPhase(event.phase);
     if (event.phase === 'saved' && event.path) {
       try {
@@ -134,11 +217,26 @@ export default function App(): React.JSX.Element {
   const handleRelocalizationStatus = (event: RelocalizationStatusEvent) => {
     if (event.phase === 'found') {
       setRelocalizationPhase(null);
-      showToast(`📖 ${relocalizeTarget?.cardTitle ?? ''}さんのメッセージが見つかりました`);
+      const card = relocalizeTarget?.cards.find((c) => c.postId === event.postId);
+      showToast(`📖 ${card?.cardTitle ?? ''}さんのメッセージが見つかりました`);
+    } else if (event.phase === 'relocalizedWithoutCard') {
+      setRelocalizationPhase(null);
+      console.warn(event.message);
+      showToast(`⚠️ ${event.message}`);
     } else if (event.phase === 'failed') {
       setRelocalizationPhase(null);
       console.warn('再位置合わせに失敗しました:', event.message);
       showToast(`❌ ${event.message || '地図の読み込みに失敗しました'}`);
+    } else if (event.phase === 'mapExtended') {
+      // 見回した分を地図に足して保存し直した（見ている人の操作は不要なので通知しない）
+      console.log(`地図を育てました: ${event.postId} (${Math.round((event.bytes ?? 0) / 1024)}KB)`);
+    } else if (event.phase === 'timeout') {
+      // relocalizeTarget は残す（同じ場所で何度も照合し直さないため。別の場所に移動すれば探し直す）
+      setRelocalizationPhase(null);
+      showToast('⏱ カードを置いた景色が見つからなかったので、通常モードに戻しました');
+    } else if (event.phase === 'cancelled') {
+      setRelocalizationPhase(null);
+      setRelocalizeTarget(null);
     } else {
       setRelocalizationPhase(event.phase);
     }
@@ -149,6 +247,12 @@ export default function App(): React.JSX.Element {
       showToast('📍 メッセージを置くにはログインが必要です');
       setActiveTab('mypage');
       return;
+    }
+    setIsRelocalizeSuppressed(true);
+    suppressedAtRef.current = currentCoords;
+    // 地図の読み込み・再位置合わせの途中なら中止する（終わってからセッションをやり直すと、置いたカードが消える）
+    if (isRelocalizing) {
+      setRelocalizeTarget(null);
     }
     setIsPostModalVisible(true);
   };
@@ -274,7 +378,7 @@ export default function App(): React.JSX.Element {
                     ? '☁️ この場所の地図をアップロード中...'
                     : relocalizationPhase === 'downloading'
                       ? '🗺️ 近くのメッセージの地図を読み込み中...'
-                      : '📷 置いたときと同じ景色にカメラを向けてください'}
+                      : `📷「${relocalizeTargetMessage}」を置いたときと同じ景色にカメラを向けてください`}
               </Text>
             </View>
           )}

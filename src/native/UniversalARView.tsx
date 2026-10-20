@@ -33,14 +33,21 @@ export type WorldMapSaveRequest = {
   supabase: NativeSupabaseConfig;
 };
 
-/** この投稿の地図を読み込み、再位置合わせできたらカードを表示する（iOSのみ） */
-export type RelocalizeTarget = {
+export type RelocalizeCard = {
   postId: string;
-  worldMapPath: string;
   cardTitle: string;
   cardDescription: string;
   cardIcon: string;
   cardColor: string;
+};
+
+/**
+ * postId の投稿の地図を読み込み、再位置合わせできたら cards のうち地図に入っている投稿をすべてカードで表示する（iOSのみ）
+ */
+export type RelocalizeTarget = {
+  postId: string;
+  worldMapPath: string;
+  cards: RelocalizeCard[];
   supabase: NativeSupabaseConfig;
 };
 
@@ -54,9 +61,18 @@ export type WorldMapStatusEvent = {
 };
 
 export type RelocalizationStatusEvent = {
-  phase: 'downloading' | 'relocalizing' | 'found' | 'failed';
+  phase:
+    | 'downloading'
+    | 'relocalizing'
+    | 'found'
+    | 'relocalizedWithoutCard'
+    | 'timeout'
+    | 'mapExtended'
+    | 'failed'
+    | 'cancelled';
   postId: string;
   message?: string;
+  bytes?: number;
 };
 
 export type UniversalARViewProps = {

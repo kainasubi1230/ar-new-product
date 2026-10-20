@@ -1,6 +1,6 @@
 import { supabase, SUPABASE_ANON_KEY, SUPABASE_URL } from '../lib/supabase';
 import type { NativeSupabaseConfig } from '../native/UniversalARView';
-import { getCurrentLocation } from './postService';
+import { getCurrentLocation, type LocationCoords } from './postService';
 
 /** この距離以内の投稿の地図を読み込む */
 export const WORLDMAP_RADIUS_M = 30;
@@ -13,6 +13,7 @@ export interface NearbyWorldMapPost {
   author: string | null;
   handle: string | null;
   worldmap_path: string;
+  created_at: string;
   distanceM: number;
 }
 
@@ -49,7 +50,7 @@ export const updatePostWorldMapPath = async (postId: string, path: string) => {
   }
 };
 
-const distanceInMeters = (lat1: number, lng1: number, lat2: number, lng2: number) => {
+export const distanceInMeters = (lat1: number, lng1: number, lat2: number, lng2: number) => {
   const toRad = (deg: number) => (deg * Math.PI) / 180;
   const dLat = toRad(lat2 - lat1);
   const dLng = toRad(lng2 - lng1);
@@ -60,12 +61,14 @@ const distanceInMeters = (lat1: number, lng1: number, lat2: number, lng2: number
 };
 
 /**
- * 現在地から WORLDMAP_RADIUS_M 以内で、地図付きの一番近い投稿を探す
+ * 現在地から WORLDMAP_RADIUS_M 以内の地図付き投稿を、新しい順に返す。
+ * GPS の誤差は数m〜十数mあり、同じ場所の投稿の「近さ」は当てにならないので距離では並べない。
+ * 新しい地図ほど、同じ起動中に先に置いた投稿のアンカーもまとめて入っている。
  */
-export const findNearestPostWithWorldMap = async (
-  excludeIds: ReadonlySet<string> = new Set()
-): Promise<NearbyWorldMapPost | null> => {
-  const { latitude, longitude } = await getCurrentLocation();
+export const findNearbyWorldMapPosts = async (
+  coords?: LocationCoords
+): Promise<NearbyWorldMapPost[]> => {
+  const { latitude, longitude } = coords ?? (await getCurrentLocation());
 
   const latDelta = WORLDMAP_RADIUS_M / METERS_PER_DEGREE_LAT;
   const lngDelta =
@@ -73,7 +76,7 @@ export const findNearestPostWithWorldMap = async (
 
   const { data, error } = await supabase
     .from('posts')
-    .select('id, message, author, handle, lat, lng, worldmap_path')
+    .select('id, message, author, handle, lat, lng, worldmap_path, created_at')
     .not('worldmap_path', 'is', null)
     .gte('lat', latitude - latDelta)
     .lte('lat', latitude + latDelta)
@@ -84,14 +87,11 @@ export const findNearestPostWithWorldMap = async (
     throw new Error(`近くの投稿の取得に失敗しました: ${error.message}`);
   }
 
-  const candidates = (data ?? [])
-    .filter((post) => !excludeIds.has(String(post.id)))
+  return (data ?? [])
     .map((post) => ({
       ...post,
       distanceM: distanceInMeters(latitude, longitude, post.lat, post.lng),
     }))
     .filter((post) => post.distanceM <= WORLDMAP_RADIUS_M)
-    .sort((a, b) => a.distanceM - b.distanceM);
-
-  return candidates[0] ?? null;
+    .sort((a, b) => b.created_at.localeCompare(a.created_at));
 };
