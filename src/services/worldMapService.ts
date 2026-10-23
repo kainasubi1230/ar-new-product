@@ -1,11 +1,10 @@
 import { supabase, SUPABASE_ANON_KEY, SUPABASE_URL } from '../lib/supabase';
 import type { NativeSupabaseConfig } from '../native/UniversalARView';
 import { getCurrentLocation, type LocationCoords } from './postService';
+import { boundingDeltas, distanceInMeters } from '../utils/geo';
 
 /** この距離以内の投稿の地図を読み込む */
 export const WORLDMAP_RADIUS_M = 30;
-
-const METERS_PER_DEGREE_LAT = 111320;
 
 export interface NearbyWorldMapPost {
   id: string | number;
@@ -50,15 +49,6 @@ export const updatePostWorldMapPath = async (postId: string, path: string) => {
   }
 };
 
-export const distanceInMeters = (lat1: number, lng1: number, lat2: number, lng2: number) => {
-  const toRad = (deg: number) => (deg * Math.PI) / 180;
-  const dLat = toRad(lat2 - lat1);
-  const dLng = toRad(lng2 - lng1);
-  const a =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
-  return 2 * 6371000 * Math.asin(Math.sqrt(a));
-};
 
 /**
  * 現在地から WORLDMAP_RADIUS_M 以内の地図付き投稿を、新しい順に返す。
@@ -70,9 +60,7 @@ export const findNearbyWorldMapPosts = async (
 ): Promise<NearbyWorldMapPost[]> => {
   const { latitude, longitude } = coords ?? (await getCurrentLocation());
 
-  const latDelta = WORLDMAP_RADIUS_M / METERS_PER_DEGREE_LAT;
-  const lngDelta =
-    WORLDMAP_RADIUS_M / (METERS_PER_DEGREE_LAT * Math.cos((latitude * Math.PI) / 180));
+  const { latDelta, lngDelta } = boundingDeltas(latitude, WORLDMAP_RADIUS_M);
 
   const { data, error } = await supabase
     .from('posts')

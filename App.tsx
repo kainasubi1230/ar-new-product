@@ -19,6 +19,7 @@ import { PostModal } from './src/components/PostModal';
 import { TagManageModal } from './src/components/TagManageModal';
 import {
   UniversalARView,
+  type GeoTag,
   type RelocalizationStatusEvent,
   type RelocalizeTarget,
   type WorldMapSaveRequest,
@@ -29,9 +30,10 @@ import { Icons } from './src/assets/icons';
 import { insertPostWithCurrentLocation } from './src/services/postService';
 import { signOut } from './src/services/authService';
 import type { LocationCoords } from './src/services/postService';
+import { findNearbyPosts } from './src/services/nearbyPostService';
+import { distanceInMeters } from './src/utils/geo';
 import {
   WORLDMAP_RADIUS_M,
-  distanceInMeters,
   findNearbyWorldMapPosts,
   getNativeSupabaseConfig,
   updatePostWorldMapPath,
@@ -78,9 +80,9 @@ export default function App(): React.JSX.Element {
   // ホーム表示中に追いかけている現在地（移動したら近くの地図を探し直す）
   const [currentCoords, setCurrentCoords] = useState<LocationCoords | null>(null);
   const relocalizeTargetRef = React.useRef<RelocalizeTarget | null>(null);
+  // セカイカメラ風に、近くの投稿を方角タグとして AR 画面に浮かべる
+  const [geoTags, setGeoTags] = useState<GeoTag[]>([]);
   relocalizeTargetRef.current = relocalizeTarget;
-  const relocalizeTargetMessage =
-    relocalizeTarget?.cards.find((c) => c.postId === relocalizeTarget.postId)?.cardDescription ?? '';
   const isRelocalizing = relocalizationPhase === 'downloading' || relocalizationPhase === 'relocalizing';
 
   useEffect(() => {
@@ -195,6 +197,32 @@ export default function App(): React.JSX.Element {
     isPlacementMode,
     isMappingInProgress,
   ]);
+
+  useEffect(() => {
+    if (!isWorldMapSupported || activeTab !== 'home' || !currentCoords) {
+      return;
+    }
+    let cancelled = false;
+    findNearbyPosts(currentCoords)
+      .then((posts) => {
+        if (cancelled) return;
+        setGeoTags(
+          posts.map((post) => ({
+            postId: String(post.id),
+            cardTitle: post.author ?? 'guest',
+            cardDescription: post.message ?? '',
+            cardIcon: post.handle ?? '',
+            cardColor: '#10B981',
+            distanceM: post.distanceM,
+            bearingDeg: post.bearingDeg,
+          }))
+        );
+      })
+      .catch((err) => console.warn('近くの投稿の取得に失敗しました:', err));
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTab, currentCoords]);
 
   const handleWorldMapStatus = async (event: WorldMapStatusEvent) => {
     // 依頼は受け取ってもらえたので消す。残すと、作り直された AR ビューが古い依頼をもう一度処理してしまう
@@ -358,6 +386,7 @@ export default function App(): React.JSX.Element {
             }}
             worldMapSaveRequest={worldMapSaveRequest}
             relocalizeTarget={relocalizeTarget}
+            geoTags={geoTags}
             onWorldMapStatus={(event) => handleWorldMapStatus(event.nativeEvent)}
             onRelocalizationStatus={(event) => handleRelocalizationStatus(event.nativeEvent)}
           />
@@ -367,21 +396,6 @@ export default function App(): React.JSX.Element {
             title="ホーム"
             style={styles.homeHeader}
           />
-
-          {/* ARWorldMap Guide Banner (地図の記録中 / 読み込み・再位置合わせ中) */}
-          {!isPlacementMode && (isMappingInProgress || relocalizationPhase) && (
-            <View style={styles.placementGuidePill} pointerEvents="none">
-              <Text style={styles.placementGuideText}>
-                {worldMapPhase === 'mapping'
-                  ? '🗺️ この場所を記録中です。周りをゆっくり見回してください'
-                  : worldMapPhase === 'uploading'
-                    ? '☁️ この場所の地図をアップロード中...'
-                    : relocalizationPhase === 'downloading'
-                      ? '🗺️ 近くのメッセージの地図を読み込み中...'
-                      : `📷「${relocalizeTargetMessage}」を置いたときと同じ景色にカメラを向けてください`}
-              </Text>
-            </View>
-          )}
 
           {/* Placement Mode HUD (Guide Banner & Confirmation Action Bar) */}
           {isPlacementMode && (

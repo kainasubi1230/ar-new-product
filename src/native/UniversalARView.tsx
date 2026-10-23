@@ -51,6 +51,18 @@ export type RelocalizeTarget = {
   supabase: NativeSupabaseConfig;
 };
 
+/** 方角タグ（iOSのみ）。GPSの距離・方角とコンパスで、AR 画面のその方向に浮かべる */
+export type GeoTag = {
+  postId: string;
+  cardTitle: string;
+  cardDescription: string;
+  cardIcon: string;
+  cardColor: string;
+  distanceM: number;
+  /** 現在地から見た方角（北=0°、時計回り） */
+  bearingDeg: number;
+};
+
 export type WorldMapStatusEvent = {
   phase: 'mapping' | 'uploading' | 'saved' | 'failed';
   postId: string;
@@ -89,6 +101,7 @@ export type UniversalARViewProps = {
   onModelPlaced?: (event: NativeSyntheticEvent<any>) => void;
   worldMapSaveRequest?: WorldMapSaveRequest | null;
   relocalizeTarget?: RelocalizeTarget | null;
+  geoTags?: GeoTag[];
   onWorldMapStatus?: (event: NativeSyntheticEvent<WorldMapStatusEvent>) => void;
   onRelocalizationStatus?: (event: NativeSyntheticEvent<RelocalizationStatusEvent>) => void;
 };

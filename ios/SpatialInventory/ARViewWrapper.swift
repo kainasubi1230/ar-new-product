@@ -1,5 +1,6 @@
 import ARKit
 import Combine
+import CoreMotion
 import RealityKit
 import React
 import UIKit
@@ -90,6 +91,30 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
     }
   }
 
+  // [{ postId, cardTitle, cardDescription, cardIcon, cardColor, distanceM, bearingDeg }] 方角タグとして浮かべる投稿
+  @objc var geoTags: NSArray? {
+    didSet {
+      let tags: [GeoTagData] = (geoTags ?? []).compactMap { item in
+        guard let dict = item as? NSDictionary,
+              let postId = Self.stringValue(dict["postId"]),
+              let distance = (dict["distanceM"] as? NSNumber)?.doubleValue,
+              let bearing = (dict["bearingDeg"] as? NSNumber)?.doubleValue else { return nil }
+        return GeoTagData(
+          postId: postId,
+          title: dict["cardTitle"] as? String ?? "",
+          description: dict["cardDescription"] as? String ?? "",
+          color: dict["cardColor"] as? String ?? "",
+          distance: distance,
+          bearing: bearing
+        )
+      }
+      DispatchQueue.main.async { [weak self] in
+        self?.geoTagData = tags
+        self?.lastGeoLayoutAt = .distantPast
+      }
+    }
+  }
+
   @objc var onScreenTapped: RCTDirectEventBlock?
   @objc var onCardPlaced: RCTDirectEventBlock?
   @objc var onModelPlaced: RCTDirectEventBlock?
@@ -163,6 +188,32 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
   }
   private var mapGrowth: MapGrowth?
 
+  // MARK: 方角タグ（セカイカメラ風）
+  private struct GeoTagData {
+    let postId: String
+    let title: String
+    let description: String
+    let color: String
+    let distance: Double
+    let bearing: Double
+  }
+  private let geoTagRoot = AnchorEntity(world: .zero)
+  private var geoTagData: [GeoTagData] = []
+  // postId → (エンティティ, テクスチャの内容キー, 目標位置)
+  private var geoTagEntities: [String: (entity: ModelEntity, textureKey: String, target: SIMD3<Float>)] = [:]
+  private var lastGeoLayoutAt = Date.distantPast
+  // 地図の照合などで正確な位置に出ている投稿。方角タグは出さない
+  private var preciseCardPostIds: Set<String> = []
+  private let motionManager = CMMotionManager()
+  // AR 座標での「北」の向き（ヨー角の cos, sin を平滑化したもの）
+  private var northOffset: SIMD2<Float>?
+  // CMAttitude.rotationMatrix の向き（基準座標→端末座標か）を、重力の向きから判定してキャッシュする
+  private var motionMatrixIsReferenceToDevice: Bool?
+  private lazy var geoTagMesh = MeshResource.generateBox(size: SIMD3<Float>(0.64, 0.24, 0.001), cornerRadius: 0.02)
+
+  // 地図の記録・照合中の案内（ARCoachingOverlayView と同じ雰囲気の自前 UI）
+  private let guideHUD = ARGuideHUDView()
+
   override init(frame: CGRect) {
     super.init(frame: frame)
     setupARView()
@@ -179,12 +230,14 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
 
   deinit {
     updateCancellable?.cancel()
+    motionManager.stopDeviceMotionUpdates()
   }
 
   override func layoutSubviews() {
     super.layoutSubviews()
     arView.frame = bounds
     coachingOverlay.frame = bounds
+    guideHUD.frame = bounds
   }
 
   private func setupARView() {
@@ -194,6 +247,8 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
     arView.automaticallyConfigureSession = false
     arView.scene.addAnchor(rootAnchor)
     arView.scene.addAnchor(previewAnchor)
+    arView.scene.addAnchor(geoTagRoot)
+    startHeadingUpdates()
 
     if ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh) {
       arView.environment.sceneUnderstanding.options.insert(.occlusion)
@@ -289,6 +344,7 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
       self?.updatePreview()
       self?.checkWorldMappingProgress()
       self?.checkMapGrowth()
+      self?.updateGeoTags()
     }
   }
 
@@ -378,6 +434,22 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
     coachingOverlay.activatesAutomatically = true
     coachingOverlay.autoresizingMask = [.flexibleWidth, .flexibleHeight]
     addSubview(coachingOverlay)
+
+    guideHUD.frame = bounds
+    guideHUD.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+    addSubview(guideHUD)
+  }
+
+  private func showGuide(_ guide: ARGuideHUDView.Guide) {
+    // Apple のコーチングと重ならないよう、自前の案内を出している間は止める
+    coachingOverlay.activatesAutomatically = false
+    coachingOverlay.setActive(false, animated: true)
+    guideHUD.show(guide)
+  }
+
+  private func hideGuide() {
+    guideHUD.hide()
+    coachingOverlay.activatesAutomatically = true
   }
 
   private func setupTapGesture() {
@@ -804,6 +876,8 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
       return
     }
 
+    preciseCardPostIds.insert(postId)
+
     // ARAnchor の名前は変更できないので、同じ位置に投稿IDの名前で作り直してカードを付け替える
     let namedAnchor = ARAnchor(name: Self.postAnchorName(postId), transform: pending.arAnchor.transform)
     arView.session.remove(anchor: pending.arAnchor)
@@ -902,6 +976,7 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
             }
             switch result {
             case .success:
+              self.startMapGrowth(mapPostId: job.postId, objectPath: job.objectPath, storage: job.storage)
               self.emitWorldMapStatus("saved", postId: job.postId, extra: [
                 "path": job.objectPath,
                 "bytes": data.count,
@@ -927,6 +1002,20 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
   }
 
   private func emitWorldMapStatus(_ phase: String, postId: String, extra: [String: Any] = [:]) {
+    switch phase {
+    case "mapping":
+      showGuide(.init(
+        symbol: "iphone",
+        title: "iPhoneを動かして周りを記録",
+        subtitle: "壁や黒板など、動かないものを映してください",
+        sways: true
+      ))
+    case "uploading":
+      showGuide(.init(symbol: "icloud.and.arrow.up", title: "この場所を保存中", subtitle: nil, sways: false))
+    default:
+      hideGuide()
+    }
+
     var payload: [String: Any] = ["phase": phase, "postId": postId]
     payload.merge(extra) { _, new in new }
     onWorldMapStatus?(payload)
@@ -992,7 +1081,9 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
     // セッションをやり直すので、このセッションで置いたカードは片付ける
     placedCardEntities.forEach { arView.scene.removeAnchor($0) }
     placedCardEntities.removeAll()
+    preciseCardPostIds.removeAll()
     mapGrowth = nil
+    northOffset = nil
     pendingCardAnchors.removeAll()
     mappingJob = nil
 
@@ -1009,6 +1100,9 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
       if case .normal = self.arView.session.currentFrame?.camera.trackingState { return }
       self.relocalization = nil
       self.isRunningWithWorldMap = false
+      self.mapGrowth = nil
+      self.preciseCardPostIds.removeAll()
+      self.northOffset = nil
       self.arView.session.run(self.makeTrackingConfiguration(), options: [.resetTracking, .removeExistingAnchors])
       self.emitRelocalizationStatus("timeout", postId: postId)
     }
@@ -1020,6 +1114,9 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
     // 再位置合わせ待ちのままだと座標系が後でずれるので、地図なしのセッションに戻す
     if isRunningWithWorldMap {
       isRunningWithWorldMap = false
+      mapGrowth = nil
+      preciseCardPostIds.removeAll()
+      northOffset = nil
       arView.session.run(makeTrackingConfiguration(), options: [.resetTracking, .removeExistingAnchors])
     }
     emitRelocalizationStatus("cancelled", postId: target.postId)
@@ -1038,6 +1135,7 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
         startMapGrowth(for: target)
       }
       target.foundPostIds.insert(postId)
+      preciseCardPostIds.insert(postId)
       let anchorEntity = AnchorEntity(anchor: anchor)
       anchorEntity.addChild(makeCardEntity(
         title: card.title,
@@ -1080,14 +1178,19 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
   }
 
   private func startMapGrowth(for target: RelocalizationTarget) {
+    startMapGrowth(mapPostId: target.postId, objectPath: target.worldMapPath, storage: target.storage)
+  }
+
+  // 照合に成功した人だけでなく、カードを置いた本人も、保存後に見回した分で地図を育てる
+  private func startMapGrowth(mapPostId: String, objectPath: String, storage: SupabaseStorage) {
     // 地図の上書きにはログインが必要（Storage のポリシー）
-    guard target.storage.accessToken != nil,
+    guard storage.accessToken != nil,
           let frame = arView.session.currentFrame else { return }
     let pose = Self.cameraPose(frame)
     mapGrowth = MapGrowth(
-      mapPostId: target.postId,
-      objectPath: target.worldMapPath,
-      storage: target.storage,
+      mapPostId: mapPostId,
+      objectPath: objectPath,
+      storage: storage,
       lastSavedAt: Date(),
       lastCameraPosition: pose.position,
       lastCameraForward: pose.forward
@@ -1096,12 +1199,12 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
 
   private func checkMapGrowth() {
     guard var growth = mapGrowth, !growth.isSaving, growth.saveCount < Self.mapGrowthMaxSaves,
-          isRunningWithWorldMap,
           // 自分の投稿の保存中は触らない（保存待ちの仮アンカーが地図に混ざる）
           mappingJob == nil, pendingCardAnchors.isEmpty,
           let frame = arView.session.currentFrame,
           case .normal = frame.camera.trackingState,
-          frame.worldMappingStatus == .mapped,
+          // 新しい方向を向いている間は extending になるので、それも対象にする
+          frame.worldMappingStatus == .mapped || frame.worldMappingStatus == .extending,
           Date().timeIntervalSince(growth.lastSavedAt) >= Self.mapGrowthInterval else { return }
 
     // 前回保存したときから、歩いたか向きを大きく変えたときだけ（同じ景色なら足すものが無い）
@@ -1152,7 +1255,217 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
     }
   }
 
+  // MARK: - 方角タグ（セカイカメラ風）
+  // GPS の距離・方角（JS で計算）と、コンパスで求めた AR 座標の「北」から、タグをその方向に浮かべる。
+  // 位置はざっくり（GPS 数m〜・コンパス 10°前後の誤差）なので、正確な位置に出せた投稿のタグは消す
+
+  private func startHeadingUpdates() {
+    guard motionManager.isDeviceMotionAvailable else { return }
+    let frames = CMMotionManager.availableAttitudeReferenceFrames()
+    let reference: CMAttitudeReferenceFrame =
+      frames.contains(.xTrueNorthZVertical) ? .xTrueNorthZVertical : .xMagneticNorthZVertical
+    guard frames.contains(reference) else { return }
+    motionManager.deviceMotionUpdateInterval = 1.0 / 30
+    motionManager.startDeviceMotionUpdates(using: reference, to: .main) { [weak self] motion, _ in
+      guard let self, let motion else { return }
+      self.updateNorthOffset(with: motion)
+    }
+  }
+
+  private func updateNorthOffset(with motion: CMDeviceMotion) {
+    let m = motion.attitude.rotationMatrix
+    if motionMatrixIsReferenceToDevice == nil {
+      // 基準座標（Z 上向き）の重力 (0,0,-1) を端末座標に写したものが motion.gravity と一致する方が正しい向き
+      let gravity = SIMD3<Double>(motion.gravity.x, motion.gravity.y, motion.gravity.z)
+      let ifReferenceToDevice = -SIMD3<Double>(m.m13, m.m23, m.m33)
+      let ifDeviceToReference = -SIMD3<Double>(m.m31, m.m32, m.m33)
+      let a = simd_distance(ifReferenceToDevice, gravity)
+      let b = simd_distance(ifDeviceToReference, gravity)
+      guard abs(a - b) > 0.2 else { return } // 端末が水平だと区別がつかない
+      motionMatrixIsReferenceToDevice = a < b
+    }
+
+    // カメラの向き（端末の -Z）を基準座標（X=北, Y=西, Z=上）で表す
+    let camera = motionMatrixIsReferenceToDevice == true
+      ? -SIMD3<Double>(m.m31, m.m32, m.m33)
+      : -SIMD3<Double>(m.m13, m.m23, m.m33)
+    guard hypot(camera.x, camera.y) > 0.3 else { return } // 真上・真下を向いているときは方角が不安定
+    let cameraBearing = atan2(-camera.y, camera.x) // 北=0、時計回り
+
+    // 同じカメラの向きを AR 座標で表す（-Z から +X 方向に回るヨー角。上から見て時計回り）
+    guard let transform = arView.session.currentFrame?.camera.transform else { return }
+    let forward = -SIMD3<Float>(transform.columns.2.x, transform.columns.2.y, transform.columns.2.z)
+    guard hypot(forward.x, forward.z) > 0.3 else { return }
+    let arYaw = atan2(Double(forward.x), Double(-forward.z))
+
+    let offset = arYaw - cameraBearing
+    let sample = SIMD2<Float>(Float(cos(offset)), Float(sin(offset)))
+    if let current = northOffset {
+      northOffset = simd_normalize(current * 0.93 + sample * 0.07)
+    } else {
+      northOffset = sample
+    }
+  }
+
+  private func updateGeoTags() {
+    guard let northOffset, !isPreviewActive,
+          let cameraTransform = arView.session.currentFrame?.camera.transform else {
+      geoTagRoot.isEnabled = false
+      return
+    }
+    geoTagRoot.isEnabled = true
+    let cameraPosition = SIMD3<Float>(cameraTransform.columns.3.x, cameraTransform.columns.3.y, cameraTransform.columns.3.z)
+
+    if Date().timeIntervalSince(lastGeoLayoutAt) > 0.5 {
+      lastGeoLayoutAt = Date()
+      layoutGeoTags(northYaw: atan2(northOffset.y, northOffset.x), cameraPosition: cameraPosition)
+    }
+
+    // 目標位置へなめらかに寄せ、カメラの方を向かせる（ヨーだけ）
+    for (_, tag) in geoTagEntities {
+      let entity = tag.entity
+      entity.position = simd_mix(entity.position, tag.target, SIMD3<Float>(repeating: 0.15))
+      let toCamera = cameraPosition - entity.position
+      entity.orientation = simd_quatf(angle: atan2(toCamera.x, toCamera.z), axis: SIMD3<Float>(0, 1, 0))
+    }
+  }
+
+  private func layoutGeoTags(northYaw: Float, cameraPosition: SIMD3<Float>) {
+    let visible = geoTagData.filter { !preciseCardPostIds.contains($0.postId) }
+    let visibleIds = Set(visible.map(\.postId))
+    for (postId, tag) in geoTagEntities where !visibleIds.contains(postId) {
+      tag.entity.removeFromParent()
+      geoTagEntities[postId] = nil
+    }
+
+    var placed: [(bearing: Double, top: Float, bottom: Float)] = []
+    for tag in visible {
+      // 実際の距離をそのまま使うと遠くのタグが小さすぎるので、3〜14m に縮めて置く。遠いものほど少し上・少し大きく
+      let renderDistance = Float(min(3.0 + tag.distance * 0.08, 14.0))
+      let scale = 1 + renderDistance * 0.12
+      let height = 0.24 * scale
+      var y = (renderDistance - 3) * 0.12
+      // 方角が近いタグ同士は重ならないよう上に積む
+      while placed.contains(where: {
+        abs(Self.angleDifference($0.bearing, tag.bearing)) < 12 && y < $0.top && y + height > $0.bottom
+      }) {
+        y += height * 1.15
+      }
+      placed.append((tag.bearing, y + height, y))
+
+      let yaw = northYaw + Float(tag.bearing * .pi / 180)
+      let direction = SIMD3<Float>(sin(yaw), 0, -cos(yaw))
+      let target = cameraPosition + direction * renderDistance + SIMD3<Float>(0, y, 0)
+
+      let distanceText = Self.distanceText(tag.distance)
+      let textureKey = "\(tag.title)|\(tag.description)|\(distanceText)"
+      if var existing = geoTagEntities[tag.postId] {
+        if existing.textureKey != textureKey {
+          existing.entity.model?.materials = [makeGeoTagMaterial(tag, distanceText: distanceText)]
+          existing.textureKey = textureKey
+        }
+        existing.target = target
+        existing.entity.scale = SIMD3<Float>(repeating: scale)
+        geoTagEntities[tag.postId] = existing
+      } else {
+        let entity = ModelEntity(mesh: geoTagMesh, materials: [makeGeoTagMaterial(tag, distanceText: distanceText)])
+        entity.position = target
+        entity.scale = SIMD3<Float>(repeating: scale)
+        geoTagRoot.addChild(entity)
+        geoTagEntities[tag.postId] = (entity, textureKey, target)
+      }
+    }
+  }
+
+  private static func angleDifference(_ a: Double, _ b: Double) -> Double {
+    var d = (a - b).truncatingRemainder(dividingBy: 360)
+    if d > 180 { d -= 360 }
+    if d < -180 { d += 360 }
+    return d
+  }
+
+  private static func distanceText(_ meters: Double) -> String {
+    if meters >= 1000 { return String(format: "%.1fkm", meters / 1000) }
+    let step: Double = meters < 100 ? 5 : 10
+    return "\(Int(max(step, (meters / step).rounded() * step)))m"
+  }
+
+  private func makeGeoTagMaterial(_ tag: GeoTagData, distanceText: String) -> UnlitMaterial {
+    var material = UnlitMaterial()
+    if #available(iOS 15.0, *) {
+      material.blending = .transparent(opacity: .init(scale: 1.0))
+    }
+    let image = createGeoTagImage(tag, distanceText: distanceText)
+    if let cgImage = image.cgImage,
+       let texture = try? TextureResource.generate(from: cgImage, options: .init(semantic: .color)) {
+      material.color = .init(tint: .white, texture: .init(texture))
+    }
+    return material
+  }
+
+  private func createGeoTagImage(_ tag: GeoTagData, distanceText: String) -> UIImage {
+    let size = CGSize(width: 640, height: 240)
+    return UIGraphicsImageRenderer(size: size).image { _ in
+      let accent = parseHexColor(tag.color.isEmpty ? "#10B981" : tag.color)
+      let rect = CGRect(origin: .zero, size: size).insetBy(dx: 8, dy: 8)
+      let path = UIBezierPath(roundedRect: rect, cornerRadius: 28)
+      UIColor(white: 1.0, alpha: 0.88).setFill()
+      path.fill()
+      accent.withAlphaComponent(0.9).setStroke()
+      path.lineWidth = 5
+      path.stroke()
+
+      let message = tag.description.isEmpty ? "（メッセージ）" : tag.description
+      let paragraph = NSMutableParagraphStyle()
+      paragraph.lineBreakMode = .byTruncatingTail
+      message.draw(
+        with: CGRect(x: 36, y: 30, width: size.width - 72, height: 110),
+        options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine],
+        attributes: [
+          .font: UIFont.systemFont(ofSize: 40, weight: .bold),
+          .foregroundColor: UIColor(red: 30/255.0, green: 41/255.0, blue: 59/255.0, alpha: 1.0),
+          .paragraphStyle: paragraph,
+        ],
+        context: nil
+      )
+
+      let footerAttrs: [NSAttributedString.Key: Any] = [
+        .font: UIFont.systemFont(ofSize: 28, weight: .semibold),
+        .foregroundColor: UIColor(red: 100/255.0, green: 116/255.0, blue: 139/255.0, alpha: 1.0),
+      ]
+      (tag.title.isEmpty ? "guest" : tag.title).draw(
+        in: CGRect(x: 36, y: 170, width: 360, height: 40), withAttributes: footerAttrs)
+
+      let distanceAttrs: [NSAttributedString.Key: Any] = [
+        .font: UIFont.systemFont(ofSize: 30, weight: .bold),
+        .foregroundColor: accent,
+      ]
+      let pin = "📍 \(distanceText)"
+      let pinSize = (pin as NSString).size(withAttributes: distanceAttrs)
+      pin.draw(at: CGPoint(x: size.width - 36 - pinSize.width, y: 168), withAttributes: distanceAttrs)
+    }
+  }
+
   private func emitRelocalizationStatus(_ phase: String, postId: String, extra: [String: Any] = [:]) {
+    switch phase {
+    case "downloading":
+      showGuide(.init(symbol: "arrow.down.circle", title: "近くのメッセージを読み込み中", subtitle: nil, sways: false))
+    case "relocalizing":
+      let message = relocalization?.cards[postId]?.description ?? ""
+      showGuide(.init(
+        symbol: "iphone",
+        title: "iPhoneを動かして場所を探す",
+        subtitle: message.isEmpty
+          ? "机の上だけでなく、周りの壁や黒板も映してください"
+          : "「\(message)」の周りを、壁や黒板も含めて映してください",
+        sways: true
+      ))
+    case "mapExtended":
+      break
+    default:
+      hideGuide()
+    }
+
     var payload: [String: Any] = ["phase": phase, "postId": postId]
     payload.merge(extra) { _, new in new }
     onRelocalizationStatus?(payload)
@@ -1220,5 +1533,111 @@ private struct SupabaseStorage {
       return .failure(StorageError(message: "HTTP \(statusCode) \(text)"))
     }
     return .success(body ?? Data())
+  }
+}
+
+// ARCoachingOverlayView 風の案内。画面を少し暗くし、中央に揺れるアイコンと短い一言を出す。
+// タップは下の AR ビューに通す
+private final class ARGuideHUDView: UIView {
+  struct Guide: Equatable {
+    let symbol: String
+    let title: String
+    let subtitle: String?
+    let sways: Bool
+  }
+
+  private let iconView = UIImageView()
+  private let titleLabel = UILabel()
+  private let subtitleLabel = UILabel()
+  private var currentGuide: Guide?
+
+  override init(frame: CGRect) {
+    super.init(frame: frame)
+    isUserInteractionEnabled = false
+    backgroundColor = UIColor.black.withAlphaComponent(0.28)
+    alpha = 0
+
+    iconView.tintColor = .white
+    iconView.contentMode = .scaleAspectFit
+    iconView.preferredSymbolConfiguration = UIImage.SymbolConfiguration(pointSize: 64, weight: .light)
+
+    titleLabel.font = .systemFont(ofSize: 22, weight: .semibold)
+    titleLabel.textColor = .white
+    titleLabel.textAlignment = .center
+    titleLabel.numberOfLines = 0
+
+    subtitleLabel.font = .systemFont(ofSize: 15, weight: .regular)
+    subtitleLabel.textColor = UIColor.white.withAlphaComponent(0.85)
+    subtitleLabel.textAlignment = .center
+    subtitleLabel.numberOfLines = 0
+
+    for label in [titleLabel, subtitleLabel] {
+      label.layer.shadowColor = UIColor.black.cgColor
+      label.layer.shadowOpacity = 0.35
+      label.layer.shadowRadius = 6
+      label.layer.shadowOffset = .zero
+    }
+
+    let stack = UIStackView(arrangedSubviews: [iconView, titleLabel, subtitleLabel])
+    stack.axis = .vertical
+    stack.alignment = .center
+    stack.spacing = 14
+    stack.setCustomSpacing(8, after: titleLabel)
+    stack.translatesAutoresizingMaskIntoConstraints = false
+    addSubview(stack)
+    NSLayoutConstraint.activate([
+      stack.centerXAnchor.constraint(equalTo: centerXAnchor),
+      stack.centerYAnchor.constraint(equalTo: centerYAnchor),
+      stack.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor, constant: 32),
+      stack.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -32),
+      iconView.heightAnchor.constraint(equalToConstant: 84),
+    ])
+  }
+
+  required init?(coder: NSCoder) {
+    fatalError("init(coder:) has not been implemented")
+  }
+
+  func show(_ guide: Guide) {
+    guard guide != currentGuide else { return }
+    let isFirst = currentGuide == nil
+    currentGuide = guide
+
+    let apply = {
+      self.iconView.image = UIImage(systemName: guide.symbol)
+      self.titleLabel.text = guide.title
+      self.subtitleLabel.text = guide.subtitle
+      self.subtitleLabel.isHidden = guide.subtitle == nil
+    }
+    if isFirst {
+      apply()
+      UIView.animate(withDuration: 0.3) { self.alpha = 1 }
+    } else {
+      UIView.transition(with: self, duration: 0.25, options: .transitionCrossDissolve, animations: apply)
+    }
+
+    iconView.layer.removeAnimation(forKey: "sway")
+    if guide.sways {
+      // Apple のコーチングのように、iPhone を左右に振る動き
+      let sway = CAKeyframeAnimation(keyPath: "transform")
+      let left = CATransform3DRotate(CATransform3DMakeTranslation(-26, 0, 0), -.pi / 14, 0, 0, 1)
+      let right = CATransform3DRotate(CATransform3DMakeTranslation(26, 0, 0), .pi / 14, 0, 0, 1)
+      sway.values = [CATransform3DIdentity, left, CATransform3DIdentity, right, CATransform3DIdentity].map { NSValue(caTransform3D: $0) }
+      sway.keyTimes = [0, 0.25, 0.5, 0.75, 1]
+      sway.timingFunctions = Array(repeating: CAMediaTimingFunction(name: .easeInEaseOut), count: 4)
+      sway.duration = 2.4
+      sway.repeatCount = .infinity
+      iconView.layer.add(sway, forKey: "sway")
+    }
+  }
+
+  func hide() {
+    guard currentGuide != nil else { return }
+    currentGuide = nil
+    UIView.animate(withDuration: 0.3, animations: { self.alpha = 0 }) { _ in
+      if self.currentGuide == nil {
+        self.iconView.layer.removeAnimation(forKey: "sway")
+      }
+    }
   }
 }

@@ -31,8 +31,15 @@ npm run typecheck    # tsc --noEmit（唯一の静的チェック）
 ### ARWorldMap による場所の再現（iOS のみ）
 - 保存：カードは仮名 `pending:<uuid>` の `ARAnchor` 上に置かれ、`onCardPlaced` で `anchorId` が返る。JS が投稿を insert して ID を得ると `worldMapSaveRequest` を渡し、ネイティブはアンカーを `post:<posts.id>` に作り直してから `worldMappingStatus` が mapped になるまで待つ。その後、地図を Supabase Storage の `worldmaps/<postId>.worldmap` に直接アップロードする（`SupabaseStorage` struct）。最後に JS が `posts.worldmap_path` を更新する。
 - 復元：ホーム表示中は `Geolocation.watchPosition` で現在地を追い、位置が変わるたびに `worldMapService.findNearbyWorldMapPosts` が 30m 以内の地図付き投稿を新しい順に取る。一番新しい地図と近くの投稿全件のカード内容を `relocalizeTarget` に渡す（GPS 誤差があるので距離では選ばない）。ネイティブは地図をダウンロードして `initialWorldMap` でセッションをやり直し、戻ってきた `post:<id>` アンカーのうち内容を知っている投稿をすべてカードで表示する。
-- 地図を育てる：照合に成功したログインユーザーがその場で見回すと（前回の保存から 15 秒以上経ち、1m 以上動くか 60° 以上向きを変えた、かつ mapped のとき）、その地図を同じパスに上書き保存する。1 セッション最大 3 回、10MB まで（`checkMapGrowth`）。他人の地図を上書きするので、Storage の UPDATE ポリシーは認証ユーザー全員に開いている。
+- 地図を育てる：照合に成功したログインユーザー、または地図を保存した直後の投稿者本人がその場で見回すと（前回の保存から 15 秒以上経ち、1m 以上動くか 60° 以上向きを変えた、かつ mapped か extending のとき）、その地図を同じパスに上書き保存する。1 セッション最大 3 回、10MB まで（`checkMapGrowth`）。他人の地図を上書きするので、Storage の UPDATE ポリシーは認証ユーザー全員に開いている。
+- 記録中・照合中の案内は、ネイティブの `ARGuideHUDView`（ARCoachingOverlayView 風）が `emitWorldMapStatus` / `emitRelocalizationStatus` の phase に連動して出す。JS 側に案内のバナーは無い。
 - 進捗は `onWorldMapStatus` / `onRelocalizationStatus` で JS に通知される。DB 側の設定は `supabase/migrations/` にある。
+
+### 方角タグ（セカイカメラ風、iOS のみ）
+- 位置合わせ（照合）なしで、周りの投稿を AR 画面に一斉に浮かべる。JS が `nearbyPostService.findNearbyPosts` で 300m 以内の投稿を近い順に最大 20 件取り、`src/utils/geo.ts` で距離と方角（北=0° 時計回り）を計算して `geoTags` prop に渡す。距離・方角の計算は、レーダーや通知でも使い回す前提。
+- ネイティブは CoreMotion（`xTrueNorthZVertical`）のカメラの方角と ARKit カメラのヨー角の差から、AR 座標での北を求めて平滑化する（`northOffset`）。その方向の 3〜14m 先（実距離を圧縮）にタグを置き、毎フレームカメラの方を向かせる。セッションをやり直すと北を求め直す。
+- 地図の照合や自分の配置で正確な位置にカードが出ている投稿（`preciseCardPostIds`）のタグは消す。配置プレビュー中はタグを隠す。
+- Android 側はまだ未対応（`geoTags` prop は無視される）。
 
 ### ネイティブ AR ビュー（ブリッジ）
 `src/native/UniversalARView.tsx` は `requireNativeComponent` の薄いラッパー。**登録名がプラットフォームごとに違う**：iOS は `ARView`、Android は `ARViewManager`。
