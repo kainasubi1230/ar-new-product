@@ -13,25 +13,33 @@ export interface NearbyPost {
   author: string | null;
   handle: string | null;
   tags: string[] | null;
+  /** 投稿者（自分の投稿はポケット通知しない） */
+  user_id: string | null;
   /** 置いたときの GPS の誤差（m） */
   accuracy_m: number | null;
   /** 置いたときの景色の写真（気配をタップしたときに見せる） */
   snapshot_path: string | null;
+  /** メッセージ（カード）の位置。探索ページの地図のピンに使う */
+  latitude: number;
+  longitude: number;
   distanceM: number;
   /** 現在地から見た方角（北=0°、時計回り） */
   bearingDeg: number;
 }
 
 /**
- * 現在地から NEARBY_RADIUS_M 以内の投稿を、近い順に NEARBY_LIMIT 件返す（地図の有無は問わない）
+ * 現在地から radiusM（既定 NEARBY_RADIUS_M）以内の投稿を、近い順に limit（既定 NEARBY_LIMIT）件返す（地図の有無は問わない）
  */
-export const findNearbyPosts = async (coords: LocationCoords): Promise<NearbyPost[]> => {
+export const findNearbyPosts = async (
+  coords: LocationCoords,
+  { radiusM = NEARBY_RADIUS_M, limit = NEARBY_LIMIT }: { radiusM?: number; limit?: number } = {}
+): Promise<NearbyPost[]> => {
   const { latitude, longitude } = coords;
-  const { latDelta, lngDelta } = boundingDeltas(latitude, NEARBY_RADIUS_M);
+  const { latDelta, lngDelta } = boundingDeltas(latitude, radiusM);
 
   const { data, error } = await supabase
     .from('posts')
-    .select('id, message, author, handle, tags, accuracy_m, snapshot_path, lat, lng')
+    .select('id, message, author, handle, tags, user_id, accuracy_m, snapshot_path, lat, lng')
     .gte('lat', latitude - latDelta)
     .lte('lat', latitude + latDelta)
     .gte('lng', longitude - lngDelta)
@@ -44,10 +52,12 @@ export const findNearbyPosts = async (coords: LocationCoords): Promise<NearbyPos
   return (data ?? [])
     .map(({ lat, lng, ...post }) => ({
       ...post,
+      latitude: lat,
+      longitude: lng,
       distanceM: distanceInMeters(latitude, longitude, lat, lng),
       bearingDeg: bearingDegrees(latitude, longitude, lat, lng),
     }))
-    .filter((post) => post.distanceM <= NEARBY_RADIUS_M)
+    .filter((post) => post.distanceM <= radiusM)
     .sort((a, b) => a.distanceM - b.distanceM)
-    .slice(0, NEARBY_LIMIT);
+    .slice(0, limit);
 };

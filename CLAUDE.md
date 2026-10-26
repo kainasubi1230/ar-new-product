@@ -44,16 +44,16 @@ npm run typecheck    # tsc --noEmit（唯一の静的チェック）
 - ネイティブは CoreMotion（`xTrueNorthZVertical`）のカメラの方角と ARKit カメラのヨー角の差から、AR 座標での北を求めて平滑化する（`northOffset`）。タグは「GPS の位置が届いたときのカメラ位置」（`geoOriginCameraPosition`、`geoTags` が更新されたときに記録）から、その方向の実際の距離（上限 `geoTagMaxRenderDistance` 40m）に置いて空間に固定し、毎フレームカメラの方を向かせる。今のカメラ基準で置き直すと歩いた分だけ逃げていくので、そうしない。見かけの幅（角度）は本当の距離で決める（30m で約 0.17rad、300m で約 0.10rad）。重なりは方角と仰角で判定して上に積む。セッションをやり直すと北と基準位置を求め直す。
 - 見え方は位置の確かさと距離で決める。しきい値は `src/config/distanceTiers.ts` の `DISTANCE_TIERS` だけで決める（`maxM` 300 / `messageM` 100 / `preciseM` 30。`NEARBY_RADIUS_M` と `WORLDMAP_RADIUS_M` もここから取る）。JS が `geoTagLevelFor` で各タグの `level` を決めて渡す。
   - 照合に成功：正確な位置にくっきりしたカード。その投稿のタグ・気配は消す（`preciseCardPostIds`）
-  - 〜`preciseM` で照合できていない：`presence`。その方角の実際の距離に、文字のない光の「気配」（`presenceMesh` + 放射状グラデーション、4 秒周期でゆっくり明滅）。大きさは位置の不確かさ `uncertaintyM`（置いたときと今の GPS 誤差を合わせたもの、`positionUncertaintyFor`）で決める。タップすると `onPresenceTapped` → `PresenceSheet` が「このあたりに○○さんのメッセージがあります（景色が合うとその場所に現れます）」と置いたときの景色の写真を出す（本文は見せない）
+  - 〜`preciseM` で照合できていない：`presence`。その方角の実際の距離に、文字のない光の「気配」（`presenceMesh` + 放射状グラデーション、4 秒周期でゆっくり明滅）。大きさは位置の不確かさ `uncertaintyM`（置いたときと今の GPS 誤差を合わせたもの、`positionUncertaintyFor`）で決める。光は近づくと画面を覆うので、見かけの大きさに上限（カメラからの距離 × `glowMaxApparentSize`）を付け、`glowFadeStart`〜`glowFadeEnd`（0.8〜2.5m）で近づくほど薄くする（`glowNearFade`。隠れたカードの光も同じ）。タップすると `onPresenceTapped` → `PresenceSheet` が「このあたりに○○さんのメッセージがあります（景色が合うとその場所に現れます）」と置いたときの景色の写真を出す（本文は見せない）
   - `preciseM`〜`messageM`：`message`。本文も読めるタグ（`createGeoTagImage`）
   - `messageM`〜`maxM`：`summary`。タグと距離だけの小さいタグ（`createGeoTagSummaryImage`）
 - 配置プレビュー中はタグを隠す。
 - 起動を速くするため、現在地は 3 段で埋める（App.tsx）：AsyncStorage の前回位置（`loca:lastCoords`）→ iOS のキャッシュ位置（`getCurrentPosition` の低精度・`maximumAge` 10 分）→ `watchPosition` の正確な位置。前の 2 つは `isApproximate: true` で、方角タグには使うが ARWorldMap の照合には使わない。
 - `watchPosition` の値は `GpsAverager`（`src/utils/gpsAverager.ts`）に通す。誤差 15m 超は捨て、直近 5 回の良い値を誤差の小ささで重み付け平均する。屋内などで 20 秒良い値が来なければ、誤差 65m 以内の最良値を使う。平均位置が 5m 以上動いたときだけ `currentCoords` を更新する。しきい値は `src/config/locationAccuracy.ts`。
-- 北の向き（`northOffset`）は 1 回で決めず、直近 4 秒の測定値の平均（cos/sin の平均）で決める。最初は 1 秒集めてから決める。コンパスの精度（`CLLocationManager` の `headingAccuracy`）が 25° より悪い間の測定値は混ぜない（まだ北が無いときだけは使う）。悪い状態が 2 秒続くと `onCompassStatus` で 8 の字の補正を案内し、15° 以下に戻ったら消す。
+- 北の向き（`northOffset`）は 1 回で決めず、直近 4 秒の測定値の平均（cos/sin の平均）で決める。最初は 1 秒集めてから決める。コンパスの精度（`CLLocationManager` の `headingAccuracy`）が 25° より悪い間の測定値は混ぜない（まだ北が無いときだけは使う）。悪い状態が 2 秒続くと `onCompassStatus` を送るが、今はホームに 8 の字の案内は出していない（出すのは「正確な位置情報がオフ」の案内だけ）。
 - 位置情報が「おおよそ」でしか許可されていない（`accuracyAuthorization == .reducedAccuracy`）と `onLocationAccuracyStatus` で知らせ、App.tsx が「設定を開く」付きの案内を出す。
 - ネイティブはタグごとに `GeoTagEntity`（目標の位置・大きさ・濃さと、現在値）を持ち、毎フレーム時間ベースで目標へ寄せる（パッと飛ばさない）。新しいタグは近い順に `geoTagStaggerDelay` ずつ遅れてふわっと現れ、範囲外になったタグはふわっと消える。北を求め直した直後（`needsGeoTagSnap`）だけは、その場に置き直してもう一度ふわっと出す。
-- 濃さは JS の `prominence`（`geoTagProminenceFor`、近いほど 1）から決める。透明度（`OpacityComponent`）は iOS 18 以上のみで、それ未満は大きさの変化だけになる。`highlighted`（`src/utils/interestTags.ts` の `matchesInterestTags`）が true の投稿は少し大きく濃く出す。今は App.tsx の `INTEREST_TAGS` が空なので、全件同じ見た目。
+- 濃さは JS の `prominence`（`geoTagProminenceFor`、近いほど 1）から決める。透明度（`OpacityComponent`）は iOS 18 以上のみで、それ未満は大きさの変化だけになる。`highlighted`（`src/utils/interestTags.ts` の `matchesInterestTags`）が true の投稿は少し大きく濃く出す。関心タグは下の「関心タグとポケット通知」を参照。
 - Android 側はまだ未対応（`geoTags` prop は無視される）。
 
 ### ネイティブ AR ビュー（ブリッジ）
@@ -65,13 +65,29 @@ prop やイベントを追加・変更するときは、TS の型定義・iOS �
 
 ### Supabase
 - クライアントは `src/lib/supabase.ts`。URL と publishable key はハードコードされていて、`.env` は使っていない。セッションは AsyncStorage に保存し、`react-native-url-polyfill` が必須。
+- アクセストークンは約 1 時間で切れる。`src/lib/supabase.ts` でアプリが前に出ている間だけ自動更新し（`AppState` で `startAutoRefresh` / `stopAutoRefresh`）、App.tsx が `onAuthStateChange`（TOKEN_REFRESHED を含む）で受けた最新のトークンを `supabaseAccessToken` prop でネイティブに渡す。ネイティブの `SupabaseStorage` は依頼に入っていた古いトークンより `latestAccessToken` を優先し、ダウンロードが 400/401/403 で拒否されたらトークンなし（anon）で読み直す（worldmaps バケットは誰でも読める）。
 - 認証（メール＋パスワード）は `src/services/authService.ts`。username はサインアップ時に `user_metadata.username` へ入る。
-- `posts` テーブルのカラム（`postService.ts` から推定）：`message, lat, lng, alt_m, heading_deg, camera_lat, camera_lng, accuracy_m, author, handle, tags[], ar_x, ar_y, ar_z, worldmap_path, worldmap_post_ids[], snapshot_path, user_id`。
+- `posts` テーブルのカラム（`postService.ts` から推定）：`message, lat, lng, alt_m, heading_deg, camera_lat, camera_lng, accuracy_m, author, handle, tags[], ar_x, ar_y, ar_z, worldmap_path, worldmap_post_ids[], snapshot_path, read_count, place_name, user_id`。`place_name` は置いた場所の名前で、投稿を保存したあとに `fillPostPlaceName`（カードの lat / lng から `reverseGeocode`）で書き足す。名前の無い古い投稿は、マイページを開いたときに 10 件ずつ埋める（列は `20261026080000_posts_place_name.sql`）。
   - メッセージの本体は「その場所の座標」。`lat / lng / alt_m` はスマホではなくカード自体の位置（`postService.insertPostWithCurrentLocation`：スマホの GPS（平均済みの `currentCoords` があれば優先）＋ ネイティブが `onCardPlaced` で送るカメラからのずれ `offsetEastM / offsetNorthM / offsetUpM`（`northOffset` で東・北に直したもの））。`heading_deg` はカードの面の方位、`camera_lat / camera_lng` は元にしたスマホの位置、`accuracy_m` はそのときの GPS の誤差。北が分からないときはずれを送らず、スマホの位置をそのまま使う。方角タグなどの照合できないときの表示は `lat / lng` を使うので、自動的にカードの座標になる。2026-10-26 より前の投稿の `lat / lng` はスマホの位置。`user_id` は DB のデフォルト値 `auth.uid()` で自動的に入り、投稿者だけが自分の行を UPDATE できる。
 
+### 探索画面（地図）
+- `DiscoveryMapScreen` は `react-native-maps`（iOS は Apple のマップ＝MapKit。API キー・料金なし）で、App.tsx の `nearbyPosts`（方角タグと同じ `findNearbyPosts` の結果、近い順。メッセージ＝カードの `latitude / longitude` つき）をピンで出す。現在地の追跡と近くの投稿の取得は、ホームと探索を開いている間（`isLocationActive`）動く。
+- ピンの見た目と、下のカードで本文を見せるかは `geoTagLevelFor` の段階で AR とそろえる（presence：淡いピン＋位置の誤差 `accuracy_m` の輪で「このあたり」・本文なし、message：本文あり、summary：小さく薄いピン・本文なし）。
+- 下のカードの「右前方 80m」と矢印は、スマホの向き `useHeading`（`src/hooks/useHeading.ts`）を使う。AR ビューは他のタブで破棄されるので、方位だけを送るネイティブの `LocaHeading`（`RCTEventEmitter`、`CLLocationManager` の heading）を ARViewWrapper.swift の末尾に置き、`ARViewManagerBridge.m` で公開している（新しい Swift ファイルを足すと Xcode のプロジェクト設定の編集が要るため）。
+
+### 関心タグとポケット通知
+- 関心タグとポケット通知のオン・オフは `src/services/preferencesStore.ts`（AsyncStorage の `loca:preferences`）に保存し、`usePreferences` で共有する。設定する場所はマイページの「関心タグ」タブ（とタグ管理モーダル。どちらも同じ値を読み書き）。関心タグに合う投稿は、AR の方角タグ（`highlighted`）と地図のピン（`pinHeadInterest`）で少し目立たせる。
+- ポケット通知は、関心タグに合うメッセージ（自分の投稿以外）から `POCKET_NOTICE.radiusM`（20m）以内に入ったらローカル通知を出す（本文は出さない）。位置の見張り・判定・通知・履歴はネイティブの `LocaPocket`（ARViewWrapper.swift の末尾、`ARViewManagerBridge.m` で公開）が行い、アプリを開いてからポケットに入れた状態（画面ロック・別アプリ）でも届く（`allowsBackgroundLocationUpdates`。Info.plist の `UIBackgroundModes: location`。位置の許可は「使用中のみ」のまま）。アプリを完全に閉じた状態は対象外。
+- JS（App.tsx）は、ネイティブから届く位置（`pocketLocation`、50m ごと）で `refetchDistanceM` 動くたびに `findNearbyPosts`（`targetRadiusM` 500m）を取り直し、対象を `updatePocketTargets` で渡す。通知は同じメッセージで 1 日 1 回、通知どうし 3 分あける、GPS 誤差 30m 超では判定しない（`src/config/pocketNotice.ts`）。通知のタップでホームを開く。通知画面は `LocaPocket.getHistory`（UserDefaults、最大 50 件）の履歴を出す。
+
+### 拾った言葉
+- 照合で出した他の人のカード（隠れずに見えているもの、`revealedCard`）をタップすると、ネイティブが `onCardTapped` を送り、JS（`handleCardTapped`）が `readService.collectPost` で `post_reads`（post_id, user_id, read_at）に記録して「📖 ○○さんの言葉を拾いました」と出す（カードは軽くふくらむ）。もう拾っていれば「この言葉はもう拾っています」（主キー重複 23505）。ログイン中だけ、自分の言葉はタップしても何もしない。
+- 他の人のカードが初めて画面に現れたとき（`onRelocalizationStatus(seen)`）に、「カードをタップすると、言葉を拾えます」を 1 回の起動で 1 回だけ出す。
+- マイページの「拾った言葉」は `fetchCollectedPosts`、「残した言葉」の「◯人が読んだよ」と、AR のカードの右下の「👣 3」は `posts.read_count`（拾われた人数。`post_reads` の追加・削除で DB のトリガーが増減する。`20261026060000_post_read_count.sql`。拾った記録そのものは本人と投稿者しか読めないが、人数は誰でも読める）。テーブルと RLS は `supabase/migrations/20261026040000_post_reads.sql`。拾うときは、そのときの自分の位置（`post_reads.lat / lng`）と場所の名前（`place_name`。ネイティブの `LocaGeocoder`＝iOS 標準の `CLGeocoder` で求める。3 秒で取れなければ null。`src/services/geocoder.ts`）も残し、マイページに「📍 天神で 10/26 に拾った」と出す（列は `20261026070000_post_reads_place.sql`）。拾った言葉はマイページから外せる（`uncollectPost`、自分の記録だけ消せる DELETE ポリシーは `20261026050000_post_reads_delete.sql`）。外しても相手の言葉は消えず、その言葉の「誰かが読んだよ」が 1 減る。
+
 ### その他
-- デバッグ表示：`src/config/debug.ts` の `SHOW_AR_DEBUG`（既定は `__DEV__`）が true だと、AR 画面の左下に `ARDebugOverlay` を出す。ネイティブは `debugEnabled` のときだけ 0.5 秒ごとに `onDebugInfo`（trackingState・worldMappingStatus・照合フェーズ・読み込んだ地図と中の post: アンカー・didAdd と normal 到達の時刻）を送る。照合を止めている理由は App.tsx の `relocalizeBlockReasons` で、照合を始めるかの判定にも同じ一覧を使う（表示と判定がずれないように）。
+- 画面のお知らせは `showToast(message, kind, { symbol, subtitle })`。ホーム（AR）では `notice` prop でネイティブの案内画面（`ARGuideHUDView`、「近くのメッセージを読み込み中」と同じ見た目：少し暗くして中央に SF Symbols のアイコンと一言）に 2.5 秒出す。記録中・照合中の案内（`persistentGuide`）を出している最中なら、お知らせのあとにその案内へ戻る。ホーム以外（AR ビューが無い）では画面下の小さな帯 `CalmToast`。文言は短く穏やかにし、絵文字や失敗の詳しい理由は出さない（理由は console に出す）。`notice` は一度きりの命令なので 3 秒後に JS で `null` に戻す。
+- デバッグ表示：`src/config/debug.ts` の `SHOW_AR_DEBUG`（`__DEV__`）が true のビルドで、ホームの見出し「ホーム」を長押しすると AR 画面の左下に `ARDebugOverlay` が出る（もう一度長押しで消える。ふだんは出さない）。ネイティブは `debugEnabled` のときだけ 0.5 秒ごとに `onDebugInfo`（trackingState・worldMappingStatus・照合フェーズ・読み込んだ地図と中の post: アンカー・didAdd と normal 到達の時刻）を送る。照合を止めている理由は App.tsx の `relocalizeBlockReasons` で、照合を始めるかの判定にも同じ一覧を使う（表示と判定がずれないように）。
 - マイページの「自分の投稿」は `posts.user_id = auth.uid()` で取る。削除は `postService.deleteMyPost`：Storage の `<id>.worldmap` と `snapshots/<id>.jpg` を先に消してから投稿を消す（Storage の削除ポリシーは「投稿の持ち主か」で判定するため、順番が逆だと消せない）。ポリシーは `supabase/migrations/20261026010000_post_delete.sql`。
 - AR カード・配置プレビュー・方角タグに描くタグは `posts.tags` を使う。配置中のカードは `cardTags` prop、照合で出すカードは `RelocalizeCard.cardTags`、方角タグは `GeoTag.cardTags` で渡す。空ならタグの行を描かない（`ARViewWrapper.tagLine`）。
 - `src/assets/icons/index.ts` が PNG アイコンをまとめて `Icons` としてエクスポートしている。
-- 通知画面は `src/data/notifications.ts` の静的モックデータで、まだバックエンドとは接続していない。

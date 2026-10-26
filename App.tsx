@@ -13,7 +13,7 @@ import {
 } from 'react-native';
 
 import type { User } from '@supabase/supabase-js';
-import { DiscoveryRadarScreen } from './src/components/DiscoveryRadarScreen';
+import { DiscoveryMapScreen } from './src/components/DiscoveryMapScreen';
 import { MyPageScreen } from './src/components/MyPageScreen';
 import { NotificationScreen } from './src/components/NotificationScreen';
 import { PostModal } from './src/components/PostModal';
@@ -21,6 +21,7 @@ import { TagManageModal } from './src/components/TagManageModal';
 import {
   UniversalARView,
   type ARDebugInfoEvent,
+  type ARNotice,
   type GeoTag,
   type RelocalizationStatusEvent,
   type RelocalizeTarget,
@@ -40,7 +41,22 @@ import {
   relocalizeSearchRadiusFor,
 } from './src/config/distanceTiers';
 import { PresenceSheet } from './src/components/PresenceSheet';
+import { CalmToast, type ToastKind, type ToastMessage } from './src/components/CalmToast';
+import { SparkleBurst, type Sparkle } from './src/components/SparkleBurst';
 import { matchesInterestTags } from './src/utils/interestTags';
+import { usePreferences } from './src/services/preferencesStore';
+import { collectPost } from './src/services/readService';
+import { reverseGeocode } from './src/services/geocoder';
+import {
+  isPocketNoticeSupported,
+  onNotificationOpened,
+  onPocketLocation,
+  requestNotificationPermission,
+  startPocketNotice,
+  stopPocketNotice,
+  updatePocketTargets,
+} from './src/services/pocketNotificationService';
+import { POCKET_NOTICE } from './src/config/pocketNotice';
 import { GpsAverager } from './src/utils/gpsAverager';
 import { LOCATION_ACCURACY } from './src/config/locationAccuracy';
 import { SHOW_AR_DEBUG } from './src/config/debug';
@@ -63,10 +79,15 @@ type TabType = 'home' | 'radar' | 'notifications' | 'mypage';
 // ARWorldMap による「置いた場所の再現」は iOS (ARKit) のみ
 const isWorldMapSupported = Platform.OS === 'ios';
 
+// お知らせのアイコン（SF Symbols）。個別に指定しなければ種類で決める
+const DEFAULT_NOTICE_SYMBOLS: Record<ToastKind, string> = {
+  info: 'info.circle',
+  success: 'checkmark.circle',
+  error: 'exclamationmark.circle',
+};
+
 // 前回の現在地。起動直後は GPS を待たずにこれで方角タグを出し、正確な位置が取れたら差し替える
 const LAST_COORDS_STORAGE_KEY = 'loca:lastCoords';
-// 関心タグ（まだ設定画面とつないでいないので空。入れると、合う投稿の方角タグが少し強調される）
-const INTEREST_TAGS: readonly string[] = [];
 
 type TrackedCoords = LocationCoords & {
   /** 前回の位置や、精度の低いキャッシュ。方角タグには使うが、地図の照合には使わない */
@@ -81,16 +102,23 @@ export default function App(): React.JSX.Element {
 
   // Auth User
   const [user, setUser] = useState<User | null>(null);
+  // ログイン中のアクセストークン（約 1 時間で更新される）。ネイティブが Storage に地図や写真を読み書きするのに使う
+  const [accessToken, setAccessToken] = useState<string | null>(null);
 
   // AR Card Data
   const [currentMessage, setCurrentMessage] = useState<string>('ここの席、午後の光が最高。');
   const [currentAuthor] = useState<string>('sora');
   const [currentHandle] = useState<string>('@sora');
   const [selectedTag, setSelectedTag] = useState<string>('#カフェ');
-  const [selectedTags, setSelectedTags] = useState<string[]>(['#カフェ']);
+  // これから置くカードのタグ（投稿画面で選んだもの）
+  const [selectedTags, setSelectedTags] = useState<string[]>([]);
   const [placeTrigger, setPlaceTrigger] = useState<number>(0);
   const [isPlacementMode, setIsPlacementMode] = useState<boolean>(false);
-  const [toastMessage, setToastMessage] = useState<string | null>(null);
+  // 画面の下に出る小さなお知らせ（CalmToast）
+  const [toast, setToast] = useState<ToastMessage | null>(null);
+  // ホーム（AR）でのお知らせ。ネイティブの案内画面に 2.5 秒出る（id が変わるたびに出す）
+  const [notice, setNotice] = useState<ARNotice | null>(null);
+  const noticeTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const toastTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // ARWorldMap
@@ -110,12 +138,13 @@ export default function App(): React.JSX.Element {
   // 照合する地図を探すための位置。誤差 15m 以下の平均（currentCoords）を待たず、
   // GPS の生の値が fallbackMaxAccuracyM 以内なら使う（候補を広めに探して、景色で確かめるため）
   const [relocalizeCoords, setRelocalizeCoords] = useState<LocationCoords | null>(null);
-  const interestTags = INTEREST_TAGS;
+  // 関心タグとポケット通知の設定（マイページ・タグ管理で変える。端末に保存）
+  const { interestTags, setInterestTags, pocketNoticeEnabled } = usePreferences();
   // 位置情報が「おおよそ」でしか許可されていないと、方角タグが大きくずれる
   const [isFullAccuracy, setIsFullAccuracy] = useState<boolean>(true);
-  // コンパスの精度が悪い間は、8 の字の補正を案内する
-  const [needsCompassCalibration, setNeedsCompassCalibration] = useState<boolean>(false);
-  // デバッグ表示（SHOW_AR_DEBUG のときだけ更新する）
+  // デバッグ表示。ふだんは出さず、ホームの見出しを長押しすると切り替わる（開発ビルドのときだけ）
+  const [isDebugVisible, setIsDebugVisible] = useState<boolean>(false);
+  // デバッグ表示の中身（SHOW_AR_DEBUG のときだけ更新する）
   const [nativeDebug, setNativeDebug] = useState<ARDebugInfoEvent | null>(null);
   const [relocalizeSearchDebug, setRelocalizeSearchDebug] = useState<RelocalizeSearchDebug | null>(null);
   const [rawGpsAccuracy, setRawGpsAccuracy] = useState<number | null>(null);
@@ -123,6 +152,14 @@ export default function App(): React.JSX.Element {
   // セカイカメラ風に、近くの投稿を方角タグとして AR 画面に浮かべる
   const [geoTags, setGeoTags] = useState<GeoTag[]>([]);
   const nearbyPostsRef = React.useRef<Map<string, NearbyPost>>(new Map());
+  // 「カードをタップすると、言葉を拾えます」は 1 回の起動で 1 回だけ
+  const hasShownCollectHintRef = React.useRef(false);
+  // 言葉を拾ったときに弾けるキラキラ（タップした画面上の位置）
+  const [sparkles, setSparkles] = useState<Sparkle[]>([]);
+  // 近くの投稿（近い順）。探索（レーダー）画面に出す
+  const [nearbyPosts, setNearbyPosts] = useState<NearbyPost[]>([]);
+  // 現在地を追うのは、ホーム（AR）と探索（レーダー）を開いている間
+  const isLocationActive = activeTab === 'home' || activeTab === 'radar';
   // 気配をタップしたときの案内（投稿者名と、置いたときの景色の写真）
   const [tappedPresence, setTappedPresence] = useState<{ authorName: string; snapshotPath: string | null } | null>(null);
   relocalizeTargetRef.current = relocalizeTarget;
@@ -131,12 +168,15 @@ export default function App(): React.JSX.Element {
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
       setUser(session?.user ?? null);
+      setAccessToken(session?.access_token ?? null);
     });
 
+    // トークンが更新されたとき（TOKEN_REFRESHED）も届くので、ネイティブには常に最新のトークンを渡せる
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((_event, session) => {
       setUser(session?.user ?? null);
+      setAccessToken(session?.access_token ?? null);
     });
 
     return () => {
@@ -155,15 +195,13 @@ export default function App(): React.JSX.Element {
       // 途中だった地図の記録・照合は消えるので状態を戻す。relocalizeTarget は残し、作り直されたビューで照合し直す
       setWorldMapPhase(null);
       setRelocalizationPhase(null);
-      // 作り直されたビューが改めて知らせてくる
-      setNeedsCompassCalibration(false);
       // 戻ってきたら、その時点の GPS で照合の候補を探し直す
       setRelocalizeCoords(null);
     }
   }, [activeTab]);
 
   useEffect(() => {
-    if (!isWorldMapSupported || activeTab !== 'home') {
+    if (!isWorldMapSupported || !isLocationActive) {
       return;
     }
     let cancelled = false;
@@ -252,7 +290,77 @@ export default function App(): React.JSX.Element {
       cancelled = true;
       Geolocation.clearWatch(watchId);
     };
-  }, [activeTab]);
+  }, [isLocationActive]);
+
+  // ポケット通知：オンの間、関心タグに合うメッセージ（自分の投稿以外）をネイティブに渡して見張ってもらう。
+  // 位置の見張りと通知はネイティブ（LocaPocket）が行うので、アプリをポケットに入れても届く
+  const interestTagsKey = interestTags.join('|');
+  useEffect(() => {
+    if (!isPocketNoticeSupported || !pocketNoticeEnabled || interestTags.length === 0) {
+      stopPocketNotice();
+      return;
+    }
+    let cancelled = false;
+    let origin: LocationCoords | null = null;
+
+    const refreshTargets = async (coords: LocationCoords) => {
+      origin = coords;
+      try {
+        const posts = await findNearbyPosts(coords, {
+          radiusM: POCKET_NOTICE.targetRadiusM,
+          limit: POCKET_NOTICE.targetLimit,
+        });
+        if (cancelled) return;
+        const targets = posts
+          .filter((post) => !user || post.user_id !== user.id)
+          .filter((post) => matchesInterestTags(post.tags, interestTags))
+          .map((post) => {
+            const tag =
+              (post.tags ?? [])
+                .map((t) => (t.trim().startsWith('#') ? t.trim() : `#${t.trim()}`))
+                .find((t) => interestTags.includes(t)) ?? '';
+            return {
+              postId: String(post.id),
+              latitude: post.latitude,
+              longitude: post.longitude,
+              // Calm：本文は出さず、「このあたりにある」ことだけ伝える
+              title: `近くに ${tag} の言葉があります`,
+              body: 'このあたりに置かれています。ARでそっとのぞいてみてください',
+            };
+          });
+        updatePocketTargets(targets);
+      } catch (err) {
+        console.warn('ポケット通知の対象の取得に失敗しました:', err);
+      }
+    };
+
+    // 位置はネイティブから届く（最初の 1 回と、50m 動くごと）。refetchDistanceM 動いたら対象を取り直す
+    const subscription = onPocketLocation((location) => {
+      if (
+        !origin ||
+        distanceInMeters(origin.latitude, origin.longitude, location.latitude, location.longitude) >=
+          POCKET_NOTICE.refetchDistanceM
+      ) {
+        refreshTargets(location);
+      }
+    });
+    requestNotificationPermission().then((granted) => {
+      if (!cancelled && granted) startPocketNotice([]);
+    });
+    return () => {
+      cancelled = true;
+      subscription?.remove();
+      stopPocketNotice();
+    };
+    // 関心タグの中身は interestTagsKey で見る
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pocketNoticeEnabled, interestTagsKey, user?.id]);
+
+  // ポケット通知をタップしてアプリを開いたら、ホームのカメラを出す
+  useEffect(() => {
+    const subscription = onNotificationOpened(() => setActiveTab('home'));
+    return () => subscription?.remove();
+  }, []);
 
   // 照合（地図の読み込み）を止めている理由。空なら照合を探しに行く。デバッグ表示にもそのまま出す
   const relocalizeBlockReasons = [
@@ -320,6 +428,7 @@ export default function App(): React.JSX.Element {
             cardIcon: post.handle ?? '',
             cardColor: '#10B981',
             cardTags: post.tags ?? [],
+            cardReadCount: post.read_count ?? 0,
           })),
           supabase: supabaseConfig,
         });
@@ -344,7 +453,7 @@ export default function App(): React.JSX.Element {
   }, [relocalizeCoords, relocalizeBlockKey]);
 
   useEffect(() => {
-    if (!isWorldMapSupported || activeTab !== 'home' || !currentCoords) {
+    if (!isWorldMapSupported || !isLocationActive || !currentCoords) {
       return;
     }
     let cancelled = false;
@@ -353,6 +462,8 @@ export default function App(): React.JSX.Element {
         if (cancelled) return;
         // 気配をタップしたときに、投稿者名と景色の写真を引けるように覚えておく
         nearbyPostsRef.current = new Map(posts.map((post) => [String(post.id), post]));
+        // 探索（レーダー）画面にも同じ一覧を出す
+        setNearbyPosts(posts);
         setGeoTags(
           posts.map((post) => ({
             postId: String(post.id),
@@ -374,7 +485,7 @@ export default function App(): React.JSX.Element {
     return () => {
       cancelled = true;
     };
-  }, [activeTab, currentCoords, interestTags]);
+  }, [isLocationActive, currentCoords, interestTags]);
 
   const handleWorldMapStatus = async (event: WorldMapStatusEvent) => {
     // 依頼は受け取ってもらえたので消す。残すと、作り直された AR ビューが古い依頼をもう一度処理してしまう
@@ -390,30 +501,37 @@ export default function App(): React.JSX.Element {
     if (event.phase === 'saved' && event.path) {
       try {
         await updatePostWorldMapPath(event.postId, event.path, event.anchorPostIds);
-        showToast('🗺️ この場所の地図を保存しました');
+        showToast('この場所を覚えました', 'success', { symbol: 'map' });
       } catch (err: any) {
-        showToast(`❌ ${err?.message || '地図の保存に失敗しました'}`);
+        console.warn('地図の場所の保存に失敗しました:', err);
+        showToast('この場所を覚えられませんでした', 'error');
       }
       setWorldMapPhase(null);
     } else if (event.phase === 'failed') {
-      showToast(`❌ ${event.message || '地図の保存に失敗しました'}`);
+      console.warn('地図の保存に失敗しました:', event.message);
+      showToast('この場所を覚えられませんでした', 'error');
       setWorldMapPhase(null);
     }
   };
 
   const handleRelocalizationStatus = (event: RelocalizationStatusEvent) => {
     if (event.phase === 'found') {
+      // 照合で見つかっただけ（壁の向こうの部屋の分も一度に届く）。知らせるのは画面に現れたとき（seen）
       setRelocalizationPhase(null);
-      const card = relocalizeTarget?.cards.find((c) => c.postId === event.postId);
-      showToast(`📖 ${card?.cardTitle ?? ''}さんのメッセージが見つかりました`);
+    } else if (event.phase === 'seen') {
+      // 他の人のカードが初めて画面に現れたら、タップで拾えることを 1 回だけ伝える
+      if (!hasShownCollectHintRef.current && !isOwnPost(event.postId)) {
+        hasShownCollectHintRef.current = true;
+        showToast('カードをタップすると、言葉を拾えます', 'info', { symbol: 'hand.tap' });
+      }
     } else if (event.phase === 'relocalizedWithoutCard') {
       setRelocalizationPhase(null);
+      // 原因の切り分け用（デバッグ表示にも出る）。利用者には知らせない
       console.warn(event.message);
-      showToast(`⚠️ ${event.message}`);
     } else if (event.phase === 'failed') {
       setRelocalizationPhase(null);
       console.warn('再位置合わせに失敗しました:', event.message);
-      showToast(`❌ ${event.message || '地図の読み込みに失敗しました'}`);
+      showToast('近くの言葉を読み込めませんでした', 'error');
     } else if (event.phase === 'mapExtended') {
       // 見回した分を地図に足して保存し直した（見ている人の操作は不要なので通知しない）
       console.log(`地図を育てました: ${event.postId} (${Math.round((event.bytes ?? 0) / 1024)}KB)`);
@@ -424,7 +542,10 @@ export default function App(): React.JSX.Element {
     } else if (event.phase === 'timeout') {
       // relocalizeTarget は残す（同じ場所で何度も照合し直さないため。別の場所に移動すれば探し直す）
       setRelocalizationPhase(null);
-      showToast('⏱ カードを置いた景色が見つからなかったので、通常モードに戻しました');
+      showToast('景色が見つかりませんでした', 'info', {
+        symbol: 'eye.slash',
+        subtitle: 'いつもの表示に戻しました',
+      });
     } else if (event.phase === 'cancelled') {
       setRelocalizationPhase(null);
       setRelocalizeTarget(null);
@@ -433,9 +554,50 @@ export default function App(): React.JSX.Element {
     }
   };
 
+  // 自分の言葉か（今のセッションで置いたもの、または投稿者が自分）
+  const isOwnPost = (postId: string) =>
+    ownPostIdsRef.current.has(postId) ||
+    (user != null && nearbyPostsRef.current.get(postId)?.user_id === user.id);
+
+  // 照合で出した他の人のカードをタップしたら、言葉を拾う（マイページの「拾った言葉」に残る）
+  const handleCardTapped = (postId: string, x: number, y: number) => {
+    if (isOwnPost(postId)) return;
+    if (!user) {
+      showToast('言葉を拾うにはログインが必要です', 'info', { symbol: 'person.crop.circle' });
+      return;
+    }
+    // タップした所からキラキラを弾けさせる（通信を待たずに、すぐ）
+    setSparkles((prev) => [...prev, { id: Date.now() + Math.random(), x, y }]);
+    const card = relocalizeTarget?.cards.find((c) => c.postId === postId);
+    // 拾った場所（今の位置と、その場所の名前）も残す。名前は取れなくても拾う
+    const coords = currentCoords;
+    (coords ? reverseGeocode(coords.latitude, coords.longitude) : Promise.resolve(null))
+      .then((placeName) =>
+        collectPost(
+          postId,
+          user.id,
+          coords ? { latitude: coords.latitude, longitude: coords.longitude, placeName } : null
+        )
+      )
+      .then((result) =>
+        showToast(
+          result === 'already' ? 'この言葉はもう拾っています' : `${card?.cardTitle ?? ''}さんの言葉を拾いました`,
+          result === 'already' ? 'info' : 'success',
+          {
+            symbol: result === 'already' ? 'checkmark.circle' : 'sparkles',
+            subtitle: result === 'already' ? undefined : 'マイページの「拾った言葉」に残ります',
+          }
+        )
+      )
+      .catch((err) => {
+        console.warn(err);
+        showToast('言葉を拾えませんでした', 'error');
+      });
+  };
+
   const handleOpenPostCreation = () => {
     if (!user) {
-      showToast('📍 メッセージを置くにはログインが必要です');
+      showToast('言葉を置くにはログインが必要です', 'info', { symbol: 'person.crop.circle' });
       setActiveTab('mypage');
       return;
     }
@@ -448,13 +610,34 @@ export default function App(): React.JSX.Element {
     setIsPostModalVisible(true);
   };
 
-  const showToast = (msg: string) => {
+  // お知らせを出す。kind：info（お知らせ）/ success（できた）/ error（できなかった）。失敗の詳しい理由は console に出し、画面には短く。
+  // ホーム（AR）では「近くのメッセージを読み込み中」などの案内と同じ見た目（中央にアイコンと一言）でネイティブに出してもらい、
+  // ホーム以外（AR ビューが無い）では画面下の小さな帯（CalmToast）で出す
+  const showToast = (
+    message: string,
+    kind: ToastKind = 'info',
+    options: { symbol?: string; subtitle?: string } = {}
+  ) => {
+    if (isWorldMapSupported && activeTab === 'home') {
+      setNotice({
+        id: Date.now(),
+        symbol: options.symbol ?? DEFAULT_NOTICE_SYMBOLS[kind],
+        title: message,
+        subtitle: options.subtitle,
+      });
+      // 一度きりの命令なので、出し終わったら消す（残すと、作り直された AR ビューがもう一度出してしまう）
+      if (noticeTimerRef.current) {
+        clearTimeout(noticeTimerRef.current);
+      }
+      noticeTimerRef.current = setTimeout(() => setNotice(null), 3000);
+      return;
+    }
     if (toastTimerRef.current) {
       clearTimeout(toastTimerRef.current);
     }
-    setToastMessage(msg);
+    setToast({ id: Date.now(), message, kind });
     toastTimerRef.current = setTimeout(() => {
-      setToastMessage(null);
+      setToast(null);
     }, 3000);
   };
 
@@ -505,6 +688,11 @@ export default function App(): React.JSX.Element {
             cardTags={selectedTags}
             placeTrigger={placeTrigger}
             isPreviewActive={isPlacementMode}
+            supabaseAccessToken={accessToken ?? ''}
+            notice={notice}
+            onCardTapped={(event) =>
+              handleCardTapped(event.nativeEvent.postId, event.nativeEvent.x, event.nativeEvent.y)
+            }
             onPresenceTapped={(event) => {
               const post = nearbyPostsRef.current.get(event.nativeEvent.postId);
               if (!post) return;
@@ -530,7 +718,7 @@ export default function App(): React.JSX.Element {
                 user?.user_metadata?.username || user?.email?.split('@')[0] || currentAuthor;
               const authorHandle = user?.email ? `@${user.email.split('@')[0]}` : currentHandle;
 
-              showToast(`📍 現在地を取得して「${messageToSave}」を保存中...`);
+              showToast('言葉を置いています…', 'info', { symbol: 'arrow.up.circle' });
               try {
                 const { post } = await insertPostWithCurrentLocation(
                   {
@@ -548,7 +736,10 @@ export default function App(): React.JSX.Element {
                     preferredCoords: currentCoords && !currentCoords.isApproximate ? currentCoords : null,
                   }
                 );
-                showToast(`✅ 「${messageToSave}」をSupabaseに保存しました！`);
+                showToast('ここに言葉を置きました', 'success', {
+                  symbol: 'mappin.and.ellipse',
+                  subtitle: `「${messageToSave}」`,
+                });
 
                 // 置いたカードのアンカーを投稿IDで確定し、この場所の地図を保存する
                 if (isWorldMapSupported && anchorId && post?.id != null) {
@@ -562,9 +753,8 @@ export default function App(): React.JSX.Element {
                   });
                 }
               } catch (err: any) {
-                const errMsg = err?.message || '保存に失敗しました';
-                console.error('onCardPlaced Supabase保存エラー:', err);
-                showToast(`❌ 保存失敗: ${errMsg}`);
+                console.error('投稿の保存に失敗しました:', err);
+                showToast('言葉を置けませんでした', 'error');
               }
             }}
             worldMapSaveRequest={worldMapSaveRequest}
@@ -573,12 +763,11 @@ export default function App(): React.JSX.Element {
             onWorldMapStatus={(event) => handleWorldMapStatus(event.nativeEvent)}
             onRelocalizationStatus={(event) => handleRelocalizationStatus(event.nativeEvent)}
             onLocationAccuracyStatus={(event) => setIsFullAccuracy(event.nativeEvent.fullAccuracy)}
-            onCompassStatus={(event) => setNeedsCompassCalibration(event.nativeEvent.needsCalibration)}
-            debugEnabled={SHOW_AR_DEBUG}
+            debugEnabled={SHOW_AR_DEBUG && isDebugVisible}
             onDebugInfo={(event) => setNativeDebug(event.nativeEvent)}
           />
 
-          {SHOW_AR_DEBUG && (
+          {SHOW_AR_DEBUG && isDebugVisible && (
             <ARDebugOverlay
               gps={{
                 accuracyM: currentCoords?.accuracy ?? null,
@@ -594,26 +783,23 @@ export default function App(): React.JSX.Element {
           {/* Top Screen Header */}
           <ScreenHeader
             title="ホーム"
+            onTitleLongPress={SHOW_AR_DEBUG ? () => setIsDebugVisible((visible) => !visible) : undefined}
             style={styles.homeHeader}
           />
 
-          {/* 方角タグの精度についての控えめな案内（正確な位置情報がオフ／コンパスの補正） */}
-          {!isPlacementMode && (!isFullAccuracy || needsCompassCalibration) && (
+          {/* 位置情報が「おおよそ」だと言葉の方角が大きくずれるので、控えめに案内する */}
+          {!isPlacementMode && !isFullAccuracy && (
             <View style={styles.calmNotice} pointerEvents="box-none">
               <Text style={styles.calmNoticeText}>
-                {!isFullAccuracy
-                  ? '位置情報が「おおよそ」になっています。設定で「正確な位置情報」をオンにすると、言葉の方角が正確になります'
-                  : 'iPhoneをゆっくり8の字に動かすと、方角が正確になります'}
+                位置情報が「おおよそ」になっています。設定で「正確な位置情報」をオンにすると、言葉の方角が正確になります
               </Text>
-              {!isFullAccuracy && (
-                <TouchableOpacity
-                  style={styles.calmNoticeButton}
-                  onPress={() => Linking.openSettings()}
-                  activeOpacity={0.8}
-                >
-                  <Text style={styles.calmNoticeButtonText}>設定を開く</Text>
-                </TouchableOpacity>
-              )}
+              <TouchableOpacity
+                style={styles.calmNoticeButton}
+                onPress={() => Linking.openSettings()}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.calmNoticeButtonText}>設定を開く</Text>
+              </TouchableOpacity>
             </View>
           )}
 
@@ -647,34 +833,35 @@ export default function App(): React.JSX.Element {
             </>
           )}
 
+          {/* 言葉を拾ったときのキラキラ */}
+          <SparkleBurst
+            sparkles={sparkles}
+            onDone={(id) => setSparkles((prev) => prev.filter((sparkle) => sparkle.id !== id))}
+          />
+
           {/* 気配（照合できていない近くの投稿の光）をタップしたときの案内 */}
           <PresenceSheet presence={tappedPresence} onClose={() => setTappedPresence(null)} />
 
-          {/* Toast Message */}
-          {toastMessage && (
-            <View style={styles.toastContainer} pointerEvents="none">
-              <View style={styles.toastCard}>
-                <Text style={styles.toastText}>{toastMessage}</Text>
-              </View>
-            </View>
-          )}
+          {/* 画面の下に出る小さなお知らせ */}
+          <CalmToast toast={toast} />
         </View>
 
         {/* 2. Discovery Radar Screen (Walking navigation) */}
         {activeTab === 'radar' && (
-          <DiscoveryRadarScreen
-            onBack={() => setActiveTab('home')}
-            onStartNavigation={() => setActiveTab('home')}
+          <DiscoveryMapScreen
+            posts={nearbyPosts}
+            coords={currentCoords}
+            interestTags={interestTags}
+            onOpenAR={() => setActiveTab('home')}
           />
         )}
 
         {/* 3. Notifications Screen (Pocket alerts) */}
         {activeTab === 'notifications' && (
           <NotificationScreen
-            onOpenARWithTag={(tag) => {
-              setSelectedTag(tag);
-              setActiveTab('home');
-            }}
+            pocketNoticeEnabled={pocketNoticeEnabled}
+            interestTags={interestTags}
+            onOpenAR={() => setActiveTab('home')}
           />
         )}
 
@@ -779,9 +966,8 @@ export default function App(): React.JSX.Element {
       <TagManageModal
         visible={isTagModalVisible}
         onClose={() => setIsTagModalVisible(false)}
-        onSave={(tags) => {
-          if (tags[0]) setSelectedTag(tags[0]);
-        }}
+        initialTags={interestTags}
+        onSave={setInterestTags}
       />
     </SafeAreaView>
   );
@@ -922,34 +1108,6 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '800',
     letterSpacing: 0.5,
-  },
-
-  // Toast
-  toastContainer: {
-    position: 'absolute',
-    top: '46%',
-    left: 20,
-    right: 20,
-    alignItems: 'center',
-    zIndex: 25,
-  },
-  toastCard: {
-    backgroundColor: 'rgba(255, 255, 255, 0.96)',
-    paddingHorizontal: 20,
-    paddingVertical: 12,
-    borderRadius: 22,
-    borderWidth: 1.5,
-    borderColor: '#10B981',
-    shadowColor: '#10B981',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.2,
-    shadowRadius: 8,
-    elevation: 6,
-  },
-  toastText: {
-    color: '#0F172A',
-    fontSize: 14,
-    fontWeight: '700',
   },
 
   // Global Bottom Navigation Bar

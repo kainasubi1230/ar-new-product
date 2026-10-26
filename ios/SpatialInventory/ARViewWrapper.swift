@@ -4,6 +4,7 @@ import CoreMotion
 import RealityKit
 import React
 import UIKit
+import UserNotifications
 
 final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDelegate, CLLocationManagerDelegate {
   private static let worldMapBucket = "worldmaps"
@@ -142,6 +143,16 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
   @objc var onScreenTapped: RCTDirectEventBlock?
   // { postId } 気配（照合できていない近くの投稿の光）がタップされた
   @objc var onPresenceTapped: RCTDirectEventBlock?
+
+  // ログイン中のアクセストークン。更新されるたびに JS が送ってくるので、Storage には常に最新のものを使う
+  @objc var supabaseAccessToken: NSString? {
+    didSet {
+      let token = supabaseAccessToken as String?
+      SupabaseStorage.latestAccessToken = (token?.isEmpty ?? true) ? nil : token
+    }
+  }
+  // { postId, x, y } 照合で出した他の人のカードがタップされた（言葉を拾う）。x, y はタップした画面上の位置
+  @objc var onCardTapped: RCTDirectEventBlock?
   @objc var onCardPlaced: RCTDirectEventBlock?
   @objc var onModelPlaced: RCTDirectEventBlock?
   @objc var onWorldMapStatus: RCTDirectEventBlock?
@@ -209,6 +220,8 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
     let icon: String
     let color: String
     let tags: [String]
+    // 拾われた人数（posts.read_count）。0 なら描かない
+    let readCount: Int
   }
 
   private struct RelocalizationTarget {
@@ -298,6 +311,8 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
     var occlusionReason = "-"
     // 隠れている判定が続いた回数（0〜4）。3 以上で隠し、1 以下で見せる
     var occlusionScore = 0
+    // 画面に現れたことを JS に知らせたか（拾った言葉の記録は 1 回だけ）
+    var hasBeenSeen = false
     var distance: Float = 0
   }
   private var revealCards: [RevealCard] = []
@@ -317,6 +332,16 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
   private static let geoTagMaxRenderDistance: Float = 40
   // 気配（光）の濃さ。くっきり見せない
   private static let presenceOpacity: Float = 0.85
+  // 光（気配・隠れたカードの光）の見かけの大きさの上限：カメラからの距離 1m あたりの幅（0.5 ≒ 画角の 1/3 くらい）
+  private static let glowMaxApparentSize: Float = 0.5
+  // 光にこの距離（m）まで近づくと見えなくなり、glowFadeEnd まで離れると元の濃さに戻る
+  private static let glowFadeStart: Float = 0.8
+  private static let glowFadeEnd: Float = 2.5
+
+  // 近づくほど薄くする係数（0〜1）
+  private static func glowNearFade(_ distance: Float) -> Float {
+    return min(max((distance - glowFadeStart) / (glowFadeEnd - glowFadeStart), 0), 1)
+  }
   private let geoTagRoot = AnchorEntity(world: .zero)
   private var geoTagData: [GeoTagData] = []
   // postId → (エンティティ, テクスチャの内容キー, 目標位置)
@@ -627,7 +652,16 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
     addSubview(guideHUD)
   }
 
+  // 記録中・照合中などの案内（出しっぱなし）。お知らせ（notice）を出している間は覚えておき、終わったら戻す
+  private var persistentGuide: ARGuideHUDView.Guide?
+  private var noticeEndWorkItem: DispatchWorkItem?
+  private var lastNoticeId: Double?
+  private static let noticeDuration: TimeInterval = 2.5
+
   private func showGuide(_ guide: ARGuideHUDView.Guide) {
+    persistentGuide = guide
+    // お知らせを出している間は上書きしない（お知らせが終わったらこの案内に戻る）
+    guard noticeEndWorkItem == nil else { return }
     // Apple のコーチングと重ならないよう、自前の案内を出している間は止める
     coachingOverlay.activatesAutomatically = false
     coachingOverlay.setActive(false, animated: true)
@@ -635,8 +669,50 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
   }
 
   private func hideGuide() {
+    persistentGuide = nil
+    guard noticeEndWorkItem == nil else { return }
     guideHUD.hide()
     coachingOverlay.activatesAutomatically = true
+  }
+
+  // { id, symbol, title, subtitle? } 「保存しました」などの短いお知らせ。案内と同じ見た目で noticeDuration 秒だけ出す
+  @objc var notice: NSDictionary? {
+    didSet {
+      DispatchQueue.main.async { [weak self] in
+        self?.handleNotice()
+      }
+    }
+  }
+
+  private func handleNotice() {
+    guard let notice,
+          let id = (notice["id"] as? NSNumber)?.doubleValue, id != lastNoticeId,
+          let title = notice["title"] as? String else { return }
+    lastNoticeId = id
+
+    coachingOverlay.activatesAutomatically = false
+    coachingOverlay.setActive(false, animated: true)
+    guideHUD.show(.init(
+      symbol: notice["symbol"] as? String,
+      title: title,
+      subtitle: notice["subtitle"] as? String,
+      sways: false
+    ))
+
+    // 時間が来たら、出していた案内に戻す（無ければ消す）
+    noticeEndWorkItem?.cancel()
+    let workItem = DispatchWorkItem { [weak self] in
+      guard let self else { return }
+      self.noticeEndWorkItem = nil
+      if let guide = self.persistentGuide {
+        self.guideHUD.show(guide)
+      } else {
+        self.guideHUD.hide()
+        self.coachingOverlay.activatesAutomatically = true
+      }
+    }
+    noticeEndWorkItem = workItem
+    DispatchQueue.main.asyncAfter(deadline: .now() + Self.noticeDuration, execute: workItem)
   }
 
   private func setupTapGesture() {
@@ -677,12 +753,37 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
     }
     let location = recognizer.location(in: arView)
     lastTapLocation = location
+    // 照合で出した他の人のカードをタップしたら、投稿を始めずに「言葉を拾う」
+    if let card = revealedCard(at: location) {
+      pulse(card.card)
+      // タップした画面上の位置も送る（JS がそこからキラキラを弾けさせる）
+      onCardTapped?(["postId": card.postId, "x": location.x, "y": location.y])
+      return
+    }
     // 気配（光）をタップしたら、投稿を始めずに「このあたりにメッセージがあります」の案内を出す
     if let postId = presencePostId(at: location) {
       onPresenceTapped?(["postId": postId])
       return
     }
     onScreenTapped?(["x": location.x, "y": location.y])
+  }
+
+  // 照合で出したカードのうち、隠れずに見えているもの（タップで拾える）
+  private func revealedCard(at location: CGPoint) -> RevealCard? {
+    guard let hit = arView.entity(at: location) else { return nil }
+    return revealCards.first { $0.reveal >= 0.5 && $0.card === hit }
+  }
+
+  // タップしたカードを、軽くふくらませて戻す（拾った手応え）。
+  // 照合で出したカードはアンカーの原点に変形なしで置いているので、戻す先は常に変形なし（連続タップで大きくならない）
+  private func pulse(_ entity: Entity) {
+    let original = Transform.identity
+    var enlarged = original
+    enlarged.scale = SIMD3<Float>(repeating: 1.08)
+    entity.move(to: enlarged, relativeTo: entity.parent, duration: 0.12, timingFunction: .easeOut)
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+      entity.move(to: original, relativeTo: entity.parent, duration: 0.2, timingFunction: .easeInOut)
+    }
   }
 
   private func presencePostId(at location: CGPoint) -> String? {
@@ -838,7 +939,14 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
     return (simd_dot(d, eastDir), simd_dot(d, northDir), d.y, heading)
   }
 
-  private func makeCardEntity(title: String, description: String, handle: String, color: String, tags: [String]) -> ModelEntity {
+  private func makeCardEntity(
+    title: String,
+    description: String,
+    handle: String,
+    color: String,
+    tags: [String],
+    readCount: Int = 0
+  ) -> ModelEntity {
     let authorName = title.isEmpty ? "Ken" : title
     let messageText = description.isEmpty ? "テスト2" : description
     let handle = handle.isEmpty ? "@ken_loca" : handle
@@ -849,7 +957,8 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
       handle: handle,
       text: messageText,
       hexColor: accentColor,
-      tags: tags
+      tags: tags,
+      readCount: readCount
     )
 
     // Ultra-thin Box with smooth rounded corners
@@ -879,7 +988,14 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
     return entity
   }
 
-  private func createCardImage(name: String, handle: String, text: String, hexColor: String, tags: [String]) -> UIImage {
+  private func createCardImage(
+    name: String,
+    handle: String,
+    text: String,
+    hexColor: String,
+    tags: [String],
+    readCount: Int
+  ) -> UIImage {
     let size = CGSize(width: 760, height: 480)
     let renderer = UIGraphicsImageRenderer(size: size)
 
@@ -957,15 +1073,30 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
       let nameRect = CGRect(x: 114, y: 378, width: 300, height: 44)
       authorDisplay.draw(in: nameRect, withAttributes: nameAttributes)
 
-      // 9. Footer: Likes ("♡ 42")
-      let likesString = "♡ 42"
-      let likesAttributes: [NSAttributedString.Key: Any] = [
-        .font: UIFont.systemFont(ofSize: 32, weight: .semibold),
-        .foregroundColor: UIColor(red: 148/255.0, green: 163/255.0, blue: 184/255.0, alpha: 1.0)
-      ]
-      let likesSize = (likesString as NSString).size(withAttributes: likesAttributes)
-      let likesRect = CGRect(x: size.width - 52 - likesSize.width, y: 380, width: likesSize.width, height: 44)
-      likesString.draw(in: likesRect, withAttributes: likesAttributes)
+      // 9. Footer: 拾われた人数（足あとのイラスト＋数）。まだ誰にも拾われていなければ描かない
+      if readCount > 0 {
+        let countColor = UIColor(red: 100/255.0, green: 116/255.0, blue: 139/255.0, alpha: 1.0)
+        let countString = "\(readCount)"
+        let countAttributes: [NSAttributedString.Key: Any] = [
+          .font: UIFont.systemFont(ofSize: 30, weight: .semibold),
+          .foregroundColor: countColor,
+        ]
+        let countSize = (countString as NSString).size(withAttributes: countAttributes)
+        let countOrigin = CGPoint(x: size.width - 52 - countSize.width, y: 397 - countSize.height / 2)
+        countString.draw(at: countOrigin, withAttributes: countAttributes)
+
+        // アプリのアイコンと同じ足あとのイラスト（Images.xcassets の Footprints）を、文字と同じ色で数の左に
+        if let footprints = UIImage(named: "Footprints")?.withTintColor(countColor, renderingMode: .alwaysOriginal) {
+          let iconHeight: CGFloat = 30
+          let iconWidth = iconHeight * footprints.size.width / footprints.size.height
+          footprints.draw(in: CGRect(
+            x: countOrigin.x - 10 - iconWidth,
+            y: 397 - iconHeight / 2,
+            width: iconWidth,
+            height: iconHeight
+          ))
+        }
+      }
     }
   }
 
@@ -1385,7 +1516,8 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
         description: card["cardDescription"] as? String ?? "",
         icon: card["cardIcon"] as? String ?? "",
         color: card["cardColor"] as? String ?? "",
-        tags: Self.stringArray(card["cardTags"])
+        tags: Self.stringArray(card["cardTags"]),
+        readCount: (card["cardReadCount"] as? NSNumber)?.intValue ?? 0
       )
     }
     relocalization = RelocalizationTarget(postId: postId, worldMapPath: worldMapPath, storage: storage, cards: cards)
@@ -1552,7 +1684,8 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
         description: card.description,
         handle: card.icon,
         color: card.color,
-        tags: card.tags
+        tags: card.tags,
+        readCount: card.readCount
       )
       // 1 つの地図で家じゅうのカードが一度に出るので、近くに来たカードだけを見せる。
       // 離れている間は、その正確な位置に小さな光だけを出す（壁の向こうのカードをくっきり見せない）
@@ -1832,13 +1965,29 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
 
       // ふわっと：少し小さい状態から、透明度と一緒に元の大きさへ
       let eased = 1 - pow(1 - tag.appearance, 3)
-      tag.entity.scale = SIMD3<Float>(repeating: tag.scale * (0.85 + 0.15 * eased))
+      var displayScale = tag.scale * (0.85 + 0.15 * eased)
+      var nearFade: Float = 1
+      if tag.isPresence {
+        // 気配の光は大きいので、近づくと画面いっぱいを覆ってしまう。
+        // 見かけの大きさに上限を付け、近づくほど薄く、すぐそばでは見えなくする
+        let distanceToCamera = simd_distance(tag.entity.position, cameraPosition)
+        displayScale = min(displayScale, distanceToCamera * Self.glowMaxApparentSize)
+        nearFade = Self.glowNearFade(distanceToCamera)
+      }
+      tag.entity.scale = SIMD3<Float>(repeating: displayScale)
       // 気配は 4 秒周期でゆっくり明るさを揺らす（投稿ごとに揺れのタイミングをずらす）
       let breathing: Float = tag.isPresence
         ? 0.85 + 0.15 * Float(sin(now.timeIntervalSince1970 * 2 * .pi / 4 + Double(abs(postId.hashValue % 628)) / 100))
         : 1
-      Self.setOpacity(tag.opacity * eased * breathing, of: tag.entity)
-      tag.entity.isEnabled = tag.appearance > 0
+      Self.setOpacity(tag.opacity * eased * breathing * nearFade, of: tag.entity)
+      // 透明度を変えられない iOS（17 以下）では、近すぎるときは消す
+      let hiddenByNearness: Bool
+      if #available(iOS 18.0, *) {
+        hiddenByNearness = nearFade <= 0.01
+      } else {
+        hiddenByNearness = nearFade < 0.5
+      }
+      tag.entity.isEnabled = tag.appearance > 0 && !hiddenByNearness
 
       // カメラの方を向かせる（ヨーだけ）
       let toCamera = cameraPosition - tag.entity.position
@@ -2168,15 +2317,27 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
       let target: Float = item.isOccluded ? 0 : 1
       item.reveal += (target - item.reveal) * follow
 
+      // 隠れているカードの光も、すぐそばを通ると画面を覆うので、近づくほど薄くする
+      let glowDistance = simd_distance(item.glow.position(relativeTo: nil), cameraPosition)
+      let glowFade = Self.glowNearFade(glowDistance)
+      item.glow.scale = SIMD3<Float>(repeating: min(Self.revealGlowSize, glowDistance * Self.glowMaxApparentSize))
+
       if #available(iOS 18.0, *) {
         Self.setOpacity(item.reveal, of: item.card)
-        Self.setOpacity((1 - item.reveal) * Self.occludedGlowOpacity * breathing, of: item.glow)
+        Self.setOpacity((1 - item.reveal) * Self.occludedGlowOpacity * breathing * glowFade, of: item.glow)
         item.card.isEnabled = item.reveal > 0.02
-        item.glow.isEnabled = item.reveal < 0.98
+        item.glow.isEnabled = item.reveal < 0.98 && glowFade > 0.01
       } else {
         // 透明度を変えられない iOS では、半分を境に切り替える
         item.card.isEnabled = item.reveal >= 0.5
-        item.glow.isEnabled = item.reveal < 0.5
+        item.glow.isEnabled = item.reveal < 0.5 && glowFade >= 0.5
+      }
+
+      // 隠れずに、画面に映る所でしっかり現れたら「目にした（拾った）」と知らせる（1 回だけ）
+      if !item.hasBeenSeen, item.reveal >= 0.9, let frame = arView.session.currentFrame,
+         isInView(item.card.position(relativeTo: nil), frame: frame) {
+        item.hasBeenSeen = true
+        emitRelocalizationStatus("seen", postId: item.postId)
       }
 
       // 光はどこから見ても丸く見えるよう、カメラの方を向かせる
@@ -2348,7 +2509,8 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
   }
 
   private func emitRelocalizationStatus(_ phase: String, postId: String, extra: [String: Any] = [:]) {
-    if phase != "mapExtended" {
+    // mapExtended / seen は照合の進み具合とは別に届くので、フェーズも案内も変えない
+    if phase != "mapExtended" && phase != "seen" {
       debugRelocalizationPhase = phase
     }
     switch phase {
@@ -2356,7 +2518,7 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
       showGuide(.init(symbol: "arrow.down.circle", title: "近くのメッセージを読み込み中", subtitle: nil, sways: false))
     case "relocalizing":
       showGuide(relocalizationGuide(postId: postId))
-    case "mapExtended":
+    case "mapExtended", "seen":
       break
     default:
       hideGuide()
@@ -2378,6 +2540,10 @@ private struct SupabaseStorage {
   let baseURL: String
   let apiKey: String
   let accessToken: String?
+
+  // JS から届く最新のアクセストークン（期限が切れたら JS が更新して送り直す）。
+  // 照合の依頼などは使い回されるので、依頼に入っていた古いトークンより、こちらを優先する
+  static var latestAccessToken: String?
 
   init?(_ dict: NSDictionary?) {
     guard let dict,
@@ -2408,21 +2574,37 @@ private struct SupabaseStorage {
   }
 
   func download(bucket: String, path: String, completion: @escaping (Result<Data, Error>) -> Void) {
-    guard let request = makeRequest("\(baseURL)/storage/v1/object/authenticated/\(bucket)/\(path)") else {
+    download(bucket: bucket, path: path, withToken: true, completion: completion)
+  }
+
+  private func download(
+    bucket: String,
+    path: String,
+    withToken: Bool,
+    completion: @escaping (Result<Data, Error>) -> Void
+  ) {
+    guard let request = makeRequest("\(baseURL)/storage/v1/object/authenticated/\(bucket)/\(path)", withToken: withToken) else {
       completion(.failure(StorageError(message: "URLが不正です")))
       return
     }
     URLSession.shared.dataTask(with: request) { body, response, error in
-      completion(Self.check(body, response, error))
+      let result = Self.check(body, response, error)
+      // トークンの期限切れなどで拒否されたら、ログインなしで読み込み直す（地図と写真は誰でも読める）
+      let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
+      if case .failure = result, withToken, [400, 401, 403].contains(statusCode) {
+        self.download(bucket: bucket, path: path, withToken: false, completion: completion)
+        return
+      }
+      completion(result)
     }.resume()
   }
 
-  private func makeRequest(_ urlString: String) -> URLRequest? {
+  private func makeRequest(_ urlString: String, withToken: Bool = true) -> URLRequest? {
     guard let url = URL(string: urlString) else { return nil }
     var request = URLRequest(url: url)
     request.setValue(apiKey, forHTTPHeaderField: "apikey")
-    if let accessToken {
-      request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+    if withToken, let token = Self.latestAccessToken ?? accessToken {
+      request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
     }
     return request
   }
@@ -2584,6 +2766,283 @@ private final class ARGuideHUDView: UIView {
       if self.currentGuide == nil {
         self.iconView.layer.removeAnimation(forKey: "sway")
       }
+    }
+  }
+}
+
+// 探索（レーダー）画面用の方位。AR ビューはホーム以外では破棄されるので、方位だけを JS に送る小さなモジュール。
+// "heading" イベントで { heading（北=0°、時計回り）, accuracy（度。負なら無効） } を送る。
+// 新しい Swift ファイルを足すと Xcode のプロジェクト設定の編集が要るので、ここに置いている
+@objc(LocaHeading)
+final class LocaHeading: RCTEventEmitter, CLLocationManagerDelegate {
+  private var locationManager: CLLocationManager?
+  private var hasListeners = false
+
+  override static func requiresMainQueueSetup() -> Bool {
+    return true
+  }
+
+  override func supportedEvents() -> [String]! {
+    return ["heading"]
+  }
+
+  override func startObserving() {
+    hasListeners = true
+    DispatchQueue.main.async { [weak self] in
+      guard let self, CLLocationManager.headingAvailable() else { return }
+      let manager = self.locationManager ?? CLLocationManager()
+      manager.delegate = self
+      manager.headingFilter = 1
+      // レーダーは画面を上に向けて持つので、画面の上端が向いている方位を使う
+      manager.headingOrientation = .portrait
+      manager.startUpdatingHeading()
+      self.locationManager = manager
+    }
+  }
+
+  override func stopObserving() {
+    hasListeners = false
+    DispatchQueue.main.async { [weak self] in
+      self?.locationManager?.stopUpdatingHeading()
+    }
+  }
+
+  func locationManager(_ manager: CLLocationManager, didUpdateHeading newHeading: CLHeading) {
+    guard hasListeners else { return }
+    // 真北が分かればそれを、分からなければ磁北を使う
+    let heading = newHeading.trueHeading >= 0 ? newHeading.trueHeading : newHeading.magneticHeading
+    sendEvent(withName: "heading", body: ["heading": heading, "accuracy": newHeading.headingAccuracy])
+  }
+
+  func locationManagerShouldDisplayHeadingCalibration(_ manager: CLLocationManager) -> Bool {
+    return false
+  }
+}
+
+// ポケット通知：関心タグに合うメッセージの近く（radiusM 以内）に来たら、ローカル通知を出す。
+// アプリを一度開いてからポケットに入れた（画面ロック・別アプリ）状態でも届くよう、位置の見張りと通知はネイティブで行う
+// （JS はバックグラウンドで止まりがちなので、対象の投稿の一覧だけを JS から受け取る）。
+// Info.plist の UIBackgroundModes に location が必要。位置情報の許可は「使用中のみ」のままでよい（画面上部に使用中の表示が出る）
+@objc(LocaPocket)
+final class LocaPocket: RCTEventEmitter, CLLocationManagerDelegate, UNUserNotificationCenterDelegate {
+  private struct Target {
+    let postId: String
+    let location: CLLocation
+    let title: String
+    let body: String
+  }
+
+  private var manager: CLLocationManager?
+  private var targets: [Target] = []
+  private var radiusM: Double = 20
+  // 通知どうしの間隔（Calm：立て続けに鳴らさない）
+  private var cooldown: TimeInterval = 180
+  // 同じメッセージで通知する間隔
+  private var perPostInterval: TimeInterval = 24 * 3600
+  // GPS の誤差がこれより大きいときは判定しない（誤って通知しないため）
+  private var maxAccuracyM: Double = 30
+  private var lastNotifiedAt: Date?
+  private var lastEmittedLocation: CLLocation?
+  private var hasListeners = false
+  private static let notifiedKey = "loca.pocket.notified" // [postId: 通知した時刻]
+  private static let historyKey = "loca.pocket.history" // 通知画面に出す履歴（新しい順、最大 50 件）
+
+  override init() {
+    super.init()
+    // アプリを開いているときも通知を出し、タップされたら JS に伝える
+    DispatchQueue.main.async {
+      UNUserNotificationCenter.current().delegate = self
+    }
+  }
+
+  override static func requiresMainQueueSetup() -> Bool {
+    return true
+  }
+
+  override func supportedEvents() -> [String]! {
+    return ["pocketNotified", "pocketLocation", "notificationOpened"]
+  }
+
+  override func startObserving() {
+    hasListeners = true
+  }
+
+  override func stopObserving() {
+    hasListeners = false
+  }
+
+  @objc(requestPermission:rejecter:)
+  func requestPermission(_ resolve: @escaping RCTPromiseResolveBlock, rejecter reject: @escaping RCTPromiseRejectBlock) {
+    UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, _ in
+      resolve(granted)
+    }
+  }
+
+  // targets: [{ postId, latitude, longitude, title, body }]
+  // options: { radiusM, cooldownSec, perPostIntervalSec, maxAccuracyM }
+  @objc(start:options:)
+  func start(_ targets: NSArray, options: NSDictionary) {
+    DispatchQueue.main.async {
+      if let value = (options["radiusM"] as? NSNumber)?.doubleValue { self.radiusM = value }
+      if let value = (options["cooldownSec"] as? NSNumber)?.doubleValue { self.cooldown = value }
+      if let value = (options["perPostIntervalSec"] as? NSNumber)?.doubleValue { self.perPostInterval = value }
+      if let value = (options["maxAccuracyM"] as? NSNumber)?.doubleValue { self.maxAccuracyM = value }
+      self.setTargets(targets)
+
+      let manager = self.manager ?? CLLocationManager()
+      manager.delegate = self
+      manager.desiredAccuracy = kCLLocationAccuracyBest
+      manager.distanceFilter = 5
+      manager.activityType = .fitness
+      manager.pausesLocationUpdatesAutomatically = false
+      // ポケットの中でも位置を受け取る（Info.plist の UIBackgroundModes: location が必要）
+      manager.allowsBackgroundLocationUpdates = true
+      manager.showsBackgroundLocationIndicator = true
+      manager.startUpdatingLocation()
+      self.manager = manager
+    }
+  }
+
+  @objc(updateTargets:)
+  func updateTargets(_ targets: NSArray) {
+    DispatchQueue.main.async {
+      self.setTargets(targets)
+    }
+  }
+
+  @objc
+  func stop() {
+    DispatchQueue.main.async {
+      self.manager?.stopUpdatingLocation()
+      self.manager?.allowsBackgroundLocationUpdates = false
+    }
+  }
+
+  @objc(getHistory:rejecter:)
+  func getHistory(_ resolve: @escaping RCTPromiseResolveBlock, rejecter reject: @escaping RCTPromiseRejectBlock) {
+    resolve(UserDefaults.standard.array(forKey: Self.historyKey) ?? [])
+  }
+
+  @objc
+  func clearHistory() {
+    UserDefaults.standard.removeObject(forKey: Self.historyKey)
+  }
+
+  private func setTargets(_ items: NSArray) {
+    targets = items.compactMap { item in
+      guard let dict = item as? NSDictionary,
+            let postId = dict["postId"] as? String,
+            let latitude = (dict["latitude"] as? NSNumber)?.doubleValue,
+            let longitude = (dict["longitude"] as? NSNumber)?.doubleValue else { return nil }
+      return Target(
+        postId: postId,
+        location: CLLocation(latitude: latitude, longitude: longitude),
+        title: dict["title"] as? String ?? "近くに言葉があります",
+        body: dict["body"] as? String ?? ""
+      )
+    }
+  }
+
+  func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
+    guard let location = locations.last, location.horizontalAccuracy >= 0 else { return }
+
+    // JS に位置を伝える（ポケットの中で歩いても、対象の投稿を取り直せるように）。50m 動くごと
+    if hasListeners, lastEmittedLocation.map({ location.distance(from: $0) > 50 }) ?? true {
+      lastEmittedLocation = location
+      sendEvent(withName: "pocketLocation", body: [
+        "latitude": location.coordinate.latitude,
+        "longitude": location.coordinate.longitude,
+        "accuracy": location.horizontalAccuracy,
+      ])
+    }
+
+    guard location.horizontalAccuracy <= maxAccuracyM else { return }
+    if let last = lastNotifiedAt, Date().timeIntervalSince(last) < cooldown { return }
+
+    let now = Date().timeIntervalSince1970
+    var notified = UserDefaults.standard.dictionary(forKey: Self.notifiedKey) as? [String: Double] ?? [:]
+    // 範囲内で、最近通知していない、いちばん近いメッセージ
+    let nearest = targets
+      .filter { target in notified[target.postId].map { now - $0 >= perPostInterval } ?? true }
+      .map { ($0, location.distance(from: $0.location)) }
+      .filter { $0.1 <= radiusM }
+      .min { $0.1 < $1.1 }
+    guard let (target, _) = nearest else { return }
+
+    notified[target.postId] = now
+    UserDefaults.standard.set(notified, forKey: Self.notifiedKey)
+    lastNotifiedAt = Date()
+
+    let content = UNMutableNotificationContent()
+    content.title = target.title
+    content.body = target.body
+    content.sound = .default
+    content.userInfo = ["postId": target.postId]
+    UNUserNotificationCenter.current().add(
+      UNNotificationRequest(identifier: "pocket-\(target.postId)-\(Int(now))", content: content, trigger: nil)
+    )
+
+    let entry: [String: Any] = ["postId": target.postId, "title": target.title, "body": target.body, "at": now]
+    var history = UserDefaults.standard.array(forKey: Self.historyKey) as? [[String: Any]] ?? []
+    history.insert(entry, at: 0)
+    UserDefaults.standard.set(Array(history.prefix(50)), forKey: Self.historyKey)
+    if hasListeners {
+      sendEvent(withName: "pocketNotified", body: entry)
+    }
+  }
+
+  func userNotificationCenter(
+    _ center: UNUserNotificationCenter,
+    willPresent notification: UNNotification,
+    withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+  ) {
+    completionHandler([.banner, .list, .sound])
+  }
+
+  func userNotificationCenter(
+    _ center: UNUserNotificationCenter,
+    didReceive response: UNNotificationResponse,
+    withCompletionHandler completionHandler: @escaping () -> Void
+  ) {
+    if hasListeners {
+      sendEvent(withName: "notificationOpened", body: [
+        "postId": response.notification.request.content.userInfo["postId"] as? String ?? "",
+      ])
+    }
+    completionHandler()
+  }
+}
+
+// 緯度経度から場所の名前（「福岡市中央区天神」など）を求める。iOS 標準の CLGeocoder（料金なし）。
+// 拾った言葉の「拾った場所」に使う
+@objc(LocaGeocoder)
+final class LocaGeocoder: NSObject {
+  private let geocoder = CLGeocoder()
+
+  @objc static func requiresMainQueueSetup() -> Bool {
+    return false
+  }
+
+  @objc(reverseGeocode:longitude:resolver:rejecter:)
+  func reverseGeocode(
+    _ latitude: Double,
+    longitude: Double,
+    resolver resolve: @escaping RCTPromiseResolveBlock,
+    rejecter reject: @escaping RCTPromiseRejectBlock
+  ) {
+    let location = CLLocation(latitude: latitude, longitude: longitude)
+    geocoder.reverseGeocodeLocation(location, preferredLocale: Locale(identifier: "ja_JP")) { placemarks, _ in
+      guard let placemark = placemarks?.first else {
+        resolve(nil)
+        return
+      }
+      // 公園や駅などの名前があればそれを、無ければ「市区町村＋町名」
+      if let area = placemark.areasOfInterest?.first {
+        resolve(area)
+        return
+      }
+      let parts = [placemark.locality, placemark.subLocality].compactMap { $0 }
+      resolve(parts.isEmpty ? nil : parts.joined())
     }
   }
 }

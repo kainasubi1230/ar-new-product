@@ -18,6 +18,8 @@ export interface NearbyWorldMapPost {
   snapshot_path: string | null;
   /** その地図で出せる投稿（地図に入っている post: アンカーの投稿 ID）。古い投稿は null */
   worldmap_post_ids: string[] | null;
+  /** 拾われた人数（カードの右下の「👣 3」） */
+  read_count: number | null;
   created_at: string;
   distanceM: number;
 }
@@ -110,6 +112,12 @@ export const chooseWorldMapPost = (
   return best;
 };
 
+// 照合に欠かせない列と、無くても照合はできる（あとから足した）列
+const REQUIRED_COLUMNS = 'id, message, author, handle, tags, lat, lng, worldmap_path, created_at';
+const OPTIONAL_COLUMNS = 'snapshot_path, worldmap_post_ids, read_count';
+// PostgreSQL の「列が無い」エラー
+const MISSING_COLUMN = '42703';
+
 /**
  * 現在地から radiusM 以内の地図付き投稿を、新しい順に返す。
  * GPS の誤差は数m〜十数mあり、同じ場所の投稿の「近さ」は当てにならないので距離では並べない。
@@ -122,22 +130,27 @@ export const findNearbyWorldMapPosts = async (
 
   const { latDelta, lngDelta } = boundingDeltas(latitude, radiusM);
 
-  const { data, error } = await supabase
-    .from('posts')
-    .select(
-      'id, message, author, handle, tags, lat, lng, worldmap_path, snapshot_path, worldmap_post_ids, created_at'
-    )
-    .not('worldmap_path', 'is', null)
-    .gte('lat', latitude - latDelta)
-    .lte('lat', latitude + latDelta)
-    .gte('lng', longitude - lngDelta)
-    .lte('lng', longitude + lngDelta);
+  const query = (columns: string) =>
+    supabase
+      .from('posts')
+      .select(columns)
+      .not('worldmap_path', 'is', null)
+      .gte('lat', latitude - latDelta)
+      .lte('lat', latitude + latDelta)
+      .gte('lng', longitude - lngDelta)
+      .lte('lng', longitude + lngDelta);
 
+  let { data, error } = await query(`${REQUIRED_COLUMNS}, ${OPTIONAL_COLUMNS}`);
+  // あとから足した列（マイグレーションの実行漏れ）が無くても照合は止めない：その列を外して読み直す
+  if (error?.code === MISSING_COLUMN) {
+    console.warn('posts に無い列があります（マイグレーションを実行してください）:', error.message);
+    ({ data, error } = await query(REQUIRED_COLUMNS));
+  }
   if (error) {
     throw new Error(`近くの投稿の取得に失敗しました: ${error.message}`);
   }
 
-  return (data ?? [])
+  return ((data ?? []) as unknown as (Omit<NearbyWorldMapPost, 'distanceM'> & { lat: number; lng: number })[])
     .map((post) => ({
       ...post,
       distanceM: distanceInMeters(latitude, longitude, post.lat, post.lng),

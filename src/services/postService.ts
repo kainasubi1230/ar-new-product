@@ -1,6 +1,7 @@
 import Geolocation from '@react-native-community/geolocation';
 import { supabase } from '../lib/supabase';
 import { offsetLatLng } from '../utils/geo';
+import { reverseGeocode } from './geocoder';
 
 export interface LocationCoords {
   latitude: number;
@@ -119,10 +120,31 @@ export const insertPostWithCurrentLocation = async (
     throw new Error(`Supabaseへの保存に失敗しました: ${error.message}`);
   }
 
+  // 置いた場所の名前は、保存を待たせないよう後から書き足す（取れなければ空のまま）
+  const savedPost = data?.[0];
+  if (savedPost?.id != null) {
+    fillPostPlaceName(String(savedPost.id), card.latitude, card.longitude);
+  }
+
   return {
-    post: data?.[0],
+    post: savedPost,
     coords: card,
   };
+};
+
+/**
+ * 投稿に、置いた場所の名前（posts.place_name）を書き足す。取れなかったら何もしない。
+ * 書き足した名前を返す（マイページで、名前の無い古い投稿を埋めるのにも使う）
+ */
+export const fillPostPlaceName = async (postId: string, latitude: number, longitude: number) => {
+  const placeName = await reverseGeocode(latitude, longitude);
+  if (!placeName) return null;
+  const { error } = await supabase.from('posts').update({ place_name: placeName }).eq('id', postId);
+  if (error) {
+    console.warn('置いた場所の名前を保存できませんでした:', error.message);
+    return null;
+  }
+  return placeName;
 };
 
 /**

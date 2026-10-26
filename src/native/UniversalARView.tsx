@@ -47,6 +47,8 @@ export type RelocalizeCard = {
   cardColor: string;
   /** posts.tags。空ならカードにタグの行を出さない */
   cardTags: string[];
+  /** 拾われた人数（posts.read_count）。カードの右下に「👣 3」と描く。0 なら描かない */
+  cardReadCount: number;
 };
 
 /**
@@ -106,6 +108,8 @@ export type RelocalizationStatusEvent = {
     | 'relocalizedWithoutCard'
     | 'timeout'
     | 'mapExtended'
+    /** 照合で出したカードが、隠れずに画面に初めて現れた（「タップで拾える」の案内に使う） */
+    | 'seen'
     | 'failed'
     | 'cancelled';
   postId: string;
@@ -153,6 +157,15 @@ export type ARDebugInfoEvent = {
   revealCards: { postId: string; distance: number; occluded: boolean; reason: string; reveal: number }[];
 };
 
+/** ホーム（AR）でのお知らせ。案内（「近くのメッセージを読み込み中」など）と同じ見た目で 2.5 秒出る。id が変わるたびに出す */
+export type ARNotice = {
+  id: number;
+  /** SF Symbols の名前 */
+  symbol: string;
+  title: string;
+  subtitle?: string;
+};
+
 export type UniversalARViewProps = {
   style?: StyleProp<ViewStyle>;
   cardTitle: string;
@@ -167,6 +180,11 @@ export type UniversalARViewProps = {
   onScreenTapped?: (event: NativeSyntheticEvent<{ x: number; y: number }>) => void;
   /** 気配（照合できていない近くの投稿の光）がタップされた（iOSのみ） */
   onPresenceTapped?: (event: NativeSyntheticEvent<{ postId: string }>) => void;
+  /** ログイン中の最新のアクセストークン（iOSのみ）。ネイティブが Storage を読み書きするときは、依頼に入っていた古いものよりこちらを使う */
+  supabaseAccessToken?: string;
+  notice?: ARNotice | null;
+  /** 照合で出したカード（見えているもの）がタップされた。他の人の言葉なら拾う（iOSのみ） */
+  onCardTapped?: (event: NativeSyntheticEvent<{ postId: string; x: number; y: number }>) => void;
   onCardPlaced?: (event: NativeSyntheticEvent<CardPlacedEvent>) => void;
   onModelPlaced?: (event: NativeSyntheticEvent<any>) => void;
   worldMapSaveRequest?: WorldMapSaveRequest | null;

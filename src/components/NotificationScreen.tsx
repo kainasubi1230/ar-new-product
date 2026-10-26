@@ -1,59 +1,113 @@
-import {
-  Image,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TouchableOpacity,
-  View,
-} from 'react-native';
+import React, { useCallback, useEffect, useState } from 'react';
+import { Alert, Image, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { ScreenHeader } from './ScreenHeader';
 import { NotificationCard } from './NotificationCard';
 import { Icons } from '../assets/icons';
-
-import { NOTIFICATIONS } from '../data/notifications';
+import type { NotificationItem } from '../data/notifications';
+import {
+  clearPocketHistory,
+  getPocketHistory,
+  isPocketNoticeSupported,
+  onPocketNotified,
+  type PocketHistoryEntry,
+} from '../services/pocketNotificationService';
 
 type Props = {
-  onOpenARWithTag: (tag: string) => void;
+  pocketNoticeEnabled: boolean;
+  interestTags: string[];
+  onOpenAR: () => void;
 };
 
-export function NotificationScreen({ onOpenARWithTag }: Props): React.JSX.Element {
-  const notifications = NOTIFICATIONS;
+/** 「3分前」「2時間前」「昨日」のような書き方 */
+const relativeTime = (unixSec: number) => {
+  const diff = Date.now() / 1000 - unixSec;
+  if (diff < 60) return 'たった今';
+  if (diff < 3600) return `${Math.floor(diff / 60)}分前`;
+  if (diff < 24 * 3600) return `${Math.floor(diff / 3600)}時間前`;
+  if (diff < 48 * 3600) return '昨日';
+  const date = new Date(unixSec * 1000);
+  return `${date.getMonth() + 1}/${date.getDate()}`;
+};
+
+const toItem = (entry: PocketHistoryEntry): NotificationItem => ({
+  id: `${entry.postId}-${entry.at}`,
+  title: entry.title,
+  body: entry.title,
+  time: relativeTime(entry.at),
+  tag: entry.title.match(/#\S+/)?.[0] ?? '#言葉',
+});
+
+/** 通知画面：届いたポケット通知の履歴（端末に保存されている） */
+export function NotificationScreen({ pocketNoticeEnabled, interestTags, onOpenAR }: Props): React.JSX.Element {
+  const [history, setHistory] = useState<PocketHistoryEntry[]>([]);
+
+  const reload = useCallback(() => {
+    getPocketHistory()
+      .then(setHistory)
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    reload();
+    // 開いている間に届いた通知も足す
+    const subscription = onPocketNotified((entry) => setHistory((prev) => [entry, ...prev]));
+    return () => subscription?.remove();
+  }, [reload]);
+
+  const handleClear = () => {
+    if (history.length === 0) return;
+    Alert.alert('通知の履歴を消す', 'これまでのポケット通知の履歴を消しますか？', [
+      { text: 'キャンセル', style: 'cancel' },
+      {
+        text: '消す',
+        style: 'destructive',
+        onPress: () => {
+          clearPocketHistory();
+          setHistory([]);
+        },
+      },
+    ]);
+  };
+
+  const noticeTitle = !isPocketNoticeSupported
+    ? 'ポケット通知はこの端末では使えません'
+    : !pocketNoticeEnabled
+      ? 'ポケット通知はオフです'
+      : interestTags.length === 0
+        ? '関心タグが設定されていません'
+        : 'ポケット通知がオンになっています';
+  const noticeDesc =
+    pocketNoticeEnabled && interestTags.length > 0
+      ? `${interestTags.join(' ')} の言葉の近くに来たとき、通知が届きます。アプリを開いたあと、ポケットに入れていても届きます。`
+      : 'マイページの「関心タグ」で、通知を受け取るタグとオン・オフを設定できます。';
 
   return (
     <View style={styles.container}>
-      {/* Top Header */}
       <ScreenHeader
         title="通知"
         rightAction={
-          <TouchableOpacity style={styles.clearBtn} activeOpacity={0.7}>
-            <Text style={styles.clearBtnText}>すべて既読</Text>
+          <TouchableOpacity style={styles.clearBtn} activeOpacity={0.7} onPress={handleClear}>
+            <Text style={styles.clearBtnText}>履歴を消す</Text>
           </TouchableOpacity>
         }
       />
 
       <ScrollView contentContainerStyle={styles.listContent}>
-        {/* Calm Background Notice Description */}
         <View style={styles.calmNoticeBox}>
-          <Image
-            source={Icons.herb}
-            style={styles.calmIcon}
-            resizeMode="contain"
-          />
+          <Image source={Icons.herb} style={styles.calmIcon} resizeMode="contain" />
           <View style={styles.calmTextGroup}>
-            <Text style={styles.calmTitle}>ポケット通知がオンになっています</Text>
-            <Text style={styles.calmDesc}>
-              関心タグに一致する言葉が近くにある時、通知が届きます。
-            </Text>
+            <Text style={styles.calmTitle}>{noticeTitle}</Text>
+            <Text style={styles.calmDesc}>{noticeDesc}</Text>
           </View>
         </View>
 
-        {notifications.map((item) => (
-          <NotificationCard
-            key={item.id}
-            item={item}
-            onPress={() => onOpenARWithTag(item.tag)}
-          />
-        ))}
+        {history.length === 0 ? (
+          <Text style={styles.emptyText}>まだ通知はありません</Text>
+        ) : (
+          history.map((entry) => (
+            <NotificationCard key={`${entry.postId}-${entry.at}`} item={toItem(entry)} onPress={onOpenAR} />
+          ))
+        )}
       </ScrollView>
     </View>
   );
@@ -66,7 +120,7 @@ const styles = StyleSheet.create({
   },
 
   clearBtn: {
-    width: 60,
+    width: 72,
     alignItems: 'flex-end',
     paddingVertical: 4,
   },
@@ -108,5 +162,11 @@ const styles = StyleSheet.create({
     color: '#047857',
     fontSize: 11,
     lineHeight: 16,
+  },
+  emptyText: {
+    marginTop: 24,
+    textAlign: 'center',
+    color: '#94A3B8',
+    fontSize: 13,
   },
 });

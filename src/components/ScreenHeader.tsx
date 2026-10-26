@@ -8,6 +8,8 @@ type Props = {
   rightAction?: ReactNode;
   style?: ViewStyle;
   showTitleLogo?: boolean;
+  /** 見出しの文字を長押ししたとき（ホームではデバッグ表示の切り替えに使う） */
+  onTitleLongPress?: () => void;
 };
 
 export function ScreenHeader({
@@ -16,6 +18,7 @@ export function ScreenHeader({
   rightAction,
   style,
   showTitleLogo = true,
+  onTitleLongPress,
 }: Props): React.JSX.Element {
   return (
     <View style={[styles.header, style]}>
@@ -30,7 +33,9 @@ export function ScreenHeader({
           />
         ) : null}
       </View>
-      <Text style={styles.headerTitle}>{title}</Text>
+      <Text style={styles.headerTitle} onLongPress={onTitleLongPress} suppressHighlighting>
+        {title}
+      </Text>
       <View style={[styles.sideContainer, styles.rightContainer]}>
         {rightAction}
       </View>

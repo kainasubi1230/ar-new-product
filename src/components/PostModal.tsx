@@ -28,13 +28,21 @@ const DEFAULT_INITIAL_MESSAGE = '今日はいい日になりそう ☀️';
 
 export function PostModal({ visible, onClose, onSubmit }: Props): React.JSX.Element {
   const [message, setMessage] = useState<string>(DEFAULT_INITIAL_MESSAGE);
-  const [suggestedTags, setSuggestedTags] = useState<string[]>(['#日常', '#カフェ', '#街歩き']);
-  const [selectedTags, setSelectedTags] = useState<string[]>(['#日常', '#カフェ']);
+  // タグは本文から提案されたものを選ぶ。最初から何かを選んでおくと、どの投稿にも同じタグが付いてしまう
+  const [suggestedTags, setSuggestedTags] = useState<string[]>([]);
+  const [selectedTags, setSelectedTags] = useState<string[]>([]);
   const [manualTag, setManualTag] = useState<string>('');
   const [isLoadingTags, setIsLoadingTags] = useState<boolean>(false);
   const [sentiment, setSentiment] = useState<SentimentResult | null>(null);
 
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // 開くたびに、前の投稿のタグを持ち越さず空から始める（本文に合うタグが自動で選ばれる）
+  useEffect(() => {
+    if (visible) {
+      setSelectedTags([]);
+    }
+  }, [visible]);
 
   // メッセージ入力に伴うタグ自動生成＆センチメント（ポジ/ネガ度）分析
   useEffect(() => {

@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
+  ActionSheetIOS,
   ActivityIndicator,
   Alert,
   Dimensions,
@@ -21,7 +22,10 @@ import type { User } from '@supabase/supabase-js';
 import { Icons } from '../assets/icons';
 import { ScreenHeader } from './ScreenHeader';
 import { signInWithEmail, signUpWithEmail } from '../services/authService';
-import { deleteMyPost } from '../services/postService';
+import { deleteMyPost, fillPostPlaceName } from '../services/postService';
+import { usePreferences } from '../services/preferencesStore';
+import { WordCard, WordCardAvatar, WordCardDate, WordCardMeta, WordCardReadCount } from './WordCard';
+import { fetchCollectedPosts, uncollectPost } from '../services/readService';
 import { supabase } from '../lib/supabase';
 
 const { width } = Dimensions.get('window');
@@ -32,7 +36,8 @@ type PlacedMemory = {
   placeName: string;
   locationHint: string;
   message: string;
-  tag: string;
+  /** 投稿のタグ（「#」付き）。空ならタグの欄を出さない */
+  tags: string[];
   placedAt: string;
   readCount: number; // 「誰かが読んだよ 🐾」
   expiresIn: string; // 寿命（公開期限）
@@ -47,7 +52,8 @@ type CollectedWord = {
   author: string;
   handle: string;
   message: string;
-  tag: string;
+  /** 言葉のタグ（「#」付き）。空ならタグの欄を出さない */
+  tags: string[];
   stampIcon: string;
 };
 
@@ -70,6 +76,13 @@ type Props = {
 // 初期表示用（Supabaseから読み込むため初期値は空）
 const INITIAL_PLACED: PlacedMemory[] = [];
 const INITIAL_COLLECTED: CollectedWord[] = [];
+
+// タグを「#」付きにそろえ、空のものを除く（AR のカードと同じ扱い）
+const normalizeTags = (tags: string[] | null | undefined) =>
+  (tags ?? [])
+    .map((t) => t.trim())
+    .filter((t) => t && t !== '#')
+    .map((t) => (t.startsWith('#') ? t : `#${t}`));
 
 const INITIAL_TAGS: InterestTag[] = [
   { id: 't1', name: '散歩', icon: Icons.walking, enabled: true, desc: '街歩きや小道、おすすめの休憩スポット' },
@@ -122,10 +135,17 @@ export function MyPageScreen({
 
   // データ状態
   const [placedList, setPlacedList] = useState<PlacedMemory[]>(INITIAL_PLACED);
-  const [collectedList] = useState<CollectedWord[]>(INITIAL_COLLECTED);
-  const [tags, setTags] = useState<InterestTag[]>(INITIAL_TAGS);
+  // AR で目にした他の人の言葉（post_reads）
+  const [collectedList, setCollectedList] = useState<CollectedWord[]>(INITIAL_COLLECTED);
+  // 関心タグとポケット通知は端末に保存し、AR・地図・通知と共有する（preferencesStore）
+  const { interestTags, toggleInterestTag, pocketNoticeEnabled, setPocketNoticeEnabled } = usePreferences();
+  const tags: InterestTag[] = INITIAL_TAGS.map((tag) => ({
+    ...tag,
+    enabled: interestTags.includes(`#${tag.name}`),
+  }));
   const [selectedMapPin, setSelectedMapPin] = useState<PlacedMemory | null>(null);
-  const [isPocketNoticeOn, setIsPocketNoticeOn] = useState(true);
+  const isPocketNoticeOn = pocketNoticeEnabled;
+  const setIsPocketNoticeOn = setPocketNoticeEnabled;
   const [isRefreshing, setIsRefreshing] = useState(false);
 
   // Supabaseから自分の投稿を取得する
@@ -143,10 +163,11 @@ export function MyPageScreen({
 
       const formatted: PlacedMemory[] = (data || []).map((p, idx) => ({
         id: p.id,
-        placeName: `位置 (${p.lat?.toFixed(3)}, ${p.lng?.toFixed(3)})`,
+        // 置いた場所の名前（無ければ空。下で後から埋める）
+        placeName: p.place_name ?? '',
         locationHint: `GPS精度: 約${Math.round(p.accuracy_m || 10)}m`,
         message: p.message,
-        tag: p.tags?.[0] || '#日常',
+        tags: normalizeTags(p.tags),
         placedAt: new Date(p.created_at).toLocaleDateString('ja-JP'),
         readCount: 0,
         expiresIn: '無期限',
@@ -156,12 +177,47 @@ export function MyPageScreen({
         },
       }));
 
-      setPlacedList(formatted);
-      if (formatted.length > 0) {
-        setSelectedMapPin((prev) => prev ?? formatted[0]);
+      // 自分の言葉が何人に拾われたか（posts.read_count。拾われるたびに DB が数える）
+      const withCounts = formatted.map((item, index) => ({
+        ...item,
+        readCount: (data ?? [])[index]?.read_count ?? 0,
+      }));
+
+      setPlacedList(withCounts);
+      if (withCounts.length > 0) {
+        setSelectedMapPin((prev) => prev ?? withCounts[0]);
+      }
+
+      // 場所の名前がまだ無い投稿（この機能の前に置いたもの）は、位置から名前を求めて書き足す（一度に 10 件まで）
+      const missing = (data ?? []).filter((p) => !p.place_name && p.lat != null && p.lng != null).slice(0, 10);
+      for (const p of missing) {
+        const placeName = await fillPostPlaceName(String(p.id), p.lat, p.lng);
+        if (placeName) {
+          setPlacedList((prev) => prev.map((item) => (item.id === p.id ? { ...item, placeName } : item)));
+        }
       }
     } catch (e) {
       console.warn('投稿取得エラー:', e);
+    }
+
+    // 拾った言葉
+    try {
+      const collected = await fetchCollectedPosts(user.id);
+      setCollectedList(
+        collected.map((post) => ({
+          id: post.postId,
+          collectedAt: new Date(post.readAt).toLocaleDateString('ja-JP'),
+          // 拾った場所の名前（無ければ空）
+          placeName: post.placeName ?? '',
+          author: post.author,
+          handle: post.handle,
+          message: post.message,
+          tags: normalizeTags(post.tags),
+          stampIcon: 'herb',
+        }))
+      );
+    } catch (e) {
+      console.warn('拾った言葉の取得エラー:', e);
     }
   }, [user]);
 
@@ -176,10 +232,10 @@ export function MyPageScreen({
   };
 
   // 1. 言葉の削除
-  const handleDeleteMemory = (id: string, placeName: string) => {
+  const handleDeleteMemory = (id: string, message: string) => {
     Alert.alert(
       '言葉を削除',
-      `「${placeName}」に置いた言葉を削除しますか？\n空間から取り除かれ、他の人からも見えなくなります。`,
+      `「${message}」を削除しますか？\nその場所から取り除かれ、他の人からも見えなくなります。`,
       [
         { text: 'キャンセル', style: 'cancel' },
         {
@@ -203,6 +259,31 @@ export function MyPageScreen({
     );
   };
 
+  // 2. 拾った言葉から外す（相手の言葉そのものは消えない）
+  const handleUncollect = (postId: string, author: string) => {
+    if (!user) return;
+    Alert.alert(
+      '拾った言葉から外す',
+      `${author}さんの言葉を、拾った言葉から外しますか？\n言葉そのものは消えず、その場所に残ります。`,
+      [
+        { text: 'キャンセル', style: 'cancel' },
+        {
+          text: '外す',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await uncollectPost(postId, user.id);
+            } catch (err: any) {
+              Alert.alert('外せませんでした', err?.message ?? '');
+              return;
+            }
+            setCollectedList((prev) => prev.filter((item) => item.id !== postId));
+          },
+        },
+      ]
+    );
+  };
+
   // 寿命（期限）切り替え
   const handleToggleExpiry = (id: string) => {
     const nextExpiries = ['残り3日', '残り7日', '残り24時間', '無期限'];
@@ -218,9 +299,8 @@ export function MyPageScreen({
 
   // 3. タグ切り替え
   const handleToggleTag = (tagId: string) => {
-    setTags((prev) =>
-      prev.map((t) => (t.id === tagId ? { ...t, enabled: !t.enabled } : t))
-    );
+    const tag = INITIAL_TAGS.find((t) => t.id === tagId);
+    if (tag) toggleInterestTag(tag.name);
   };
 
   // 未ログイン時の認証フォーム用ステート
@@ -399,24 +479,40 @@ export function MyPageScreen({
   const displayName =
     user.user_metadata?.username || user.email?.split('@')[0] || 'ユーザー';
 
+  // 右上の設定ボタンのメニュー（関心タグの編集・ログアウト）
+  const openSettingsMenu = () => {
+    const canSignOut = user != null && onSignOut != null;
+    if (Platform.OS === 'ios') {
+      const options = ['関心タグを編集', ...(canSignOut ? ['ログアウト'] : []), 'キャンセル'];
+      ActionSheetIOS.showActionSheetWithOptions(
+        {
+          options,
+          cancelButtonIndex: options.length - 1,
+          destructiveButtonIndex: canSignOut ? 1 : undefined,
+        },
+        (index) => {
+          if (options[index] === '関心タグを編集') onOpenTagManage();
+          if (options[index] === 'ログアウト') onSignOut?.();
+        }
+      );
+      return;
+    }
+    Alert.alert('設定', undefined, [
+      { text: '関心タグを編集', onPress: onOpenTagManage },
+      ...(canSignOut ? [{ text: 'ログアウト', style: 'destructive' as const, onPress: onSignOut }] : []),
+      { text: 'キャンセル', style: 'cancel' as const },
+    ]);
+  };
+
   return (
     <View style={styles.container}>
       {/* Header */}
       <ScreenHeader
         title="マイページ"
         rightAction={
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-            <TouchableOpacity
-              style={styles.headerLogoutBtn}
-              onPress={onSignOut}
-              activeOpacity={0.7}
-            >
-              <Text style={styles.headerLogoutText}>ログアウト</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.settingsBtn} onPress={onOpenTagManage} activeOpacity={0.7}>
-              <Image source={Icons.setting} style={styles.settingsIcon} resizeMode="contain" />
-            </TouchableOpacity>
-          </View>
+          <TouchableOpacity style={styles.settingsBtn} onPress={openSettingsMenu} activeOpacity={0.7}>
+            <Image source={Icons.setting} style={styles.settingsIcon} resizeMode="contain" />
+          </TouchableOpacity>
         }
       />
 
@@ -542,62 +638,18 @@ export function MyPageScreen({
             {placedViewMode === 'list' && (
               <View style={styles.cardListContainer}>
                 {placedList.map((item) => (
-                  <View key={item.id} style={styles.placedCard}>
-                    {/* Top Row: Place & Expiry */}
-                    <View style={styles.cardHeaderRow}>
-                      <View style={styles.placeTitleGroup}>
-                        <Image source={Icons.pin} style={styles.placePinIcon} resizeMode="contain" />
-                        <Text style={styles.placeNameText}>{item.placeName}</Text>
-                      </View>
-
-                      {/* Expiry Badge (Tap to toggle) */}
-                      <TouchableOpacity
-                        style={styles.expiryBadge}
-                        onPress={() => handleToggleExpiry(item.id)}
-                        activeOpacity={0.7}
-                      >
-                        <Image source={Icons.hourglass} style={styles.expiryHourglassIcon} resizeMode="contain" />
-                        <Text style={styles.expiryText}>{item.expiresIn}</Text>
-                      </TouchableOpacity>
-                    </View>
-
-                    {/* Meta Row: Placed Date & Location Hint */}
-                    <View style={styles.cardMetaRow}>
-                      <View style={styles.dateMetaGroup}>
-                        <Image source={Icons.calendar} style={styles.calendarIcon} resizeMode="contain" />
-                        <Text style={styles.dateMetaText}>{item.placedAt}</Text>
-                      </View>
-                      {item.locationHint ? (
-                        <Text style={styles.locationHintText} numberOfLines={1}>・{item.locationHint}</Text>
-                      ) : null}
-                    </View>
-
-                    {/* Message Body */}
-                    <Text style={styles.memoryMessageText}>{item.message}</Text>
-
-                    {/* Footer Row: Tag, Warm Read Footprint, Delete Action */}
-                    <View style={styles.memoryFooterRow}>
-                      <View style={styles.memoryTagPill}>
-                        <Image source={getTagIcon(item.tag)} style={styles.memoryTagIcon} resizeMode="contain" />
-                        <Text style={styles.memoryTagText}>{item.tag}</Text>
-                      </View>
-
-                      {/* 温かい足跡メーター（承認欲求ではなく「誰かが読んだよ」） */}
-                      <View style={styles.footprintBadge}>
-                        <Image source={Icons.footprints} style={styles.footprintIcon} resizeMode="contain" />
-                        <Text style={styles.footprintText}>誰かが読んだよ {item.readCount}</Text>
-                      </View>
-
-                      {/* Delete Button */}
-                      <TouchableOpacity
-                        style={styles.deleteBtn}
-                        onPress={() => handleDeleteMemory(item.id, item.placeName)}
-                        activeOpacity={0.6}
-                      >
-                        <Text style={styles.deleteBtnText}>削除</Text>
-                      </TouchableOpacity>
-                    </View>
-                  </View>
+                  <WordCard
+                    key={item.id}
+                    message={item.message}
+                    tags={item.tags}
+                    onDelete={() => handleDeleteMemory(item.id, item.message)}
+                    footer={
+                      <>
+                        <WordCardDate date={item.placedAt} placeName={item.placeName} action="placed" />
+                        {item.readCount > 0 && <WordCardReadCount count={item.readCount} />}
+                      </>
+                    }
+                  />
                 ))}
 
                 {placedList.length === 0 && (
@@ -698,46 +750,19 @@ export function MyPageScreen({
 
             <View style={styles.cardListContainer}>
               {collectedList.map((item) => (
-                <View key={item.id} style={styles.placedCard}>
-                  {/* Top Row: Place & Stamp Badge */}
-                  <View style={styles.cardHeaderRow}>
-                    <View style={styles.placeTitleGroup}>
-                      <Image source={Icons.pin} style={styles.placePinIcon} resizeMode="contain" />
-                      <Text style={styles.placeNameText}>{item.placeName}</Text>
-                    </View>
-
-                    {/* Stamp Badge */}
-                    <View style={styles.collectedStampBadge}>
-                      <Image source={Icons.herb} style={styles.collectedStampBadgeIcon} resizeMode="contain" />
-                      <Text style={styles.collectedStampBadgeText}>旅のしおり</Text>
-                    </View>
-                  </View>
-
-                  {/* Meta Row: Collected Date */}
-                  <View style={styles.cardMetaRow}>
-                    <View style={styles.dateMetaGroup}>
-                      <Image source={Icons.calendar} style={styles.calendarIcon} resizeMode="contain" />
-                      <Text style={styles.dateMetaText}>{item.collectedAt}</Text>
-                    </View>
-                    <Text style={styles.locationHintText} numberOfLines={1}>・現地で拾得</Text>
-                  </View>
-
-                  {/* Message Body */}
-                  <Text style={styles.memoryMessageText}>{item.message}</Text>
-
-                  {/* Footer Row: Tag & Author */}
-                  <View style={styles.memoryFooterRow}>
-                    <View style={styles.memoryTagPill}>
-                      <Image source={getTagIcon(item.tag)} style={styles.memoryTagIcon} resizeMode="contain" />
-                      <Text style={styles.memoryTagText}>{item.tag}</Text>
-                    </View>
-
-                    <View style={styles.collectedAuthorBadge}>
-                      <Image source={Icons.mypage} style={styles.collectedAuthorIcon} resizeMode="contain" />
-                      <Text style={styles.collectedAuthorText}>by {item.author} ({item.handle})</Text>
-                    </View>
-                  </View>
-                </View>
+                <WordCard
+                  key={item.id}
+                  message={item.message}
+                  tags={item.tags}
+                  onDelete={() => handleUncollect(item.id, item.author)}
+                  footer={
+                    <>
+                      <WordCardAvatar name={item.author} />
+                      <WordCardMeta>{item.author}さん</WordCardMeta>
+                      <WordCardDate date={item.collectedAt} placeName={item.placeName} action="collected" />
+                    </>
+                  }
+                />
               ))}
 
               {collectedList.length === 0 && (
@@ -788,7 +813,7 @@ export function MyPageScreen({
               空間で見たいジャンル（今はこの気分）
             </Text>
             <Text style={styles.tagsGuideSub}>
-              タグをタップしてON/OFFを切り替えます。選んだタグの言葉がAR空間に浮かび上がり、レーダーに反応します。
+              タグをタップしてON/OFFを切り替えます。選んだタグの言葉は、ARと地図で少し目立って表示され、ポケット通知の対象になります。
             </Text>
 
             {/* Tags Toggle Grid */}
@@ -1113,6 +1138,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     paddingVertical: 3,
     borderRadius: 6,
+    // タグが多くても、横の「誰かが読んだよ」や削除ボタンを押し出さない
+    flexShrink: 1,
+    marginRight: 6,
   },
   memoryTagIcon: {
     width: 11,

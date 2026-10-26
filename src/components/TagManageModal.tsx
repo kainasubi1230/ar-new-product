@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Modal,
   Platform,
@@ -22,6 +22,11 @@ const SUGGESTED_TAGS = ['#カフェ', '#グルメ', '#自然', '#思い出', '#�
 
 export function TagManageModal({ visible, onClose, onSave, initialTags = ['#カフェ', '#グルメ', '#日常'] }: Props): React.JSX.Element {
   const [myTags, setMyTags] = useState<string[]>(initialTags);
+  // 開くたびに、今の関心タグから始める
+  useEffect(() => {
+    if (visible) setMyTags(initialTags);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible]);
   const [searchQuery, setSearchQuery] = useState<string>('');
 
   const toggleSuggested = (tag: string) => {

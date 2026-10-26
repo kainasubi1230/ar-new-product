@@ -35,6 +35,10 @@
 	</dict>
 	<key>NSCameraUsageDescription</key>
 	<string>AR表示のためにカメラを使用します</string>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>location</string>
+	</array>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>現在地に合わせてメッセージを表示・投稿するために位置情報を使用します</string>
 	<key>RCTNewArchEnabled</key>
