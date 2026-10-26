@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
+  ActivityIndicator,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -10,19 +11,67 @@ import {
   TouchableWithoutFeedback,
   View,
 } from 'react-native';
+import { suggestTagsAndSentiment, SentimentResult } from '../services/tagSuggestionService';
 
 type Props = {
   visible: boolean;
   onClose: () => void;
-  onSubmit: (data: { message: string; tags: string[]; category: string }) => void;
+  onSubmit: (data: {
+    message: string;
+    tags: string[];
+    category: string;
+    sentiment?: SentimentResult;
+  }) => void;
 };
 
-const AI_SUGGESTIONS = ['#日常', '#カフェ', '#前向き', '#天気', '#休憩', '#散歩'];
+const DEFAULT_INITIAL_MESSAGE = '今日はいい日になりそう ☀️';
 
 export function PostModal({ visible, onClose, onSubmit }: Props): React.JSX.Element {
-  const [message, setMessage] = useState<string>('今日はいい日になりそう ☀️');
+  const [message, setMessage] = useState<string>(DEFAULT_INITIAL_MESSAGE);
+  const [suggestedTags, setSuggestedTags] = useState<string[]>(['#日常', '#カフェ', '#街歩き']);
   const [selectedTags, setSelectedTags] = useState<string[]>(['#日常', '#カフェ']);
   const [manualTag, setManualTag] = useState<string>('');
+  const [isLoadingTags, setIsLoadingTags] = useState<boolean>(false);
+  const [sentiment, setSentiment] = useState<SentimentResult | null>(null);
+
+  const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // メッセージ入力に伴うタグ自動生成＆センチメント（ポジ/ネガ度）分析
+  useEffect(() => {
+    if (!visible) return;
+
+    if (debounceTimerRef.current) {
+      clearTimeout(debounceTimerRef.current);
+    }
+
+    setIsLoadingTags(true);
+
+    debounceTimerRef.current = setTimeout(async () => {
+      try {
+        const { tags, sentiment: analyzedSentiment } = await suggestTagsAndSentiment(message);
+        setSuggestedTags(tags);
+        setSentiment(analyzedSentiment);
+
+        // 初回などでタグが未選択の場合は先頭1〜2個を自動選択
+        setSelectedTags((prev) => {
+          if (prev.length === 0 && tags.length > 0) {
+            return tags.slice(0, 2);
+          }
+          return prev;
+        });
+      } catch (err) {
+        console.error('タグ生成エラー:', err);
+      } finally {
+        setIsLoadingTags(false);
+      }
+    }, 450);
+
+    return () => {
+      if (debounceTimerRef.current) {
+        clearTimeout(debounceTimerRef.current);
+      }
+    };
+  }, [message, visible]);
 
   const toggleTag = (tag: string) => {
     if (selectedTags.includes(tag)) {
@@ -39,14 +88,19 @@ export function PostModal({ visible, onClose, onSubmit }: Props): React.JSX.Elem
     if (!selectedTags.includes(formatted)) {
       setSelectedTags([...selectedTags, formatted]);
     }
+    // 候補リストにもなければ追加
+    if (!suggestedTags.includes(formatted)) {
+      setSuggestedTags((prev) => [...prev, formatted]);
+    }
     setManualTag('');
   };
 
   const handleSubmit = () => {
     onSubmit({
-      message: message.trim().length > 0 ? message : '今日はいい日になりそう ☀️',
+      message: message.trim().length > 0 ? message : DEFAULT_INITIAL_MESSAGE,
       tags: selectedTags,
       category: selectedTags[0] ? selectedTags[0].replace('#', '') : '日常',
+      sentiment: sentiment ?? undefined,
     });
   };
 
@@ -91,19 +145,31 @@ export function PostModal({ visible, onClose, onSubmit }: Props): React.JSX.Elem
               <View style={styles.sectionTitleRow}>
                 <Text style={styles.sparkleIcon}>✨</Text>
                 <Text style={styles.sectionTitle}>AIタグ候補</Text>
+                {isLoadingTags ? (
+                  <View style={styles.loadingContainer}>
+                    <ActivityIndicator size="small" color="#10B981" />
+                    <Text style={styles.loadingText}>生成中...</Text>
+                  </View>
+                ) : (
+                  <View style={styles.badgeContainer}>
+                    <Text style={styles.badgeText}>タップで選択</Text>
+                  </View>
+                )}
               </View>
 
               <View style={styles.tagsWrap}>
-                {AI_SUGGESTIONS.map((tag) => {
+                {suggestedTags.map((tag) => {
                   const isSelected = selectedTags.includes(tag);
                   return (
                     <TouchableOpacity
                       key={tag}
                       style={[styles.tagChip, isSelected && styles.tagChipActive]}
                       onPress={() => toggleTag(tag)}
-                      activeOpacity={0.8}
+                      activeOpacity={0.7}
                     >
-                      <Text style={[styles.tagText, isSelected && styles.tagTextActive]}>{tag}</Text>
+                      <Text style={[styles.tagText, isSelected && styles.tagTextActive]}>
+                        {isSelected ? `✓ ${tag}` : tag}
+                      </Text>
                     </TouchableOpacity>
                   );
                 })}
@@ -236,12 +302,37 @@ const styles = StyleSheet.create({
     color: '#334155',
     fontSize: 13,
     fontWeight: '700',
-    marginBottom: 8,
+  },
+  loadingContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginLeft: 8,
+  },
+  loadingText: {
+    fontSize: 11,
+    color: '#10B981',
+    fontWeight: '600',
+    marginLeft: 4,
+  },
+  badgeContainer: {
+    marginLeft: 8,
+    backgroundColor: '#ECFDF5',
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 10,
+    borderWidth: 0.5,
+    borderColor: 'rgba(16, 185, 129, 0.4)',
+  },
+  badgeText: {
+    fontSize: 10,
+    color: '#059669',
+    fontWeight: '600',
   },
   tagsWrap: {
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: 8,
+    marginTop: 8,
   },
   tagChip: {
     paddingHorizontal: 14,
