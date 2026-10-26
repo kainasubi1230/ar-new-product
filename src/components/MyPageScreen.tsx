@@ -21,6 +21,7 @@ import type { User } from '@supabase/supabase-js';
 import { Icons } from '../assets/icons';
 import { ScreenHeader } from './ScreenHeader';
 import { signInWithEmail, signUpWithEmail } from '../services/authService';
+import { deleteMyPost } from '../services/postService';
 import { supabase } from '../lib/supabase';
 
 const { width } = Dimensions.get('window');
@@ -131,27 +132,16 @@ export function MyPageScreen({
   const fetchPosts = useCallback(async () => {
     if (!user) return;
     try {
-      const displayName = user.user_metadata?.username || user.email?.split('@')[0] || '';
-      const userHandle = user.email ? `@${user.email.split('@')[0]}` : '';
-
+      // 自分の投稿だけ（posts.user_id は投稿時に DB が auth.uid() を入れる）
       const { data, error } = await supabase
         .from('posts')
         .select('*')
+        .eq('user_id', user.id)
         .order('created_at', { ascending: false });
 
       if (error) throw error;
 
-      // ユーザー自身の投稿（または開発テスト用として全体）
-      const myPosts = (data || []).filter(
-        (p) =>
-          p.author === displayName ||
-          p.handle === userHandle ||
-          p.author === 'sora' ||
-          p.author === 'guest' ||
-          !p.author
-      );
-
-      const formatted: PlacedMemory[] = myPosts.map((p, idx) => ({
+      const formatted: PlacedMemory[] = (data || []).map((p, idx) => ({
         id: p.id,
         placeName: `位置 (${p.lat?.toFixed(3)}, ${p.lng?.toFixed(3)})`,
         locationHint: `GPS精度: 約${Math.round(p.accuracy_m || 10)}m`,
@@ -196,14 +186,16 @@ export function MyPageScreen({
           text: '削除する',
           style: 'destructive',
           onPress: async () => {
+            try {
+              await deleteMyPost(id);
+            } catch (err: any) {
+              // 消せなかったときは一覧に残したまま知らせる（消えたように見せない）
+              Alert.alert('削除できませんでした', err?.message ?? '');
+              return;
+            }
             setPlacedList((prev) => prev.filter((item) => item.id !== id));
             if (selectedMapPin?.id === id) {
               setSelectedMapPin(null);
-            }
-            try {
-              await supabase.from('posts').delete().eq('id', id);
-            } catch (err) {
-              console.warn('Supabase削除エラー:', err);
             }
           },
         },

@@ -1,9 +1,10 @@
 import { supabase } from '../lib/supabase';
 import type { LocationCoords } from './postService';
 import { bearingDegrees, boundingDeltas, distanceInMeters } from '../utils/geo';
+import { DISTANCE_TIERS } from '../config/distanceTiers';
 
 /** 方角タグ・レーダーに出す範囲 */
-export const NEARBY_RADIUS_M = 300;
+export const NEARBY_RADIUS_M = DISTANCE_TIERS.maxM;
 const NEARBY_LIMIT = 20;
 
 export interface NearbyPost {

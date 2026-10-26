@@ -83,3 +83,26 @@ export const insertPostWithCurrentLocation = async (payload: string | PostPayloa
     coords,
   };
 };
+
+/**
+ * 自分の投稿を削除する。地図ファイル・景色の写真を先に消してから投稿を消す
+ * （Storage の削除ポリシーは「投稿の持ち主か」で判定するので、投稿が先に消えると消せなくなる）
+ */
+export const deleteMyPost = async (postId: string) => {
+  // ファイルは無い投稿もあるので、消せなくても投稿の削除は続ける
+  const { error: storageError } = await supabase.storage
+    .from('worldmaps')
+    .remove([`${postId}.worldmap`, `snapshots/${postId}.jpg`]);
+  if (storageError) {
+    console.warn('地図ファイルの削除に失敗しました:', storageError.message);
+  }
+
+  const { data, error } = await supabase.from('posts').delete().eq('id', postId).select('id');
+  if (error) {
+    throw new Error(`削除に失敗しました: ${error.message}`);
+  }
+  if (!data || data.length === 0) {
+    // RLS で弾かれると、エラーにならず 0 件削除になる
+    throw new Error('削除できませんでした（自分の投稿でないか、削除の権限がありません）');
+  }
+};

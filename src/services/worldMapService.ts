@@ -2,16 +2,20 @@ import { supabase, SUPABASE_ANON_KEY, SUPABASE_URL } from '../lib/supabase';
 import type { NativeSupabaseConfig } from '../native/UniversalARView';
 import { getCurrentLocation, type LocationCoords } from './postService';
 import { boundingDeltas, distanceInMeters } from '../utils/geo';
+import { DISTANCE_TIERS } from '../config/distanceTiers';
 
 /** この距離以内の投稿の地図を読み込む */
-export const WORLDMAP_RADIUS_M = 30;
+export const WORLDMAP_RADIUS_M = DISTANCE_TIERS.preciseM;
 
 export interface NearbyWorldMapPost {
   id: string | number;
   message: string | null;
   author: string | null;
   handle: string | null;
+  tags: string[] | null;
   worldmap_path: string;
+  /** 置いたときの景色の写真（照合のとき重ねて案内する）。無い投稿もある */
+  snapshot_path: string | null;
   created_at: string;
   distanceM: number;
 }
@@ -49,6 +53,23 @@ export const updatePostWorldMapPath = async (postId: string, path: string) => {
   }
 };
 
+/**
+ * アップロード済みの「置いたときの景色の写真」の場所を posts に記録する
+ */
+export const updatePostSnapshotPath = async (postId: string, path: string) => {
+  const { data, error } = await supabase
+    .from('posts')
+    .update({ snapshot_path: path })
+    .eq('id', postId)
+    .select('id');
+
+  if (error) {
+    throw new Error(`景色の写真の保存に失敗しました: ${error.message}`);
+  }
+  if (!data || data.length === 0) {
+    throw new Error('景色の写真を保存できませんでした（postsの更新権限を確認してください）');
+  }
+};
 
 /**
  * 現在地から WORLDMAP_RADIUS_M 以内の地図付き投稿を、新しい順に返す。
@@ -64,7 +85,7 @@ export const findNearbyWorldMapPosts = async (
 
   const { data, error } = await supabase
     .from('posts')
-    .select('id, message, author, handle, lat, lng, worldmap_path, created_at')
+    .select('id, message, author, handle, tags, lat, lng, worldmap_path, snapshot_path, created_at')
     .not('worldmap_path', 'is', null)
     .gte('lat', latitude - latDelta)
     .lte('lat', latitude + latDelta)

@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import Geolocation from '@react-native-community/geolocation';
 import {
   Image,
+  Linking,
   Platform,
   SafeAreaView,
   StatusBar,
@@ -31,11 +32,17 @@ import { insertPostWithCurrentLocation } from './src/services/postService';
 import { signOut } from './src/services/authService';
 import type { LocationCoords } from './src/services/postService';
 import { findNearbyPosts } from './src/services/nearbyPostService';
+import { geoTagLevelFor, geoTagProminenceFor } from './src/config/distanceTiers';
+import { matchesInterestTags } from './src/utils/interestTags';
+import { GpsAverager } from './src/utils/gpsAverager';
+import { LOCATION_ACCURACY } from './src/config/locationAccuracy';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { distanceInMeters } from './src/utils/geo';
 import {
   WORLDMAP_RADIUS_M,
   findNearbyWorldMapPosts,
   getNativeSupabaseConfig,
+  updatePostSnapshotPath,
   updatePostWorldMapPath,
 } from './src/services/worldMapService';
 import { supabase } from './src/lib/supabase';
@@ -44,6 +51,16 @@ type TabType = 'home' | 'radar' | 'notifications' | 'mypage';
 
 // ARWorldMap による「置いた場所の再現」は iOS (ARKit) のみ
 const isWorldMapSupported = Platform.OS === 'ios';
+
+// 前回の現在地。起動直後は GPS を待たずにこれで方角タグを出し、正確な位置が取れたら差し替える
+const LAST_COORDS_STORAGE_KEY = 'loca:lastCoords';
+// 関心タグ（まだ設定画面とつないでいないので空。入れると、合う投稿の方角タグが少し強調される）
+const INTEREST_TAGS: readonly string[] = [];
+
+type TrackedCoords = LocationCoords & {
+  /** 前回の位置や、精度の低いキャッシュ。方角タグには使うが、地図の照合には使わない */
+  isApproximate: boolean;
+};
 
 export default function App(): React.JSX.Element {
   // ホームはAR機能そのもの
@@ -78,7 +95,12 @@ export default function App(): React.JSX.Element {
   const [isRelocalizeSuppressed, setIsRelocalizeSuppressed] = useState<boolean>(false);
   const suppressedAtRef = React.useRef<LocationCoords | null>(null);
   // ホーム表示中に追いかけている現在地（移動したら近くの地図を探し直す）
-  const [currentCoords, setCurrentCoords] = useState<LocationCoords | null>(null);
+  const [currentCoords, setCurrentCoords] = useState<TrackedCoords | null>(null);
+  const interestTags = INTEREST_TAGS;
+  // 位置情報が「おおよそ」でしか許可されていないと、方角タグが大きくずれる
+  const [isFullAccuracy, setIsFullAccuracy] = useState<boolean>(true);
+  // コンパスの精度が悪い間は、8 の字の補正を案内する
+  const [needsCompassCalibration, setNeedsCompassCalibration] = useState<boolean>(false);
   const relocalizeTargetRef = React.useRef<RelocalizeTarget | null>(null);
   // セカイカメラ風に、近くの投稿を方角タグとして AR 画面に浮かべる
   const [geoTags, setGeoTags] = useState<GeoTag[]>([]);
@@ -112,6 +134,8 @@ export default function App(): React.JSX.Element {
       // 途中だった地図の記録・照合は消えるので状態を戻す。relocalizeTarget は残し、作り直されたビューで照合し直す
       setWorldMapPhase(null);
       setRelocalizationPhase(null);
+      // 作り直されたビューが改めて知らせてくる
+      setNeedsCompassCalibration(false);
     }
   }, [activeTab]);
 
@@ -119,14 +143,55 @@ export default function App(): React.JSX.Element {
     if (!isWorldMapSupported || activeTab !== 'home') {
       return;
     }
-    const watchId = Geolocation.watchPosition(
-      (position) => {
-        const coords = {
+    let cancelled = false;
+    // まだ正確な位置が無いときだけ、おおよその位置で埋める（後から来た古い位置で上書きしない）
+    const fillApproximate = (coords: LocationCoords) => {
+      if (cancelled) return;
+      setCurrentCoords((prev) => (prev && !prev.isApproximate ? prev : { ...coords, isApproximate: true }));
+    };
+
+    // 1. 前回保存した位置ですぐに方角タグを出す
+    AsyncStorage.getItem(LAST_COORDS_STORAGE_KEY)
+      .then((saved) => {
+        if (saved) fillApproximate(JSON.parse(saved));
+      })
+      .catch(() => {});
+
+    // 2. iOS が持っている直前の位置（キャッシュ）。精度は低くてもすぐ返ってくる
+    Geolocation.getCurrentPosition(
+      (position) =>
+        fillApproximate({
           latitude: position.coords.latitude,
           longitude: position.coords.longitude,
           accuracy: position.coords.accuracy,
-        };
-        setCurrentCoords(coords);
+        }),
+      () => {},
+      { enableHighAccuracy: false, maximumAge: 10 * 60 * 1000, timeout: 5000 }
+    );
+
+    // 3. 正確な位置を追いかける。誤差の大きい値は捨て、直近の良い値を平均してから差し替える
+    //    （タグはネイティブ側でなめらかに移動する）
+    const averager = new GpsAverager();
+    let lastCommitted: LocationCoords | null = null;
+    const watchId = Geolocation.watchPosition(
+      (position) => {
+        const coords = averager.add({
+          latitude: position.coords.latitude,
+          longitude: position.coords.longitude,
+          accuracy: position.coords.accuracy,
+        });
+        if (!coords) return; // まだ使える値が無い
+        // 平均した位置が少し揺れただけでは更新しない（そのたびに投稿を取り直さない）
+        if (
+          lastCommitted &&
+          distanceInMeters(lastCommitted.latitude, lastCommitted.longitude, coords.latitude, coords.longitude) <
+            LOCATION_ACCURACY.commitDistanceM
+        ) {
+          return;
+        }
+        lastCommitted = coords;
+        setCurrentCoords({ ...coords, isApproximate: false });
+        AsyncStorage.setItem(LAST_COORDS_STORAGE_KEY, JSON.stringify(coords)).catch(() => {});
         const suppressedAt = suppressedAtRef.current;
         if (
           suppressedAt &&
@@ -138,16 +203,22 @@ export default function App(): React.JSX.Element {
         }
       },
       (error) => console.warn('現在地の追跡に失敗しました:', error.message),
-      { enableHighAccuracy: true, distanceFilter: 15 }
+      // 平均を取るため、動いていなくても値を受け取る（更新するかは commitDistanceM で絞る）
+      { enableHighAccuracy: true, distanceFilter: 0 }
     );
-    return () => Geolocation.clearWatch(watchId);
+    return () => {
+      cancelled = true;
+      Geolocation.clearWatch(watchId);
+    };
   }, [activeTab]);
 
   useEffect(() => {
     if (
       !isWorldMapSupported ||
       activeTab !== 'home' ||
+      // 前回の位置やキャッシュで照合すると、別の場所の地図を読み込んでしまう
       !currentCoords ||
+      currentCoords.isApproximate ||
       isRelocalizeSuppressed ||
       isPostModalVisible ||
       isPlacementMode ||
@@ -173,12 +244,14 @@ export default function App(): React.JSX.Element {
         setRelocalizeTarget({
           postId: String(mapPost.id),
           worldMapPath: mapPost.worldmap_path,
+          snapshotPath: mapPost.snapshot_path,
           cards: posts.map((post) => ({
             postId: String(post.id),
             cardTitle: post.author ?? 'guest',
             cardDescription: post.message ?? '',
             cardIcon: post.handle ?? '',
             cardColor: '#10B981',
+            cardTags: post.tags ?? [],
           })),
           supabase: supabaseConfig,
         });
@@ -213,6 +286,10 @@ export default function App(): React.JSX.Element {
             cardDescription: post.message ?? '',
             cardIcon: post.handle ?? '',
             cardColor: '#10B981',
+            cardTags: post.tags ?? [],
+            level: geoTagLevelFor(post.distanceM),
+            prominence: geoTagProminenceFor(post.distanceM),
+            highlighted: matchesInterestTags(post.tags, interestTags),
             distanceM: post.distanceM,
             bearingDeg: post.bearingDeg,
           }))
@@ -222,11 +299,18 @@ export default function App(): React.JSX.Element {
     return () => {
       cancelled = true;
     };
-  }, [activeTab, currentCoords]);
+  }, [activeTab, currentCoords, interestTags]);
 
   const handleWorldMapStatus = async (event: WorldMapStatusEvent) => {
     // 依頼は受け取ってもらえたので消す。残すと、作り直された AR ビューが古い依頼をもう一度処理してしまう
     setWorldMapSaveRequest(null);
+    if (event.phase === 'snapshotSaved') {
+      // 景色の写真は地図の記録と並行して届くので、記録中の状態（worldMapPhase）は変えない
+      if (event.path) {
+        updatePostSnapshotPath(event.postId, event.path).catch((err) => console.warn(err));
+      }
+      return;
+    }
     setWorldMapPhase(event.phase);
     if (event.phase === 'saved' && event.path) {
       try {
@@ -298,7 +382,8 @@ export default function App(): React.JSX.Element {
   const handlePostSubmit = (data: { message: string; tags: string[]; category: string }) => {
     setIsPostModalVisible(false);
     setCurrentMessage(data.message);
-    const tags = data.tags && data.tags.length > 0 ? data.tags : [selectedTag];
+    // 選んだタグをそのまま使う（空なら空のまま保存し、カードにもタグを出さない）
+    const tags = data.tags ?? [];
     setSelectedTags(tags);
     if (tags[0]) setSelectedTag(tags[0]);
     // 投稿内容をセットして、リアルタイムプレビュー＆配置決定モードへ
@@ -338,6 +423,7 @@ export default function App(): React.JSX.Element {
             cardDescription={currentMessage}
             cardColor="#10B981"
             cardIcon={currentHandle}
+            cardTags={selectedTags}
             placeTrigger={placeTrigger}
             isPreviewActive={isPlacementMode}
             onScreenTapped={() => {
@@ -389,6 +475,8 @@ export default function App(): React.JSX.Element {
             geoTags={geoTags}
             onWorldMapStatus={(event) => handleWorldMapStatus(event.nativeEvent)}
             onRelocalizationStatus={(event) => handleRelocalizationStatus(event.nativeEvent)}
+            onLocationAccuracyStatus={(event) => setIsFullAccuracy(event.nativeEvent.fullAccuracy)}
+            onCompassStatus={(event) => setNeedsCompassCalibration(event.nativeEvent.needsCalibration)}
           />
 
           {/* Top Screen Header */}
@@ -396,6 +484,26 @@ export default function App(): React.JSX.Element {
             title="ホーム"
             style={styles.homeHeader}
           />
+
+          {/* 方角タグの精度についての控えめな案内（正確な位置情報がオフ／コンパスの補正） */}
+          {!isPlacementMode && (!isFullAccuracy || needsCompassCalibration) && (
+            <View style={styles.calmNotice} pointerEvents="box-none">
+              <Text style={styles.calmNoticeText}>
+                {!isFullAccuracy
+                  ? '位置情報が「おおよそ」になっています。設定で「正確な位置情報」をオンにすると、言葉の方角が正確になります'
+                  : 'iPhoneをゆっくり8の字に動かすと、方角が正確になります'}
+              </Text>
+              {!isFullAccuracy && (
+                <TouchableOpacity
+                  style={styles.calmNoticeButton}
+                  onPress={() => Linking.openSettings()}
+                  activeOpacity={0.8}
+                >
+                  <Text style={styles.calmNoticeButtonText}>設定を開く</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+          )}
 
           {/* Placement Mode HUD (Guide Banner & Confirmation Action Bar) */}
           {isPlacementMode && (
@@ -585,6 +693,40 @@ const styles = StyleSheet.create({
   homeHeader: {
     backgroundColor: 'rgba(255, 255, 255, 0.95)',
     zIndex: 20,
+  },
+
+  // 方角タグの精度の案内（Calm：白く小さく、操作の邪魔をしない）
+  calmNotice: {
+    position: 'absolute',
+    top: 68,
+    left: 20,
+    right: 20,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    backgroundColor: 'rgba(255, 255, 255, 0.82)',
+    paddingVertical: 9,
+    paddingHorizontal: 14,
+    borderRadius: 18,
+    zIndex: 24,
+  },
+  calmNoticeText: {
+    flex: 1,
+    color: '#334155',
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: '500',
+  },
+  calmNoticeButton: {
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: 14,
+    backgroundColor: 'rgba(16, 185, 129, 0.12)',
+  },
+  calmNoticeButtonText: {
+    color: '#059669',
+    fontSize: 12,
+    fontWeight: '700',
   },
 
   // Placement Mode HUD
