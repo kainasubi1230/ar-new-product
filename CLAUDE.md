@@ -29,10 +29,32 @@ npm run typecheck    # tsc --noEmit（唯一の静的チェック）
 4. ネイティブがカードをアンカーに配置 → `onCardPlaced` が `x/y/z` を返す → `insertPostWithCurrentLocation()` で Geolocation から現在地を取得し、Supabase の `posts` テーブルに insert
 
 ### ARWorldMap による場所の再現（iOS のみ）
-- 保存：カードは仮名 `pending:<uuid>` の `ARAnchor` 上に置かれ、`onCardPlaced` で `anchorId` が返る。JS が投稿を insert して ID を得ると `worldMapSaveRequest` を渡し、ネイティブはアンカーを `post:<posts.id>` に作り直してから `worldMappingStatus` が mapped になるまで待つ。その後、地図を Supabase Storage の `worldmaps/<postId>.worldmap` に直接アップロードする（`SupabaseStorage` struct）。最後に JS が `posts.worldmap_path` を更新する。
-- 復元：ホーム表示中は `Geolocation.watchPosition` で現在地を追い、位置が変わるたびに `worldMapService.findNearbyWorldMapPosts` が 30m 以内の地図付き投稿を新しい順に取る。一番新しい地図と近くの投稿全件のカード内容を `relocalizeTarget` に渡す（GPS 誤差があるので距離では選ばない）。ネイティブは地図をダウンロードして `initialWorldMap` でセッションをやり直し、戻ってきた `post:<id>` アンカーのうち内容を知っている投稿をすべてカードで表示する。
-- 地図を育てる：照合に成功したログインユーザーがその場で見回すと（前回の保存から 15 秒以上経ち、1m 以上動くか 60° 以上向きを変えた、かつ mapped のとき）、その地図を同じパスに上書き保存する。1 セッション最大 3 回、10MB まで（`checkMapGrowth`）。他人の地図を上書きするので、Storage の UPDATE ポリシーは認証ユーザー全員に開いている。
+- 保存：カードは仮名 `pending:<uuid>` の `ARAnchor` 上に置かれ、`onCardPlaced` で `anchorId` が返る。JS が投稿を insert して ID を得ると `worldMapSaveRequest` を渡し、ネイティブはアンカーを `post:<posts.id>` に作り直してから `worldMappingStatus` が mapped になるまで待つ。その後、地図を Supabase Storage の `worldmaps/<postId>.worldmap` に直接アップロードする（`SupabaseStorage` struct）。最後に JS が `posts.worldmap_path` と、その地図に入っている `post:` アンカーの投稿 ID 一覧 `posts.worldmap_post_ids` を更新する。extending のまま mapped にならないときの保険は `mappingExtendingFallback`（15 秒）。
+- 復元：ホーム表示中は `Geolocation.watchPosition` で現在地を追う。照合には、誤差 15m 以下の平均（`currentCoords`、方角タグ用）を待たず、生の値が 65m 以内になった時点の `relocalizeCoords` を使い、`relocalizeSearchRadiusFor`（max(30m, 誤差+20m)、上限 100m）の範囲で `findNearbyWorldMapPosts` が地図付き投稿を取る。`chooseWorldMapPost` で「範囲内の投稿をいちばん多く含む地図（同数なら新しいほう）」を選び、範囲内の投稿全件のカード内容と一緒に `relocalizeTarget` に渡す。ネイティブは地図をダウンロードして `initialWorldMap` でセッションをやり直す。`didAdd` で届いた `post:` アンカーは、trackingState が normal になる（位置合わせが終わる）まで `pendingRelocalizedAnchors` に取っておき、normal になってから内容を知っている投稿をすべてカードで表示する（found と地図を育てる処理もその後に始まる）。
+- 地図を育てる：照合に成功したログインユーザー、または地図を保存した直後の投稿者本人がその場で見回すと（前回の保存から 15 秒以上経ち、1m 以上動くか 60° 以上向きを変えた、かつ mapped か extending のとき）、その地図を同じパスに上書き保存する。1 セッション最大 3 回、10MB まで（`checkMapGrowth`）。他人の地図を上書きするので、Storage の UPDATE ポリシーは認証ユーザー全員に開いている。
+- 記録中・照合中の案内は、ネイティブの `ARGuideHUDView`（ARCoachingOverlayView 風）が `emitWorldMapStatus` / `emitRelocalizationStatus` の phase に連動して出す。JS 側に案内のバナーは無い。
+  - 記録中は進み具合のバーを出す（`mappingProgress`：mapped で 1、extending は `mappingExtendingFallback` 秒の保険に向けて進む）。
+  - カードを置いた瞬間に ARView のスナップショット（方角タグは隠し、置いたカードは写す）を撮り、投稿 ID が決まったら `worldmaps/snapshots/<postId>.jpg` に上げる。`onWorldMapStatus(snapshotSaved)` を受けた JS が `posts.snapshot_path` に記録する（このイベントは `worldMapPhase` を変えない）。
+  - 照合中は `relocalizeTarget.snapshots`（その地図に入っている投稿の写真を、今いる場所から近い順に）を半透明で画面いっぱいに重ね、「この景色に合わせてください」と案内する（`relocalizationGuide`）。1 つの地図に何部屋分も入っていることがあり GPS では部屋を区別できないので、複数あれば 4 秒ごとに切り替える（`cycleRelocalizationSnapshot`）。写真の無い投稿はアイコンと文字だけ。スマホを振らせるアニメーションは使わない。DB の列は `supabase/migrations/20261026000000_snapshots.sql`。
+- 照合で出したカードは、1 つの地図で家じゅうのカードが一度に出るので、カメラとの間に壁や物があれば薄れて、その正確な位置にごく薄い光だけが残る（`RevealCard` / `updateCardReveal`）。0.25 秒ごとに `isOccluded` でカメラからカードへの間を調べる。手がかりは 3 つ：①今のフレームの特徴点（`rawFeaturePoints`）がカードへの細い円すいの中、カードより手前に 3 個以上ある（全機種。LiDAR の無い iPhone の主な手がかり、`featurePointsBetween`）、②ARKit の平面（`existingPlaneGeometry`）に当たる、③LiDAR 機では部屋のメッシュ（`sceneUnderstanding` の `.collision`）に当たる。いずれもカードの手前 0.3m より近いものだけ数える。特徴点はちらつくので `occlusionScore`（0〜4）が 3 以上で隠し 1 以下で見せる。画面外のカードは判定せず前の状態のまま。LiDAR が無いと、模様の無い白い壁の向こうは見えてしまうことがある。自分がその場で置いたカードは対象外（常に見える）。
 - 進捗は `onWorldMapStatus` / `onRelocalizationStatus` で JS に通知される。DB 側の設定は `supabase/migrations/` にある。
+
+### 方角タグ（セカイカメラ風、iOS のみ）
+- 位置合わせ（照合）なしで、周りの投稿を AR 画面に一斉に浮かべる。JS が `nearbyPostService.findNearbyPosts` で 300m 以内の投稿を近い順に最大 20 件取り、`src/utils/geo.ts` で距離と方角（北=0° 時計回り）を計算して `geoTags` prop に渡す。距離・方角の計算は、レーダーや通知でも使い回す前提。
+- ネイティブは CoreMotion（`xTrueNorthZVertical`）のカメラの方角と ARKit カメラのヨー角の差から、AR 座標での北を求めて平滑化する（`northOffset`）。タグは「GPS の位置が届いたときのカメラ位置」（`geoOriginCameraPosition`、`geoTags` が更新されたときに記録）から、その方向の実際の距離（上限 `geoTagMaxRenderDistance` 40m）に置いて空間に固定し、毎フレームカメラの方を向かせる。今のカメラ基準で置き直すと歩いた分だけ逃げていくので、そうしない。見かけの幅（角度）は本当の距離で決める（30m で約 0.17rad、300m で約 0.10rad）。重なりは方角と仰角で判定して上に積む。セッションをやり直すと北と基準位置を求め直す。
+- 見え方は位置の確かさと距離で決める。しきい値は `src/config/distanceTiers.ts` の `DISTANCE_TIERS` だけで決める（`maxM` 300 / `messageM` 100 / `preciseM` 30。`NEARBY_RADIUS_M` と `WORLDMAP_RADIUS_M` もここから取る）。JS が `geoTagLevelFor` で各タグの `level` を決めて渡す。
+  - 照合に成功：正確な位置にくっきりしたカード。その投稿のタグ・気配は消す（`preciseCardPostIds`）
+  - 〜`preciseM` で照合できていない：`presence`。その方角の実際の距離に、文字のない光の「気配」（`presenceMesh` + 放射状グラデーション、4 秒周期でゆっくり明滅）。大きさは位置の不確かさ `uncertaintyM`（置いたときと今の GPS 誤差を合わせたもの、`positionUncertaintyFor`）で決める。タップすると `onPresenceTapped` → `PresenceSheet` が「このあたりに○○さんのメッセージがあります（景色が合うとその場所に現れます）」と置いたときの景色の写真を出す（本文は見せない）
+  - `preciseM`〜`messageM`：`message`。本文も読めるタグ（`createGeoTagImage`）
+  - `messageM`〜`maxM`：`summary`。タグと距離だけの小さいタグ（`createGeoTagSummaryImage`）
+- 配置プレビュー中はタグを隠す。
+- 起動を速くするため、現在地は 3 段で埋める（App.tsx）：AsyncStorage の前回位置（`loca:lastCoords`）→ iOS のキャッシュ位置（`getCurrentPosition` の低精度・`maximumAge` 10 分）→ `watchPosition` の正確な位置。前の 2 つは `isApproximate: true` で、方角タグには使うが ARWorldMap の照合には使わない。
+- `watchPosition` の値は `GpsAverager`（`src/utils/gpsAverager.ts`）に通す。誤差 15m 超は捨て、直近 5 回の良い値を誤差の小ささで重み付け平均する。屋内などで 20 秒良い値が来なければ、誤差 65m 以内の最良値を使う。平均位置が 5m 以上動いたときだけ `currentCoords` を更新する。しきい値は `src/config/locationAccuracy.ts`。
+- 北の向き（`northOffset`）は 1 回で決めず、直近 4 秒の測定値の平均（cos/sin の平均）で決める。最初は 1 秒集めてから決める。コンパスの精度（`CLLocationManager` の `headingAccuracy`）が 25° より悪い間の測定値は混ぜない（まだ北が無いときだけは使う）。悪い状態が 2 秒続くと `onCompassStatus` で 8 の字の補正を案内し、15° 以下に戻ったら消す。
+- 位置情報が「おおよそ」でしか許可されていない（`accuracyAuthorization == .reducedAccuracy`）と `onLocationAccuracyStatus` で知らせ、App.tsx が「設定を開く」付きの案内を出す。
+- ネイティブはタグごとに `GeoTagEntity`（目標の位置・大きさ・濃さと、現在値）を持ち、毎フレーム時間ベースで目標へ寄せる（パッと飛ばさない）。新しいタグは近い順に `geoTagStaggerDelay` ずつ遅れてふわっと現れ、範囲外になったタグはふわっと消える。北を求め直した直後（`needsGeoTagSnap`）だけは、その場に置き直してもう一度ふわっと出す。
+- 濃さは JS の `prominence`（`geoTagProminenceFor`、近いほど 1）から決める。透明度（`OpacityComponent`）は iOS 18 以上のみで、それ未満は大きさの変化だけになる。`highlighted`（`src/utils/interestTags.ts` の `matchesInterestTags`）が true の投稿は少し大きく濃く出す。今は App.tsx の `INTEREST_TAGS` が空なので、全件同じ見た目。
+- Android 側はまだ未対応（`geoTags` prop は無視される）。
 
 ### ネイティブ AR ビュー（ブリッジ）
 `src/native/UniversalARView.tsx` は `requireNativeComponent` の薄いラッパー。**登録名がプラットフォームごとに違う**：iOS は `ARView`、Android は `ARViewManager`。
@@ -44,8 +66,12 @@ prop やイベントを追加・変更するときは、TS の型定義・iOS �
 ### Supabase
 - クライアントは `src/lib/supabase.ts`。URL と publishable key はハードコードされていて、`.env` は使っていない。セッションは AsyncStorage に保存し、`react-native-url-polyfill` が必須。
 - 認証（メール＋パスワード）は `src/services/authService.ts`。username はサインアップ時に `user_metadata.username` へ入る。
-- `posts` テーブルのカラム（`postService.ts` から推定）：`message, lat, lng, accuracy_m, author, handle, tags[], ar_x, ar_y, ar_z, worldmap_path, user_id`。`user_id` は DB のデフォルト値 `auth.uid()` で自動的に入り、投稿者だけが自分の行を UPDATE できる。
+- `posts` テーブルのカラム（`postService.ts` から推定）：`message, lat, lng, alt_m, heading_deg, camera_lat, camera_lng, accuracy_m, author, handle, tags[], ar_x, ar_y, ar_z, worldmap_path, worldmap_post_ids[], snapshot_path, user_id`。
+  - メッセージの本体は「その場所の座標」。`lat / lng / alt_m` はスマホではなくカード自体の位置（`postService.insertPostWithCurrentLocation`：スマホの GPS（平均済みの `currentCoords` があれば優先）＋ ネイティブが `onCardPlaced` で送るカメラからのずれ `offsetEastM / offsetNorthM / offsetUpM`（`northOffset` で東・北に直したもの））。`heading_deg` はカードの面の方位、`camera_lat / camera_lng` は元にしたスマホの位置、`accuracy_m` はそのときの GPS の誤差。北が分からないときはずれを送らず、スマホの位置をそのまま使う。方角タグなどの照合できないときの表示は `lat / lng` を使うので、自動的にカードの座標になる。2026-10-26 より前の投稿の `lat / lng` はスマホの位置。`user_id` は DB のデフォルト値 `auth.uid()` で自動的に入り、投稿者だけが自分の行を UPDATE できる。
 
 ### その他
+- デバッグ表示：`src/config/debug.ts` の `SHOW_AR_DEBUG`（既定は `__DEV__`）が true だと、AR 画面の左下に `ARDebugOverlay` を出す。ネイティブは `debugEnabled` のときだけ 0.5 秒ごとに `onDebugInfo`（trackingState・worldMappingStatus・照合フェーズ・読み込んだ地図と中の post: アンカー・didAdd と normal 到達の時刻）を送る。照合を止めている理由は App.tsx の `relocalizeBlockReasons` で、照合を始めるかの判定にも同じ一覧を使う（表示と判定がずれないように）。
+- マイページの「自分の投稿」は `posts.user_id = auth.uid()` で取る。削除は `postService.deleteMyPost`：Storage の `<id>.worldmap` と `snapshots/<id>.jpg` を先に消してから投稿を消す（Storage の削除ポリシーは「投稿の持ち主か」で判定するため、順番が逆だと消せない）。ポリシーは `supabase/migrations/20261026010000_post_delete.sql`。
+- AR カード・配置プレビュー・方角タグに描くタグは `posts.tags` を使う。配置中のカードは `cardTags` prop、照合で出すカードは `RelocalizeCard.cardTags`、方角タグは `GeoTag.cardTags` で渡す。空ならタグの行を描かない（`ARViewWrapper.tagLine`）。
 - `src/assets/icons/index.ts` が PNG アイコンをまとめて `Icons` としてエクスポートしている。
 - 通知画面は `src/data/notifications.ts` の静的モックデータで、まだバックエンドとは接続していない。
