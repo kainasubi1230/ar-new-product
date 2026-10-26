@@ -20,6 +20,7 @@ import { PostModal } from './src/components/PostModal';
 import { TagManageModal } from './src/components/TagManageModal';
 import {
   UniversalARView,
+  type ARDebugInfoEvent,
   type GeoTag,
   type RelocalizationStatusEvent,
   type RelocalizeTarget,
@@ -31,19 +32,29 @@ import { Icons } from './src/assets/icons';
 import { insertPostWithCurrentLocation } from './src/services/postService';
 import { signOut } from './src/services/authService';
 import type { LocationCoords } from './src/services/postService';
-import { findNearbyPosts } from './src/services/nearbyPostService';
-import { geoTagLevelFor, geoTagProminenceFor } from './src/config/distanceTiers';
+import { findNearbyPosts, type NearbyPost } from './src/services/nearbyPostService';
+import {
+  geoTagLevelFor,
+  geoTagProminenceFor,
+  positionUncertaintyFor,
+  relocalizeSearchRadiusFor,
+} from './src/config/distanceTiers';
+import { PresenceSheet } from './src/components/PresenceSheet';
 import { matchesInterestTags } from './src/utils/interestTags';
 import { GpsAverager } from './src/utils/gpsAverager';
 import { LOCATION_ACCURACY } from './src/config/locationAccuracy';
+import { SHOW_AR_DEBUG } from './src/config/debug';
+import { ARDebugOverlay, type RelocalizeSearchDebug } from './src/components/ARDebugOverlay';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { distanceInMeters } from './src/utils/geo';
 import {
   WORLDMAP_RADIUS_M,
   findNearbyWorldMapPosts,
   getNativeSupabaseConfig,
+  chooseWorldMapPost,
   updatePostSnapshotPath,
   updatePostWorldMapPath,
+  updatePostWorldMapPostIds,
 } from './src/services/worldMapService';
 import { supabase } from './src/lib/supabase';
 
@@ -96,14 +107,24 @@ export default function App(): React.JSX.Element {
   const suppressedAtRef = React.useRef<LocationCoords | null>(null);
   // ホーム表示中に追いかけている現在地（移動したら近くの地図を探し直す）
   const [currentCoords, setCurrentCoords] = useState<TrackedCoords | null>(null);
+  // 照合する地図を探すための位置。誤差 15m 以下の平均（currentCoords）を待たず、
+  // GPS の生の値が fallbackMaxAccuracyM 以内なら使う（候補を広めに探して、景色で確かめるため）
+  const [relocalizeCoords, setRelocalizeCoords] = useState<LocationCoords | null>(null);
   const interestTags = INTEREST_TAGS;
   // 位置情報が「おおよそ」でしか許可されていないと、方角タグが大きくずれる
   const [isFullAccuracy, setIsFullAccuracy] = useState<boolean>(true);
   // コンパスの精度が悪い間は、8 の字の補正を案内する
   const [needsCompassCalibration, setNeedsCompassCalibration] = useState<boolean>(false);
+  // デバッグ表示（SHOW_AR_DEBUG のときだけ更新する）
+  const [nativeDebug, setNativeDebug] = useState<ARDebugInfoEvent | null>(null);
+  const [relocalizeSearchDebug, setRelocalizeSearchDebug] = useState<RelocalizeSearchDebug | null>(null);
+  const [rawGpsAccuracy, setRawGpsAccuracy] = useState<number | null>(null);
   const relocalizeTargetRef = React.useRef<RelocalizeTarget | null>(null);
   // セカイカメラ風に、近くの投稿を方角タグとして AR 画面に浮かべる
   const [geoTags, setGeoTags] = useState<GeoTag[]>([]);
+  const nearbyPostsRef = React.useRef<Map<string, NearbyPost>>(new Map());
+  // 気配をタップしたときの案内（投稿者名と、置いたときの景色の写真）
+  const [tappedPresence, setTappedPresence] = useState<{ authorName: string; snapshotPath: string | null } | null>(null);
   relocalizeTargetRef.current = relocalizeTarget;
   const isRelocalizing = relocalizationPhase === 'downloading' || relocalizationPhase === 'relocalizing';
 
@@ -136,6 +157,8 @@ export default function App(): React.JSX.Element {
       setRelocalizationPhase(null);
       // 作り直されたビューが改めて知らせてくる
       setNeedsCompassCalibration(false);
+      // 戻ってきたら、その時点の GPS で照合の候補を探し直す
+      setRelocalizeCoords(null);
     }
   }, [activeTab]);
 
@@ -175,6 +198,25 @@ export default function App(): React.JSX.Element {
     let lastCommitted: LocationCoords | null = null;
     const watchId = Geolocation.watchPosition(
       (position) => {
+        if (SHOW_AR_DEBUG) {
+          setRawGpsAccuracy(position.coords.accuracy);
+        }
+        const raw = {
+          latitude: position.coords.latitude,
+          longitude: position.coords.longitude,
+          accuracy: position.coords.accuracy,
+        };
+        if (raw.accuracy != null && raw.accuracy <= LOCATION_ACCURACY.fallbackMaxAccuracyM) {
+          // 少し動いたか、誤差がはっきり良くなったときだけ差し替える（そのたびに候補を探し直さない）
+          setRelocalizeCoords((prev) =>
+            !prev ||
+            distanceInMeters(prev.latitude, prev.longitude, raw.latitude, raw.longitude) >=
+              LOCATION_ACCURACY.commitDistanceM ||
+            raw.accuracy < (prev.accuracy ?? Infinity) - 10
+              ? raw
+              : prev
+          );
+        }
         const coords = averager.add({
           latitude: position.coords.latitude,
           longitude: position.coords.longitude,
@@ -212,30 +254,51 @@ export default function App(): React.JSX.Element {
     };
   }, [activeTab]);
 
+  // 照合（地図の読み込み）を止めている理由。空なら照合を探しに行く。デバッグ表示にもそのまま出す
+  const relocalizeBlockReasons = [
+    !isWorldMapSupported && 'iOS以外',
+    activeTab !== 'home' && 'ホーム以外のタブ',
+    // 前回の位置やキャッシュでは照合しない（別の場所の地図を読み込んでしまう）。GPS の生の値（誤差 65m 以内）を待つ
+    !relocalizeCoords && `照合用の位置待ち(誤差${LOCATION_ACCURACY.fallbackMaxAccuracyM}m以内)`,
+    isRelocalizeSuppressed && '投稿後の抑制中(isRelocalizeSuppressed)',
+    isPostModalVisible && '投稿画面を開いている',
+    isPlacementMode && '配置中',
+    isMappingInProgress && '地図を記録・保存中',
+  ].filter((reason): reason is string => Boolean(reason));
+  const relocalizeBlockKey = relocalizeBlockReasons.join('|');
+
   useEffect(() => {
-    if (
-      !isWorldMapSupported ||
-      activeTab !== 'home' ||
-      // 前回の位置やキャッシュで照合すると、別の場所の地図を読み込んでしまう
-      !currentCoords ||
-      currentCoords.isApproximate ||
-      isRelocalizeSuppressed ||
-      isPostModalVisible ||
-      isPlacementMode ||
-      isMappingInProgress
-    ) {
+    if (relocalizeBlockReasons.length > 0 || !relocalizeCoords) {
       return;
     }
+    // GPS は候補を絞るだけ（照合は景色で確かめる）なので、誤差に合わせて広めに探す
+    const radiusM = relocalizeSearchRadiusFor(relocalizeCoords.accuracy);
     let cancelled = false;
     (async () => {
       try {
-        const posts = await findNearbyWorldMapPosts(currentCoords);
-        // 新しい地図ほど多くのカードが入っている。ただし今のセッションで自分が置いた投稿の地図は選ばない
-        const mapPost = posts.find((post) => !ownPostIdsRef.current.has(String(post.id)));
-        if (cancelled || !mapPost) return;
-        // いま読み込んでいる地図の範囲内なら何もしない（読み直すと出ているカードが消える）
-        const current = relocalizeTargetRef.current;
-        if (current?.cards.some((card) => card.postId === String(mapPost.id))) return;
+        const posts = await findNearbyWorldMapPosts(relocalizeCoords, radiusM);
+        // 近くの投稿をいちばん多く含む地図を選ぶ（同じ数なら新しいほう）。今のセッションで自分が置いた投稿の地図は選ばない
+        const chosen = chooseWorldMapPost(posts, ownPostIdsRef.current);
+        const mapPost = chosen?.post;
+        // いま読み込んでいる地図と同じなら読み直さない（読み直すと出ているカードが消える）
+        const isAlreadyLoaded = mapPost != null && relocalizeTargetRef.current?.postId === String(mapPost.id);
+        if (SHOW_AR_DEBUG && !cancelled) {
+          setRelocalizeSearchDebug({
+            radiusM,
+            candidates: posts.length,
+            excludedOwn: posts.filter((post) => ownPostIdsRef.current.has(String(post.id))).length,
+            chosenPostId: mapPost ? String(mapPost.id) : null,
+            note:
+              posts.length === 0
+                ? '範囲内に地図付きの投稿なし'
+                : !mapPost
+                  ? '候補が全部「自分が今置いた投稿」で除外'
+                  : isAlreadyLoaded
+                    ? `読み込み済みの地図（近くの投稿${chosen?.nearbyCount}件入り）`
+                    : `照合を開始（近くの投稿${chosen?.nearbyCount}件入りの地図）`,
+          });
+        }
+        if (cancelled || !mapPost || isAlreadyLoaded) return;
 
         const supabaseConfig = await getNativeSupabaseConfig();
         if (cancelled) return;
@@ -244,7 +307,12 @@ export default function App(): React.JSX.Element {
         setRelocalizeTarget({
           postId: String(mapPost.id),
           worldMapPath: mapPost.worldmap_path,
-          snapshotPath: mapPost.snapshot_path,
+          // その地図で出せる投稿の写真を、今いる場所から近い順に（1 つの地図に何部屋分も入っていることがある）
+          snapshots: posts
+            .filter((post) => (mapPost.worldmap_post_ids ?? [String(mapPost.id)]).includes(String(post.id)))
+            .filter((post) => post.snapshot_path)
+            .sort((a, b) => a.distanceM - b.distanceM)
+            .map((post) => ({ postId: String(post.id), path: post.snapshot_path as string })),
           cards: posts.map((post) => ({
             postId: String(post.id),
             cardTitle: post.author ?? 'guest',
@@ -255,21 +323,25 @@ export default function App(): React.JSX.Element {
           })),
           supabase: supabaseConfig,
         });
-      } catch (err) {
+      } catch (err: any) {
         console.warn('近くの地図の検索に失敗しました:', err);
+        if (SHOW_AR_DEBUG && !cancelled) {
+          setRelocalizeSearchDebug({
+            radiusM,
+            candidates: 0,
+            excludedOwn: 0,
+            chosenPostId: null,
+            note: `エラー: ${err?.message ?? err}`,
+          });
+        }
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [
-    activeTab,
-    currentCoords,
-    isRelocalizeSuppressed,
-    isPostModalVisible,
-    isPlacementMode,
-    isMappingInProgress,
-  ]);
+    // 止める理由は relocalizeBlockKey にまとめてある
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [relocalizeCoords, relocalizeBlockKey]);
 
   useEffect(() => {
     if (!isWorldMapSupported || activeTab !== 'home' || !currentCoords) {
@@ -279,6 +351,8 @@ export default function App(): React.JSX.Element {
     findNearbyPosts(currentCoords)
       .then((posts) => {
         if (cancelled) return;
+        // 気配をタップしたときに、投稿者名と景色の写真を引けるように覚えておく
+        nearbyPostsRef.current = new Map(posts.map((post) => [String(post.id), post]));
         setGeoTags(
           posts.map((post) => ({
             postId: String(post.id),
@@ -289,6 +363,7 @@ export default function App(): React.JSX.Element {
             cardTags: post.tags ?? [],
             level: geoTagLevelFor(post.distanceM),
             prominence: geoTagProminenceFor(post.distanceM),
+            uncertaintyM: positionUncertaintyFor(post.accuracy_m, currentCoords.accuracy),
             highlighted: matchesInterestTags(post.tags, interestTags),
             distanceM: post.distanceM,
             bearingDeg: post.bearingDeg,
@@ -314,7 +389,7 @@ export default function App(): React.JSX.Element {
     setWorldMapPhase(event.phase);
     if (event.phase === 'saved' && event.path) {
       try {
-        await updatePostWorldMapPath(event.postId, event.path);
+        await updatePostWorldMapPath(event.postId, event.path, event.anchorPostIds);
         showToast('🗺️ この場所の地図を保存しました');
       } catch (err: any) {
         showToast(`❌ ${err?.message || '地図の保存に失敗しました'}`);
@@ -342,6 +417,10 @@ export default function App(): React.JSX.Element {
     } else if (event.phase === 'mapExtended') {
       // 見回した分を地図に足して保存し直した（見ている人の操作は不要なので通知しない）
       console.log(`地図を育てました: ${event.postId} (${Math.round((event.bytes ?? 0) / 1024)}KB)`);
+      // 育てた地図に増えた投稿も、照合する地図を選ぶときに数えられるようにする（持ち主のときだけ更新できる）
+      if (event.anchorPostIds) {
+        updatePostWorldMapPostIds(event.postId, event.anchorPostIds).catch(() => {});
+      }
     } else if (event.phase === 'timeout') {
       // relocalizeTarget は残す（同じ場所で何度も照合し直さないため。別の場所に移動すれば探し直す）
       setRelocalizationPhase(null);
@@ -426,6 +505,11 @@ export default function App(): React.JSX.Element {
             cardTags={selectedTags}
             placeTrigger={placeTrigger}
             isPreviewActive={isPlacementMode}
+            onPresenceTapped={(event) => {
+              const post = nearbyPostsRef.current.get(event.nativeEvent.postId);
+              if (!post) return;
+              setTappedPresence({ authorName: post.author ?? 'guest', snapshotPath: post.snapshot_path });
+            }}
             onScreenTapped={() => {
               // 配置モード中でなければログインチェックして投稿作成
               if (!isPlacementMode) {
@@ -434,7 +518,13 @@ export default function App(): React.JSX.Element {
             }}
             onCardPlaced={async (event) => {
               setIsPlacementMode(false);
-              const { cardDescription, anchorId, x, y, z } = event.nativeEvent;
+              const { cardDescription, anchorId, x, y, z, offsetEastM, offsetNorthM, offsetUpM, headingDeg } =
+                event.nativeEvent;
+              // カード自体の位置を求めるための、スマホからのずれと向き（北が分からないときは無い）
+              const placement =
+                offsetEastM != null && offsetNorthM != null && offsetUpM != null && headingDeg != null
+                  ? { offsetEastM, offsetNorthM, offsetUpM, headingDeg }
+                  : null;
               const messageToSave = cardDescription || currentMessage;
               const authorName =
                 user?.user_metadata?.username || user?.email?.split('@')[0] || currentAuthor;
@@ -442,15 +532,22 @@ export default function App(): React.JSX.Element {
 
               showToast(`📍 現在地を取得して「${messageToSave}」を保存中...`);
               try {
-                const { post } = await insertPostWithCurrentLocation({
-                  message: messageToSave,
-                  author: authorName,
-                  handle: authorHandle,
-                  tags: selectedTags,
-                  ar_x: x,
-                  ar_y: y,
-                  ar_z: z,
-                });
+                const { post } = await insertPostWithCurrentLocation(
+                  {
+                    message: messageToSave,
+                    author: authorName,
+                    handle: authorHandle,
+                    tags: selectedTags,
+                    ar_x: x,
+                    ar_y: y,
+                    ar_z: z,
+                  },
+                  {
+                    placement,
+                    // 平均を取った確定位置があれば、その場の 1 回の測定より優先する
+                    preferredCoords: currentCoords && !currentCoords.isApproximate ? currentCoords : null,
+                  }
+                );
                 showToast(`✅ 「${messageToSave}」をSupabaseに保存しました！`);
 
                 // 置いたカードのアンカーを投稿IDで確定し、この場所の地図を保存する
@@ -477,7 +574,22 @@ export default function App(): React.JSX.Element {
             onRelocalizationStatus={(event) => handleRelocalizationStatus(event.nativeEvent)}
             onLocationAccuracyStatus={(event) => setIsFullAccuracy(event.nativeEvent.fullAccuracy)}
             onCompassStatus={(event) => setNeedsCompassCalibration(event.nativeEvent.needsCalibration)}
+            debugEnabled={SHOW_AR_DEBUG}
+            onDebugInfo={(event) => setNativeDebug(event.nativeEvent)}
           />
+
+          {SHOW_AR_DEBUG && (
+            <ARDebugOverlay
+              gps={{
+                accuracyM: currentCoords?.accuracy ?? null,
+                isApproximate: currentCoords ? currentCoords.isApproximate : null,
+                rawAccuracyM: rawGpsAccuracy,
+              }}
+              blockReasons={relocalizeBlockReasons}
+              search={relocalizeSearchDebug}
+              native={nativeDebug}
+            />
+          )}
 
           {/* Top Screen Header */}
           <ScreenHeader
@@ -534,6 +646,9 @@ export default function App(): React.JSX.Element {
               </View>
             </>
           )}
+
+          {/* 気配（照合できていない近くの投稿の光）をタップしたときの案内 */}
+          <PresenceSheet presence={tappedPresence} onClose={() => setTappedPresence(null)} />
 
           {/* Toast Message */}
           {toastMessage && (

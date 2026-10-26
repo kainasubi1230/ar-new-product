@@ -18,6 +18,11 @@ export type CardPlacedEvent = {
   x: number;
   y: number;
   z: number;
+  /** iOSのみ。カメラ（スマホ）からカードまでのずれ（東・北・上の m）と、カードの面の方位。北が分からないときは無い */
+  offsetEastM?: number;
+  offsetNorthM?: number;
+  offsetUpM?: number;
+  headingDeg?: number;
 };
 
 export type NativeSupabaseConfig = {
@@ -50,8 +55,11 @@ export type RelocalizeCard = {
 export type RelocalizeTarget = {
   postId: string;
   worldMapPath: string;
-  /** 置いたときの景色の写真。あれば照合中に半透明で重ねて「この景色に合わせてください」と案内する */
-  snapshotPath?: string | null;
+  /**
+   * その地図に入っている投稿の、置いたときの景色の写真（今いる場所から近い順）。
+   * 照合中に半透明で重ねて「この景色に合わせてください」と案内し、複数あれば 4 秒ごとに切り替える
+   */
+  snapshots: { postId: string; path: string }[];
   cards: RelocalizeCard[];
   supabase: NativeSupabaseConfig;
 };
@@ -65,8 +73,10 @@ export type GeoTag = {
   cardColor: string;
   /** posts.tags。空ならタグの行を出さない */
   cardTags: string[];
-  /** summary: タグと距離だけ / message: 本文も出す（しきい値は src/config/distanceTiers.ts） */
+  /** presence: 文字のない光の気配 / message: 本文も出す / summary: タグと距離だけ（しきい値は src/config/distanceTiers.ts） */
   level: GeoTagLevel;
+  /** 位置の不確かさ（m）。気配のぼかしの大きさに使う */
+  uncertaintyM: number;
   /** 0〜1。近いほど 1 で、濃く描く（遠いほど薄く小さく） */
   prominence: number;
   /** 関心タグに合う投稿など、少し大きく濃く強調して出す */
@@ -84,6 +94,8 @@ export type WorldMapStatusEvent = {
   path?: string;
   bytes?: number;
   message?: string;
+  /** saved のとき：その地図に入っている post: アンカーの投稿 ID */
+  anchorPostIds?: string[];
 };
 
 export type RelocalizationStatusEvent = {
@@ -99,6 +111,8 @@ export type RelocalizationStatusEvent = {
   postId: string;
   message?: string;
   bytes?: number;
+  /** mapExtended のとき：育てた地図に入っている post: アンカーの投稿 ID */
+  anchorPostIds?: string[];
 };
 
 /** 位置情報が「正確な位置情報」で許可されているか（iOSのみ） */
@@ -113,6 +127,32 @@ export type CompassStatusEvent = {
   headingAccuracy: number;
 };
 
+/** デバッグ表示用に、ネイティブが 0.5 秒ごとに送る AR の状態（debugEnabled のときだけ、iOSのみ） */
+export type ARDebugInfoEvent = {
+  trackingState: string;
+  worldMappingStatus: string;
+  relocalizationPhase: string;
+  isRunningWithWorldMap: boolean;
+  loadedMapPostId: string | null;
+  /** 読み込んだ地図に入っている post: アンカーの投稿 ID */
+  mapAnchorPostIds: string[];
+  /** post: アンカーが didAdd で届いた時刻（照合を始めてからの秒数） */
+  anchorArrivals: { postId: string; t: number | null }[];
+  /** 地図付きセッションで trackingState が normal になった時刻（照合を始めてからの秒数） */
+  trackingNormalAt: number | null;
+  /** 照合を始めてからの秒数 */
+  elapsed: number | null;
+  foundPostIds: string[];
+  northReady: boolean;
+  headingAccuracy: number;
+  /** 部屋の形のメッシュ（LiDAR）が使えるか */
+  lidar: boolean;
+  /** ARKit が見つけた平面（縦=壁、横=床・机） */
+  planes: string[];
+  /** 照合で出したカードごとの、障害物で隠す判定 */
+  revealCards: { postId: string; distance: number; occluded: boolean; reason: string; reveal: number }[];
+};
+
 export type UniversalARViewProps = {
   style?: StyleProp<ViewStyle>;
   cardTitle: string;
@@ -125,6 +165,8 @@ export type UniversalARViewProps = {
   isPreviewActive?: boolean;
   selectedModelUrl?: string;
   onScreenTapped?: (event: NativeSyntheticEvent<{ x: number; y: number }>) => void;
+  /** 気配（照合できていない近くの投稿の光）がタップされた（iOSのみ） */
+  onPresenceTapped?: (event: NativeSyntheticEvent<{ postId: string }>) => void;
   onCardPlaced?: (event: NativeSyntheticEvent<CardPlacedEvent>) => void;
   onModelPlaced?: (event: NativeSyntheticEvent<any>) => void;
   worldMapSaveRequest?: WorldMapSaveRequest | null;
@@ -134,6 +176,9 @@ export type UniversalARViewProps = {
   onRelocalizationStatus?: (event: NativeSyntheticEvent<RelocalizationStatusEvent>) => void;
   onLocationAccuracyStatus?: (event: NativeSyntheticEvent<LocationAccuracyStatusEvent>) => void;
   onCompassStatus?: (event: NativeSyntheticEvent<CompassStatusEvent>) => void;
+  /** true の間だけ onDebugInfo が届く */
+  debugEnabled?: boolean;
+  onDebugInfo?: (event: NativeSyntheticEvent<ARDebugInfoEvent>) => void;
 };
 
 const COMPONENT_NAME = Platform.OS === 'ios' ? 'ARView' : 'ARViewManager';

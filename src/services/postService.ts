@@ -1,10 +1,22 @@
 import Geolocation from '@react-native-community/geolocation';
 import { supabase } from '../lib/supabase';
+import { offsetLatLng } from '../utils/geo';
 
 export interface LocationCoords {
   latitude: number;
   longitude: number;
   accuracy?: number;
+  /** 高さ（m、GPS の楕円体高）。取れないこともある */
+  altitude?: number | null;
+}
+
+/** 置いたカードの、カメラ（＝スマホの位置）からのずれと向き（ネイティブが AR とコンパスから計算） */
+export interface CardPlacement {
+  offsetEastM: number;
+  offsetNorthM: number;
+  offsetUpM: number;
+  /** カードの面が向いている方位（北=0°、時計回り） */
+  headingDeg: number;
 }
 
 export interface PostPayload {
@@ -32,6 +44,7 @@ export const getCurrentLocation = (): Promise<LocationCoords> => {
           latitude: position.coords.latitude,
           longitude: position.coords.longitude,
           accuracy: position.coords.accuracy,
+          altitude: position.coords.altitude,
         });
       },
       (error) => {
@@ -47,23 +60,51 @@ export const getCurrentLocation = (): Promise<LocationCoords> => {
 };
 
 /**
- * 現在地付きでSupabaseのpostsテーブルへ保存する
+ * 投稿を posts に保存する。
+ * メッセージの本体は「その場所の座標」なので、lat / lng / alt_m にはスマホではなくカード自体の位置を入れる
+ * （スマホの GPS の位置 ＋ AR でのカメラからカードまでのずれ）。スマホの位置は camera_lat / camera_lng に残す
  */
-export const insertPostWithCurrentLocation = async (payload: string | PostPayload) => {
+export const insertPostWithCurrentLocation = async (
+  payload: string | PostPayload,
+  options: {
+    /** 置いたカードの、スマホからのずれと向き。無ければスマホの位置をそのまま使う */
+    placement?: CardPlacement | null;
+    /** 平均を取って誤差の小さい現在地があれば使う（その場の 1 回の測定より正確） */
+    preferredCoords?: LocationCoords | null;
+  } = {}
+) => {
   const postData: PostPayload = typeof payload === 'string' ? { message: payload } : payload;
 
-  // 1. 現在地を取得
-  const coords = await getCurrentLocation();
+  // 1. 現在地を取得。誤差の小さいほうの位置を使い、高さはその場の測定から取る
+  const fix = await getCurrentLocation();
+  const preferred = options.preferredCoords;
+  const camera: LocationCoords =
+    preferred && (preferred.accuracy ?? Infinity) <= (fix.accuracy ?? Infinity)
+      ? { ...preferred, altitude: fix.altitude }
+      : fix;
 
-  // 2. Supabaseのpostsテーブルへ保存
+  // 2. カード自体の位置
+  const placement = options.placement;
+  const card = placement
+    ? offsetLatLng(camera.latitude, camera.longitude, placement.offsetEastM, placement.offsetNorthM)
+    : { latitude: camera.latitude, longitude: camera.longitude };
+  const cardAltitude =
+    camera.altitude != null ? camera.altitude + (placement?.offsetUpM ?? 0) : null;
+
+  // 3. Supabaseのpostsテーブルへ保存
   const { data, error } = await supabase
     .from('posts')
     .insert([
       {
         message: postData.message,
-        lat: coords.latitude,
-        lng: coords.longitude,
-        accuracy_m: coords.accuracy ?? null,
+        lat: card.latitude,
+        lng: card.longitude,
+        alt_m: cardAltitude,
+        heading_deg: placement?.headingDeg ?? null,
+        camera_lat: camera.latitude,
+        camera_lng: camera.longitude,
+        // 位置の確かさ（そのときの GPS の誤差）
+        accuracy_m: camera.accuracy ?? null,
         author: postData.author ?? 'guest',
         handle: postData.handle ?? null,
         tags: postData.tags ?? [],
@@ -80,7 +121,7 @@ export const insertPostWithCurrentLocation = async (payload: string | PostPayloa
 
   return {
     post: data?.[0],
-    coords,
+    coords: card,
   };
 };
 

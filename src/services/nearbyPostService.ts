@@ -13,6 +13,10 @@ export interface NearbyPost {
   author: string | null;
   handle: string | null;
   tags: string[] | null;
+  /** 置いたときの GPS の誤差（m） */
+  accuracy_m: number | null;
+  /** 置いたときの景色の写真（気配をタップしたときに見せる） */
+  snapshot_path: string | null;
   distanceM: number;
   /** 現在地から見た方角（北=0°、時計回り） */
   bearingDeg: number;
@@ -27,7 +31,7 @@ export const findNearbyPosts = async (coords: LocationCoords): Promise<NearbyPos
 
   const { data, error } = await supabase
     .from('posts')
-    .select('id, message, author, handle, tags, lat, lng')
+    .select('id, message, author, handle, tags, accuracy_m, snapshot_path, lat, lng')
     .gte('lat', latitude - latDelta)
     .lte('lat', latitude + latDelta)
     .gte('lng', longitude - lngDelta)

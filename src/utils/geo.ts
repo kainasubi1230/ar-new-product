@@ -22,11 +22,18 @@ export const bearingDegrees = (lat1: number, lng1: number, lat2: number, lng2: n
   return (toDeg(Math.atan2(y, x)) + 360) % 360;
 };
 
+const METERS_PER_DEGREE_LAT = 111320;
+
 /** 中心から radiusM の範囲を囲む緯度経度の幅（粗い絞り込み用） */
 export const boundingDeltas = (latitude: number, radiusM: number) => {
-  const metersPerDegreeLat = 111320;
   return {
-    latDelta: radiusM / metersPerDegreeLat,
-    lngDelta: radiusM / (metersPerDegreeLat * Math.cos(toRad(latitude))),
+    latDelta: radiusM / METERS_PER_DEGREE_LAT,
+    lngDelta: radiusM / (METERS_PER_DEGREE_LAT * Math.cos(toRad(latitude))),
   };
 };
+
+/** 地点から東に eastM、北に northM ずらした緯度経度（数十 m 程度のずれ用の近似） */
+export const offsetLatLng = (latitude: number, longitude: number, eastM: number, northM: number) => ({
+  latitude: latitude + northM / METERS_PER_DEGREE_LAT,
+  longitude: longitude + eastM / (METERS_PER_DEGREE_LAT * Math.cos(toRad(latitude))),
+});
