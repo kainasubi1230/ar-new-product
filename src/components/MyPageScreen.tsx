@@ -24,6 +24,7 @@ import { ScreenHeader } from './ScreenHeader';
 import { signInWithEmail, signUpWithEmail } from '../services/authService';
 import { deleteMyPost, fillPostPlaceName } from '../services/postService';
 import { usePreferences } from '../services/preferencesStore';
+import { SHOW_AR_DEBUG } from '../config/debug';
 import { WordCard, WordCardAvatar, WordCardDate, WordCardMeta, WordCardReadCount } from './WordCard';
 import { fetchCollectedPosts, uncollectPost } from '../services/readService';
 import { supabase } from '../lib/supabase';
@@ -138,7 +139,8 @@ export function MyPageScreen({
   // AR で目にした他の人の言葉（post_reads）
   const [collectedList, setCollectedList] = useState<CollectedWord[]>(INITIAL_COLLECTED);
   // 関心タグとポケット通知は端末に保存し、AR・地図・通知と共有する（preferencesStore）
-  const { interestTags, toggleInterestTag, pocketNoticeEnabled, setPocketNoticeEnabled } = usePreferences();
+  const { interestTags, toggleInterestTag, pocketNoticeEnabled, setPocketNoticeEnabled, showDevInfo, setShowDevInfo } =
+    usePreferences();
   const tags: InterestTag[] = INITIAL_TAGS.map((tag) => ({
     ...tag,
     enabled: interestTags.includes(`#${tag.name}`),
@@ -479,19 +481,27 @@ export function MyPageScreen({
   const displayName =
     user.user_metadata?.username || user.email?.split('@')[0] || 'ユーザー';
 
-  // 右上の設定ボタンのメニュー（関心タグの編集・ログアウト）
+  // 右上の設定ボタンのメニュー（関心タグの編集・開発用の情報の表示（開発ビルドのみ）・ログアウト）
   const openSettingsMenu = () => {
     const canSignOut = user != null && onSignOut != null;
+    const devInfoLabel = showDevInfo ? '開発用の情報を隠す' : '開発用の情報を表示';
+    const toggleDevInfo = () => setShowDevInfo(!showDevInfo);
     if (Platform.OS === 'ios') {
-      const options = ['関心タグを編集', ...(canSignOut ? ['ログアウト'] : []), 'キャンセル'];
+      const options = [
+        '関心タグを編集',
+        ...(SHOW_AR_DEBUG ? [devInfoLabel] : []),
+        ...(canSignOut ? ['ログアウト'] : []),
+        'キャンセル',
+      ];
       ActionSheetIOS.showActionSheetWithOptions(
         {
           options,
           cancelButtonIndex: options.length - 1,
-          destructiveButtonIndex: canSignOut ? 1 : undefined,
+          destructiveButtonIndex: canSignOut ? options.indexOf('ログアウト') : undefined,
         },
         (index) => {
           if (options[index] === '関心タグを編集') onOpenTagManage();
+          if (options[index] === devInfoLabel) toggleDevInfo();
           if (options[index] === 'ログアウト') onSignOut?.();
         }
       );
@@ -499,6 +509,7 @@ export function MyPageScreen({
     }
     Alert.alert('設定', undefined, [
       { text: '関心タグを編集', onPress: onOpenTagManage },
+      ...(SHOW_AR_DEBUG ? [{ text: devInfoLabel, onPress: toggleDevInfo }] : []),
       ...(canSignOut ? [{ text: 'ログアウト', style: 'destructive' as const, onPress: onSignOut }] : []),
       { text: 'キャンセル', style: 'cancel' as const },
     ]);

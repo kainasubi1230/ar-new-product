@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Image,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -12,6 +13,9 @@ import {
   View,
 } from 'react-native';
 import { suggestTagsAndSentiment, SentimentResult } from '../services/tagSuggestionService';
+import { getCurrentLocation } from '../services/postService';
+import { reverseGeocode } from '../services/geocoder';
+import { Icons } from '../assets/icons';
 
 type Props = {
   visible: boolean;
@@ -34,6 +38,8 @@ export function PostModal({ visible, onClose, onSubmit }: Props): React.JSX.Elem
   const [manualTag, setManualTag] = useState<string>('');
   const [isLoadingTags, setIsLoadingTags] = useState<boolean>(false);
   const [sentiment, setSentiment] = useState<SentimentResult | null>(null);
+  // 今いる場所の名前（取れなければ出さない）
+  const [placeName, setPlaceName] = useState<string | null>(null);
 
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // ユーザーが自分でタグを選んだ・外したか。触るまでは、本文に合わせて自動の選択を選び直す
@@ -46,6 +52,21 @@ export function PostModal({ visible, onClose, onSubmit }: Props): React.JSX.Elem
       setSelectedTags([]);
       hasEditedTagsRef.current = false;
     }
+  }, [visible]);
+
+  // 開いたときの現在地の名前を出す
+  useEffect(() => {
+    if (!visible) return;
+    let cancelled = false;
+    getCurrentLocation()
+      .then(({ latitude, longitude }) => reverseGeocode(latitude, longitude))
+      .then((name) => {
+        if (!cancelled) setPlaceName(name);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
   }, [visible]);
 
   // メッセージ入力に伴うタグ自動生成＆センチメント（ポジ/ネガ度）分析
@@ -154,7 +175,7 @@ export function PostModal({ visible, onClose, onSubmit }: Props): React.JSX.Elem
             {/* AI Tag Suggestion Section */}
             <View style={styles.sectionGroup}>
               <View style={styles.sectionTitleRow}>
-                <Text style={styles.sparkleIcon}>✨</Text>
+                <Image source={Icons.herb} style={styles.sectionIcon} resizeMode="contain" />
                 <Text style={styles.sectionTitle}>AIタグ候補</Text>
                 {isLoadingTags ? (
                   <View style={styles.loadingContainer}>
@@ -209,10 +230,12 @@ export function PostModal({ visible, onClose, onSubmit }: Props): React.JSX.Elem
             </View>
 
             {/* Location Hint */}
-            <View style={styles.locationFooter}>
-              <Text style={styles.locationPin}>📍</Text>
-              <Text style={styles.locationText}>現在地：福岡市中央区天神</Text>
-            </View>
+            {placeName && (
+              <View style={styles.locationFooter}>
+                <Image source={Icons.pin} style={styles.locationPin} resizeMode="contain" />
+                <Text style={styles.locationText}>{placeName}</Text>
+              </View>
+            )}
 
             {/* Solid White Extension below sheet to eliminate any gap under keyboard */}
             <View style={styles.bottomWhiteExtension} />
@@ -305,9 +328,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 10,
   },
-  sparkleIcon: {
-    fontSize: 14,
-    marginRight: 4,
+  sectionIcon: {
+    width: 14,
+    height: 15,
+    marginRight: 6,
+    tintColor: '#10B981',
   },
   sectionTitle: {
     color: '#334155',
@@ -400,8 +425,10 @@ const styles = StyleSheet.create({
     borderColor: '#F1F5F9',
   },
   locationPin: {
-    fontSize: 13,
-    marginRight: 6,
+    width: 12,
+    height: 12,
+    marginRight: 5,
+    tintColor: '#94A3B8',
   },
   locationText: {
     color: '#94A3B8',

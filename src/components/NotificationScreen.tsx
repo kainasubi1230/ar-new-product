@@ -5,6 +5,7 @@ import { NotificationCard } from './NotificationCard';
 import { Icons } from '../assets/icons';
 import { SHOW_AR_DEBUG } from '../config/debug';
 import { PocketDebugPanel } from './PocketDebugPanel';
+import { usePreferences } from '../services/preferencesStore';
 import type { NotificationItem } from '../data/notifications';
 import {
   clearPocketHistory,
@@ -42,6 +43,7 @@ const toItem = (entry: PocketHistoryEntry): NotificationItem => ({
 /** 通知画面：届いたポケット通知の履歴（端末に保存されている） */
 export function NotificationScreen({ pocketNoticeEnabled, interestTags, onOpenAR }: Props): React.JSX.Element {
   const [history, setHistory] = useState<PocketHistoryEntry[]>([]);
+  const { showDevInfo } = usePreferences();
 
   const reload = useCallback(() => {
     getPocketHistory()
@@ -103,7 +105,7 @@ export function NotificationScreen({ pocketNoticeEnabled, interestTags, onOpenAR
           </View>
         </View>
 
-        {SHOW_AR_DEBUG && isPocketNoticeSupported && <PocketDebugPanel />}
+        {SHOW_AR_DEBUG && showDevInfo && isPocketNoticeSupported && <PocketDebugPanel />}
 
         {history.length === 0 ? (
           <Text style={styles.emptyText}>まだ通知はありません</Text>

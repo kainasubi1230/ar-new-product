@@ -10,6 +10,8 @@ export type Preferences = {
   interestTags: string[];
   /** ポケット通知（関心タグの言葉の近くに来たら通知）。オンのときだけ見張る */
   pocketNoticeEnabled: boolean;
+  /** 開発用の情報（通知画面のポケット通知の状態など）を出すか。開発ビルドのときだけマイページの設定で切り替えられる */
+  showDevInfo: boolean;
 };
 
 const STORAGE_KEY = 'loca:preferences';
@@ -18,6 +20,7 @@ const STORAGE_KEY = 'loca:preferences';
 const DEFAULT_PREFERENCES: Preferences = {
   interestTags: ['#散歩', '#カフェ', '#日常', '#本'],
   pocketNoticeEnabled: true,
+  showDevInfo: false,
 };
 
 let current: Preferences = DEFAULT_PREFERENCES;
@@ -88,5 +91,6 @@ export const usePreferences = () => {
       });
     },
     setPocketNoticeEnabled: (pocketNoticeEnabled: boolean) => updatePreferences({ pocketNoticeEnabled }),
+    setShowDevInfo: (showDevInfo: boolean) => updatePreferences({ showDevInfo }),
   };
 };
