@@ -36,11 +36,15 @@ export function PostModal({ visible, onClose, onSubmit }: Props): React.JSX.Elem
   const [sentiment, setSentiment] = useState<SentimentResult | null>(null);
 
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // ユーザーが自分でタグを選んだ・外したか。触るまでは、本文に合わせて自動の選択を選び直す
+  // （初期の本文「今日はいい日になりそう ☀️」で選ばれた #いい天気 が、書き換えたあとも残らないように）
+  const hasEditedTagsRef = useRef(false);
 
   // 開くたびに、前の投稿のタグを持ち越さず空から始める（本文に合うタグが自動で選ばれる）
   useEffect(() => {
     if (visible) {
       setSelectedTags([]);
+      hasEditedTagsRef.current = false;
     }
   }, [visible]);
 
@@ -60,13 +64,10 @@ export function PostModal({ visible, onClose, onSubmit }: Props): React.JSX.Elem
         setSuggestedTags(tags);
         setSentiment(analyzedSentiment);
 
-        // 初回などでタグが未選択の場合は先頭1〜2個を自動選択
-        setSelectedTags((prev) => {
-          if (prev.length === 0 && tags.length > 0) {
-            return tags.slice(0, 2);
-          }
-          return prev;
-        });
+        // 自分でタグを触るまでは、今の本文に合う先頭 2 個を選び直す
+        if (!hasEditedTagsRef.current) {
+          setSelectedTags(tags.slice(0, 2));
+        }
       } catch (err) {
         console.error('タグ生成エラー:', err);
       } finally {
@@ -82,6 +83,7 @@ export function PostModal({ visible, onClose, onSubmit }: Props): React.JSX.Elem
   }, [message, visible]);
 
   const toggleTag = (tag: string) => {
+    hasEditedTagsRef.current = true;
     if (selectedTags.includes(tag)) {
       setSelectedTags(selectedTags.filter((t) => t !== tag));
     } else {
@@ -93,6 +95,7 @@ export function PostModal({ visible, onClose, onSubmit }: Props): React.JSX.Elem
     const trimmed = manualTag.trim();
     if (!trimmed) return;
     const formatted = trimmed.startsWith('#') ? trimmed : `#${trimmed}`;
+    hasEditedTagsRef.current = true;
     if (!selectedTags.includes(formatted)) {
       setSelectedTags([...selectedTags, formatted]);
     }

@@ -40,6 +40,8 @@ RCT_EXTERN_METHOD(updateTargets:(NSArray *)targets)
 RCT_EXTERN_METHOD(stop)
 RCT_EXTERN_METHOD(getHistory:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject)
 RCT_EXTERN_METHOD(clearHistory)
+RCT_EXTERN_METHOD(getStatus:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject)
+RCT_EXTERN_METHOD(resetNotified)
 @end
 
 @interface RCT_EXTERN_MODULE(LocaGeocoder, NSObject)

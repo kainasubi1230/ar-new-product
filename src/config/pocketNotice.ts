@@ -8,11 +8,13 @@ export const POCKET_NOTICE = {
   cooldownSec: 180,
   /** 同じメッセージで次に通知するまでの間隔（秒） */
   perPostIntervalSec: 24 * 3600,
-  /** GPS の誤差がこれ（m）より大きいときは判定しない（誤って通知しないため） */
-  maxAccuracyM: 30,
+  /** GPS の誤差がこれ（m）より大きいときは判定しない（誤って通知しないため。屋内では 30m を超えやすい） */
+  maxAccuracyM: 40,
   /** 通知の対象にする投稿を、現在地からこの範囲（m）で取ってネイティブに渡す */
   targetRadiusM: 500,
   targetLimit: 200,
   /** この距離（m）動いたら対象を取り直す */
   refetchDistanceM: 200,
+  /** 動いていなくても、この間隔（ミリ秒）で対象を取り直す（同じ場所にいるまま、あとから置かれたメッセージに気づくため） */
+  refreshIntervalMs: 30_000,
 } as const;

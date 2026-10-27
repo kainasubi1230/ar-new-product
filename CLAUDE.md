@@ -78,7 +78,7 @@ prop やイベントを追加・変更するときは、TS の型定義・iOS �
 ### 関心タグとポケット通知
 - 関心タグとポケット通知のオン・オフは `src/services/preferencesStore.ts`（AsyncStorage の `loca:preferences`）に保存し、`usePreferences` で共有する。設定する場所はマイページの「関心タグ」タブ（とタグ管理モーダル。どちらも同じ値を読み書き）。関心タグに合う投稿は、AR の方角タグ（`highlighted`）と地図のピン（`pinHeadInterest`）で少し目立たせる。
 - ポケット通知は、関心タグに合うメッセージ（自分の投稿以外）から `POCKET_NOTICE.radiusM`（20m）以内に入ったらローカル通知を出す（本文は出さない）。位置の見張り・判定・通知・履歴はネイティブの `LocaPocket`（ARViewWrapper.swift の末尾、`ARViewManagerBridge.m` で公開）が行い、アプリを開いてからポケットに入れた状態（画面ロック・別アプリ）でも届く（`allowsBackgroundLocationUpdates`。Info.plist の `UIBackgroundModes: location`。位置の許可は「使用中のみ」のまま）。アプリを完全に閉じた状態は対象外。
-- JS（App.tsx）は、ネイティブから届く位置（`pocketLocation`、50m ごと）で `refetchDistanceM` 動くたびに `findNearbyPosts`（`targetRadiusM` 500m）を取り直し、対象を `updatePocketTargets` で渡す。通知は同じメッセージで 1 日 1 回、通知どうし 3 分あける、GPS 誤差 30m 超では判定しない（`src/config/pocketNotice.ts`）。通知のタップでホームを開く。通知画面は `LocaPocket.getHistory`（UserDefaults、最大 50 件）の履歴を出す。
+- JS（App.tsx）は、ネイティブから届く位置（`pocketLocation`、50m ごと）で `refetchDistanceM` 動くたびに `findNearbyPosts`（`targetRadiusM` 500m）を取り直し、対象を `updatePocketTargets` で渡す。動いていなくても `refreshIntervalMs`（30 秒）ごとに取り直す（同じ場所にいるまま、あとから置かれたメッセージに気づくため）。ネイティブは対象を受け取るたびに、最後の位置ですぐ判定する（`notifyIfNear`）。通知は同じメッセージで 1 日 1 回、通知どうし 3 分あける、GPS 誤差 40m 超では判定しない（`src/config/pocketNotice.ts`）。通知のタップでホームを開く。通知画面は `LocaPocket.getHistory`（UserDefaults、最大 50 件）の履歴を出す。開発ビルドでは通知画面に `PocketDebugPanel`（`LocaPocket.getStatus`：通知の許可・見張りの有無・対象の件数・いちばん近い対象までの距離・GPS の誤差・直近の判定結果）と、通知した記録を消す「リセット」（`resetNotified`）が出る。
 
 ### 拾った言葉
 - 照合で出した他の人のカード（隠れずに見えているもの、`revealedCard`）をタップすると、ネイティブが `onCardTapped` を送り、JS（`handleCardTapped`）が `readService.collectPost` で `post_reads`（post_id, user_id, read_at）に記録して「📖 ○○さんの言葉を拾いました」と出す（カードは軽くふくらむ）。もう拾っていれば「この言葉はもう拾っています」（主キー重複 23505）。ログイン中だけ、自分の言葉はタップしても何もしない。
@@ -89,5 +89,6 @@ prop やイベントを追加・変更するときは、TS の型定義・iOS �
 - 画面のお知らせは `showToast(message, kind, { symbol, subtitle })`。ホーム（AR）では `notice` prop でネイティブの案内画面（`ARGuideHUDView`、「近くのメッセージを読み込み中」と同じ見た目：少し暗くして中央に SF Symbols のアイコンと一言）に 2.5 秒出す。記録中・照合中の案内（`persistentGuide`）を出している最中なら、お知らせのあとにその案内へ戻る。ホーム以外（AR ビューが無い）では画面下の小さな帯 `CalmToast`。文言は短く穏やかにし、絵文字や失敗の詳しい理由は出さない（理由は console に出す）。`notice` は一度きりの命令なので 3 秒後に JS で `null` に戻す。
 - デバッグ表示：`src/config/debug.ts` の `SHOW_AR_DEBUG`（`__DEV__`）が true のビルドで、ホームの見出し「ホーム」を長押しすると AR 画面の左下に `ARDebugOverlay` が出る（もう一度長押しで消える。ふだんは出さない）。ネイティブは `debugEnabled` のときだけ 0.5 秒ごとに `onDebugInfo`（trackingState・worldMappingStatus・照合フェーズ・読み込んだ地図と中の post: アンカー・didAdd と normal 到達の時刻）を送る。照合を止めている理由は App.tsx の `relocalizeBlockReasons` で、照合を始めるかの判定にも同じ一覧を使う（表示と判定がずれないように）。
 - マイページの「自分の投稿」は `posts.user_id = auth.uid()` で取る。削除は `postService.deleteMyPost`：Storage の `<id>.worldmap` と `snapshots/<id>.jpg` を先に消してから投稿を消す（Storage の削除ポリシーは「投稿の持ち主か」で判定するため、順番が逆だと消せない）。ポリシーは `supabase/migrations/20261026010000_post_delete.sql`。
+- 投稿画面のタグは本文から提案された先頭 2 個を自動で選ぶ。ユーザーがタグを触るまでは本文が変わるたびに選び直す（初期の本文の ☀️ から #いい天気 が残らないように）。
 - AR カード・配置プレビュー・方角タグに描くタグは `posts.tags` を使う。配置中のカードは `cardTags` prop、照合で出すカードは `RelocalizeCard.cardTags`、方角タグは `GeoTag.cardTags` で渡す。空ならタグの行を描かない（`ARViewWrapper.tagLine`）。
 - `src/assets/icons/index.ts` が PNG アイコンをまとめて `Icons` としてエクスポートしている。

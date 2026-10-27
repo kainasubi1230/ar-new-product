@@ -59,3 +59,25 @@ export const onPocketNotified = (listener: (entry: PocketHistoryEntry) => void) 
 /** 通知がタップされた */
 export const onNotificationOpened = (listener: (event: { postId: string }) => void) =>
   emitter?.addListener('notificationOpened', listener);
+
+/** 開発用：見張りの今の状態（ネイティブの LocaPocket.getStatus） */
+export type PocketStatus = {
+  permission: '許可' | '拒否' | '未確認' | '不明';
+  running: boolean;
+  targetCount: number;
+  radiusM: number;
+  maxAccuracyM: number;
+  cooldownLeftSec: number;
+  notifiedCount: number;
+  lastCheckResult: string;
+  accuracyM?: number;
+  locationAgeSec?: number;
+  nearestDistanceM?: number;
+  lastCheckAgeSec?: number;
+};
+
+export const getPocketStatus = async (): Promise<PocketStatus | null> =>
+  LocaPocket ? LocaPocket.getStatus() : null;
+
+/** 開発用：「もう通知した」の記録と通知どうしの間隔を消す（同じカードでもう一度試せる） */
+export const resetPocketNotified = () => LocaPocket?.resetNotified();

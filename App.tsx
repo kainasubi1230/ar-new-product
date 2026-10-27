@@ -335,7 +335,9 @@ export default function App(): React.JSX.Element {
     };
 
     // 位置はネイティブから届く（最初の 1 回と、50m 動くごと）。refetchDistanceM 動いたら対象を取り直す
+    let latest: LocationCoords | null = null;
     const subscription = onPocketLocation((location) => {
+      latest = location;
       if (
         !origin ||
         distanceInMeters(origin.latitude, origin.longitude, location.latitude, location.longitude) >=
@@ -344,11 +346,16 @@ export default function App(): React.JSX.Element {
         refreshTargets(location);
       }
     });
+    // 動いていなくても定期的に取り直す（同じ場所にいるまま、あとから置かれたメッセージにも気づく）
+    const refreshTimer = setInterval(() => {
+      if (latest) refreshTargets(latest);
+    }, POCKET_NOTICE.refreshIntervalMs);
     requestNotificationPermission().then((granted) => {
       if (!cancelled && granted) startPocketNotice([]);
     });
     return () => {
       cancelled = true;
+      clearInterval(refreshTimer);
       subscription?.remove();
       stopPocketNotice();
     };
@@ -807,9 +814,7 @@ export default function App(): React.JSX.Element {
           {isPlacementMode && (
             <>
               <View style={styles.placementGuidePill} pointerEvents="none">
-                <Text style={styles.placementGuideText}>
-                  📍 カメラを向けて置く場所を合わせ、「ここに設置する」を押してください
-                </Text>
+                <Text style={styles.placementGuideText}>置きたい場所にカメラを向けてください</Text>
               </View>
 
               <View style={styles.placementActionBar}>
@@ -818,7 +823,7 @@ export default function App(): React.JSX.Element {
                   onPress={handleCancelPlacement}
                   activeOpacity={0.8}
                 >
-                  <Text style={styles.placementCancelText}>✕ やめる</Text>
+                  <Text style={styles.placementCancelText}>やめる</Text>
                 </TouchableOpacity>
 
                 <TouchableOpacity
@@ -826,8 +831,8 @@ export default function App(): React.JSX.Element {
                   onPress={handleConfirmPlacement}
                   activeOpacity={0.85}
                 >
-                  <Text style={styles.placementConfirmIcon}>✨</Text>
-                  <Text style={styles.placementConfirmText}>ここに設置する</Text>
+                  <Image source={Icons.pin} style={styles.placementConfirmIcon} resizeMode="contain" />
+                  <Text style={styles.placementConfirmText}>ここに置く</Text>
                 </TouchableOpacity>
               </View>
             </>
@@ -1031,83 +1036,73 @@ const styles = StyleSheet.create({
   },
 
   // Placement Mode HUD
+  // カードを置くときの案内と操作（Calm：絵文字を使わず、お知らせの帯と同じ半透明のトーン）
   placementGuidePill: {
     position: 'absolute',
     top: 68,
-    left: 20,
-    right: 20,
-    backgroundColor: 'rgba(15, 23, 42, 0.86)',
+    alignSelf: 'center',
+    maxWidth: '86%',
+    backgroundColor: 'rgba(15, 23, 42, 0.74)',
     paddingVertical: 10,
-    paddingHorizontal: 16,
-    borderRadius: 24,
-    alignItems: 'center',
-    justifyContent: 'center',
+    paddingHorizontal: 18,
+    borderRadius: 22,
     zIndex: 25,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.25,
-    shadowRadius: 8,
   },
   placementGuideText: {
     color: '#F8FAFC',
     fontSize: 13,
     fontWeight: '600',
     textAlign: 'center',
-    lineHeight: 18,
+    letterSpacing: 0.2,
   },
   placementActionBar: {
     position: 'absolute',
     bottom: 24,
-    left: 16,
-    right: 16,
+    left: 20,
+    right: 20,
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    gap: 12,
+    gap: 10,
     zIndex: 35,
   },
   placementCancelBtn: {
-    backgroundColor: 'rgba(255, 255, 255, 0.95)',
-    paddingVertical: 15,
-    paddingHorizontal: 20,
-    borderRadius: 28,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.12,
-    shadowRadius: 6,
-    elevation: 4,
+    height: 52,
+    paddingHorizontal: 22,
+    borderRadius: 26,
+    backgroundColor: 'rgba(255, 255, 255, 0.88)',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   placementCancelText: {
-    color: '#64748B',
+    color: '#475569',
     fontSize: 15,
-    fontWeight: '700',
+    fontWeight: '600',
   },
   placementConfirmBtn: {
     flex: 1,
+    height: 52,
     flexDirection: 'row',
+    borderRadius: 26,
     backgroundColor: '#10B981',
-    paddingVertical: 15,
-    paddingHorizontal: 24,
-    borderRadius: 28,
     alignItems: 'center',
     justifyContent: 'center',
-    shadowColor: '#10B981',
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.45,
-    shadowRadius: 10,
-    elevation: 6,
+    gap: 8,
+    shadowColor: '#059669',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.25,
+    shadowRadius: 6,
+    elevation: 3,
   },
   placementConfirmIcon: {
-    fontSize: 18,
-    marginRight: 6,
+    width: 16,
+    height: 16,
+    tintColor: '#FFFFFF',
   },
   placementConfirmText: {
     color: '#FFFFFF',
     fontSize: 16,
-    fontWeight: '800',
-    letterSpacing: 0.5,
+    fontWeight: '700',
+    letterSpacing: 0.3,
   },
 
   // Global Bottom Navigation Bar

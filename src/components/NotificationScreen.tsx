@@ -3,6 +3,8 @@ import { Alert, Image, ScrollView, StyleSheet, Text, TouchableOpacity, View } fr
 import { ScreenHeader } from './ScreenHeader';
 import { NotificationCard } from './NotificationCard';
 import { Icons } from '../assets/icons';
+import { SHOW_AR_DEBUG } from '../config/debug';
+import { PocketDebugPanel } from './PocketDebugPanel';
 import type { NotificationItem } from '../data/notifications';
 import {
   clearPocketHistory,
@@ -100,6 +102,8 @@ export function NotificationScreen({ pocketNoticeEnabled, interestTags, onOpenAR
             <Text style={styles.calmDesc}>{noticeDesc}</Text>
           </View>
         </View>
+
+        {SHOW_AR_DEBUG && isPocketNoticeSupported && <PocketDebugPanel />}
 
         {history.length === 0 ? (
           <Text style={styles.emptyText}>まだ通知はありません</Text>
