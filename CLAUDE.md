@@ -25,6 +25,7 @@ npm run typecheck    # tsc --noEmit（唯一の静的チェック）
 ### 投稿フロー（JS ↔ ネイティブを行き来する）
 1. AR ビューをタップ → ネイティブから `onScreenTapped` → 未ログインならマイページへ誘導、ログイン済みなら `PostModal` を開く
 2. 投稿内容を送信 → `isPlacementMode=true`（ネイティブ側の `isPreviewActive`）でプレビュー表示
+   - プレビューは画面中央の平面（地面・机・壁）に置く。平面がカメラから 4m より遠い、または見つからないときは、カメラの真正面 1.0m の空中に浮かべる（`isFloatingPlacement`、外の広い場所用。3.5m より近づくと平面に戻る）。
 3. 配置確定 → `placeTrigger` をインクリメント。ネイティブ側はこの数値の変化を「配置せよ」という命令として扱う
 4. ネイティブがカードをアンカーに配置 → `onCardPlaced` が `x/y/z` を返す → `insertPostWithCurrentLocation()` で Geolocation から現在地を取得し、Supabase の `posts` テーブルに insert
 

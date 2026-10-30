@@ -560,9 +560,19 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
     }
   }
 
+  // 置く場所（平面）がこれより遠いとき、または見つからないときは、地面ではなくカメラの真正面の空中に置く。
+  // 外の広い場所で、遠くの地面に小さく置かれてしまわないように
+  private static let floatingPlacementThreshold: Float = 4.0
+  // 行ったり来たりしないよう、空中から地面に戻すのはこの距離より近くなってから
+  private static let floatingPlacementReturnDistance: Float = 3.5
+  // 空中に置くときの、カメラからの距離
+  private static let floatingPlacementDistance: Float = 1.0
+  private var isFloatingPlacement = false
+
   private func updatePreview() {
     guard isPreviewActive else {
       previewAnchor.isEnabled = false
+      isFloatingPlacement = false
       return
     }
 
@@ -591,18 +601,37 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
       )
     }
 
-    guard let hit = hits.first else {
+    guard let cameraTransform = arView.session.currentFrame?.camera.transform else {
       previewAnchor.isEnabled = false
       return
     }
+    let cameraPosition = SIMD3<Float>(
+      cameraTransform.columns.3.x,
+      cameraTransform.columns.3.y,
+      cameraTransform.columns.3.z
+    )
+
+    let hitPos = hits.first.map {
+      SIMD3<Float>($0.worldTransform.columns.3.x, $0.worldTransform.columns.3.y, $0.worldTransform.columns.3.z)
+    }
+    let hitDistance = hitPos.map { simd_distance($0, cameraPosition) } ?? .infinity
+    isFloatingPlacement = isFloatingPlacement
+      ? hitDistance > Self.floatingPlacementReturnDistance
+      : hitDistance > Self.floatingPlacementThreshold
 
     previewAnchor.isEnabled = true
 
-    let hitPos = SIMD3<Float>(
-      hit.worldTransform.columns.3.x,
-      hit.worldTransform.columns.3.y,
-      hit.worldTransform.columns.3.z
-    )
+    guard !isFloatingPlacement, let hit = hits.first, let hitPos else {
+      // 空中：カメラの真正面に、カメラの方を向けて浮かべる（接地リングは出さない）
+      let forward = -SIMD3<Float>(cameraTransform.columns.2.x, cameraTransform.columns.2.y, cameraTransform.columns.2.z)
+      previewAnchor.position = cameraPosition + simd_normalize(forward) * Self.floatingPlacementDistance
+      reticleEntity?.isEnabled = false
+      ghostCardEntity?.position = .zero
+      faceGhostCardToCamera(cameraPosition)
+      return
+    }
+
+    reticleEntity?.isEnabled = true
     previewAnchor.position = hitPos
 
     let normalY = hit.worldTransform.columns.1.y
@@ -621,22 +650,19 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
       ghostCardEntity?.position = normal * 0.05
     }
 
-    if let cameraTransform = arView.session.currentFrame?.camera.transform {
-      let cameraPosition = SIMD3<Float>(
-        cameraTransform.columns.3.x,
-        cameraTransform.columns.3.y,
-        cameraTransform.columns.3.z
-      )
-      if let ghost = ghostCardEntity {
-        let entityWorldPos = previewAnchor.position + ghost.position
-        ghost.look(at: cameraPosition, from: entityWorldPos, relativeTo: nil)
-        ghost.orientation = ghost.orientation * simd_quatf(angle: .pi, axis: SIMD3<Float>(0, 1, 0))
+    faceGhostCardToCamera(cameraPosition)
+  }
 
-        // プレビューカードの最新ワールド位置・回転を保存
-        self.lastValidPreviewPosition = entityWorldPos
-        self.lastValidPreviewOrientation = ghost.orientation(relativeTo: nil)
-      }
-    }
+  // プレビューのカードをカメラの方に向け、「ここに置く」で置く位置・向きとして覚えておく
+  private func faceGhostCardToCamera(_ cameraPosition: SIMD3<Float>) {
+    guard let ghost = ghostCardEntity else { return }
+    let entityWorldPos = previewAnchor.position + ghost.position
+    ghost.look(at: cameraPosition, from: entityWorldPos, relativeTo: nil)
+    ghost.orientation = ghost.orientation * simd_quatf(angle: .pi, axis: SIMD3<Float>(0, 1, 0))
+
+    // プレビューカードの最新ワールド位置・回転を保存
+    self.lastValidPreviewPosition = entityWorldPos
+    self.lastValidPreviewOrientation = ghost.orientation(relativeTo: nil)
   }
 
   private func setupCoachingOverlay() {
