@@ -7,8 +7,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 React Native（0.85 / React 19、bare workflow・Expo なし）の AR アプリ「Loca」（ネイティブのプロジェクト名・モジュール名は旧仮名の `SpatialInventory` のまま）。ユーザーは AR カメラ上の現実空間にメッセージカードを置き、そのカードを現在地（緯度経度）と AR 座標付きで Supabase に保存する。UI 文言やコードコメントは日本語。
 
 ## 開発環境の注意
-- `ios/.xcode.env.local`（Node の場所）と `xcuserdata/` は Mac ごとの設定なので git に入れない（`.gitignore` 済み）。無ければ `export NODE_BINARY=$(command -v node)` の 1 行で作る。
-- `project.pbxproj` の `DEVELOPMENT_TEAM` は main ではあんじのチーム（`QYJA237VJV`）。他の人がビルドするときは手元で自分のチームに変え、その変更はコミットしない。
+- `ios/.xcode.env.local`（Node の場所）と `xcuserdata/` は Mac ごとの設定なので git に入れない（`.gitignore` 済み）。無ければ `export NODE_BINARY=<node の絶対パス>` の 1 行で作る（`command -v node` で調べた値を直接書く。nvm で入れた Node は Xcode から起動したビルドでは見つからないので `$(command -v node)` のままだと失敗する）。
+- `project.pbxproj` の `DEVELOPMENT_TEAM` は main ではあんじのチーム（`QYJA237VJV`）、アプリ ID（`PRODUCT_BUNDLE_IDENTIFIER`）は `com.anji.loca`。アプリ ID は Apple のチームごとに取り合いになるので、他の人がビルドするときは手元でチームとアプリ ID（例：`com.<自分の名前>.loca`）の両方を自分のものに変え、その変更はコミットしない。
 - `ios/Gemfile` と `ios/patch_cocoapods.rb` は古い CocoaPods（1.12）でも `pod install` できるようにするための補正。
 
 ## コマンド
