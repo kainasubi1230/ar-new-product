@@ -20,6 +20,8 @@ export interface NearbyWorldMapPost {
   worldmap_post_ids: string[] | null;
   /** 拾われた人数（カードの右下の「👣 3」） */
   read_count: number | null;
+  /** 投稿者（自分の投稿は表示の設定にかかわらず出す） */
+  user_id: string | null;
   created_at: string;
   distanceM: number;
 }
@@ -113,7 +115,7 @@ export const chooseWorldMapPost = (
 };
 
 // 照合に欠かせない列と、無くても照合はできる（あとから足した）列
-const REQUIRED_COLUMNS = 'id, message, author, handle, tags, lat, lng, worldmap_path, created_at';
+const REQUIRED_COLUMNS = 'id, message, author, handle, tags, lat, lng, worldmap_path, created_at, user_id';
 const OPTIONAL_COLUMNS = 'snapshot_path, worldmap_post_ids, read_count';
 // PostgreSQL の「列が無い」エラー
 const MISSING_COLUMN = '42703';

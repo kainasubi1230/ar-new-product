@@ -6,6 +6,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 React Native（0.85 / React 19、bare workflow・Expo なし）の AR アプリ「Loca」（ネイティブのプロジェクト名・モジュール名は旧仮名の `SpatialInventory` のまま）。ユーザーは AR カメラ上の現実空間にメッセージカードを置き、そのカードを現在地（緯度経度）と AR 座標付きで Supabase に保存する。UI 文言やコードコメントは日本語。
 
+## 開発環境の注意
+- `ios/.xcode.env.local`（Node の場所）と `xcuserdata/` は Mac ごとの設定なので git に入れない（`.gitignore` 済み）。無ければ `export NODE_BINARY=$(command -v node)` の 1 行で作る。
+- `project.pbxproj` の `DEVELOPMENT_TEAM` は main ではあんじのチーム（`QYJA237VJV`）。他の人がビルドするときは手元で自分のチームに変え、その変更はコミットしない。
+- `ios/Gemfile` と `ios/patch_cocoapods.rb` は古い CocoaPods（1.12）でも `pod install` できるようにするための補正。
+
 ## コマンド
 
 ```bash
@@ -78,6 +83,9 @@ prop やイベントを追加・変更するときは、TS の型定義・iOS �
 
 ### 関心タグとポケット通知
 - 関心タグとポケット通知のオン・オフは `src/services/preferencesStore.ts`（AsyncStorage の `loca:preferences`）に保存し、`usePreferences` で共有する。設定する場所はマイページの「関心タグ」タブ（とタグ管理モーダル。どちらも同じ値を読み書き）。関心タグに合う投稿は、AR の方角タグ（`highlighted`）と地図のピン（`pinHeadInterest`）で少し目立たせる。
+- 関心タグに合うかは `src/utils/interestTags.ts` の `matchesInterestTags` で判定し、関連タグ（`src/services/interestTagService.ts` の `INTEREST_TAG_PRESETS`。#散歩 なら #街歩き・#おでかけ など）にも合えば合うとみなす。
+- 表示の設定（`preferencesStore` の `onlyInterestTags`：関心タグの言葉だけ表示、初期値オフ／`hideNegativePosts`：安心フィルター、強いネガティブ表現（`analyzeSentiment` の `isNegative`）を隠す、初期値オン）は、App.tsx の `isPostVisible`（`isVisibleUnderFilters`）で、方角タグ・地図のピン・照合で出すカードにかける。自分の投稿はいつも出す。設定する場所はマイページの「関心タグ」タブとタグ管理モーダル（`TagManageModal`、自分でタグを作れる。最大 8 個）。
+- 投稿画面（`PostModal`）は関心タグを `preferredTags` で受け取り、タグの提案で優先し、候補に出ていない関心タグを「あなたの関心タグから追加」に出す。本文が強いネガティブ表現なら、安心フィルターの人には表示されないと穏やかに伝える。
 - ポケット通知は、関心タグに合うメッセージ（自分の投稿以外）から `POCKET_NOTICE.radiusM`（20m）以内に入ったらローカル通知を出す（本文は出さない）。位置の見張り・判定・通知・履歴はネイティブの `LocaPocket`（ARViewWrapper.swift の末尾、`ARViewManagerBridge.m` で公開）が行い、アプリを開いてからポケットに入れた状態（画面ロック・別アプリ）でも届く（`allowsBackgroundLocationUpdates`。Info.plist の `UIBackgroundModes: location`。位置の許可は「使用中のみ」のまま）。アプリを完全に閉じた状態は対象外。
 - JS（App.tsx）は、ネイティブから届く位置（`pocketLocation`、50m ごと）で `refetchDistanceM` 動くたびに `findNearbyPosts`（`targetRadiusM` 500m）を取り直し、対象を `updatePocketTargets` で渡す。動いていなくても `refreshIntervalMs`（30 秒）ごとに取り直す（同じ場所にいるまま、あとから置かれたメッセージに気づくため）。ネイティブは対象を受け取るたびに、最後の位置ですぐ判定する（`notifyIfNear`）。通知は同じメッセージで 1 日 1 回、通知どうし 3 分あける、GPS 誤差 40m 超では判定しない（`src/config/pocketNotice.ts`）。通知のタップでホームを開く。通知画面は `LocaPocket.getHistory`（UserDefaults、最大 50 件）の履歴を出す。開発ビルドでマイページの設定から「開発用の情報を表示」をオンにすると（`preferencesStore` の `showDevInfo`、初期値オフ）、通知画面に `PocketDebugPanel`（`LocaPocket.getStatus`：通知の許可・見張りの有無・対象の件数・いちばん近い対象までの距離・GPS の誤差・直近の判定結果）と、通知した記録を消す「リセット」（`resetNotified`）が出る。
 

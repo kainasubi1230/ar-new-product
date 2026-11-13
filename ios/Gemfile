@@ -1,0 +1,5 @@
+source 'https://rubygems.org'
+gem 'nap', '1.1.1'
+gem 'ffi', '1.15.5'
+gem 'securerandom', '0.3.2'
+gem 'cocoapods', '1.12.0'

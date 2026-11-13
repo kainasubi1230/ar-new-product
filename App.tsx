@@ -43,8 +43,8 @@ import {
 import { PresenceSheet } from './src/components/PresenceSheet';
 import { CalmToast, type ToastKind, type ToastMessage } from './src/components/CalmToast';
 import { SparkleBurst, type Sparkle } from './src/components/SparkleBurst';
-import { matchesInterestTags } from './src/utils/interestTags';
-import { usePreferences } from './src/services/preferencesStore';
+import { isVisibleUnderFilters, matchesInterestTags } from './src/utils/interestTags';
+import { updatePreferences, usePreferences } from './src/services/preferencesStore';
 import { collectPost } from './src/services/readService';
 import { reverseGeocode } from './src/services/geocoder';
 import {
@@ -139,7 +139,16 @@ export default function App(): React.JSX.Element {
   // GPS の生の値が fallbackMaxAccuracyM 以内なら使う（候補を広めに探して、景色で確かめるため）
   const [relocalizeCoords, setRelocalizeCoords] = useState<LocationCoords | null>(null);
   // 関心タグとポケット通知の設定（マイページ・タグ管理で変える。端末に保存）
-  const { interestTags, setInterestTags, pocketNoticeEnabled } = usePreferences();
+  const { interestTags, setInterestTags, pocketNoticeEnabled, onlyInterestTags, hideNegativePosts } =
+    usePreferences();
+  // 表示の設定（関心タグのみ表示・安心フィルター）で、AR・地図に出すか。自分の投稿はいつも出す
+  const isPostVisible = (post: { message?: string | null; tags?: readonly string[] | null; user_id?: string | null }) =>
+    isVisibleUnderFilters(post, {
+      interestTags,
+      onlyInterestTags,
+      hideNegativePosts,
+      isOwn: user != null && post.user_id === user.id,
+    });
   // 位置情報が「おおよそ」でしか許可されていないと、方角タグが大きくずれる
   const [isFullAccuracy, setIsFullAccuracy] = useState<boolean>(true);
   // デバッグ表示。ふだんは出さず、ホームの見出しを長押しすると切り替わる（開発ビルドのときだけ）
@@ -428,7 +437,8 @@ export default function App(): React.JSX.Element {
             .filter((post) => post.snapshot_path)
             .sort((a, b) => a.distanceM - b.distanceM)
             .map((post) => ({ postId: String(post.id), path: post.snapshot_path as string })),
-          cards: posts.map((post) => ({
+          // 表示の設定で隠す投稿はカードにしない（地図にアンカーがあっても、内容を知らない投稿は出ない）
+          cards: posts.filter(isPostVisible).map((post) => ({
             postId: String(post.id),
             cardTitle: post.author ?? 'guest',
             cardDescription: post.message ?? '',
@@ -465,8 +475,9 @@ export default function App(): React.JSX.Element {
     }
     let cancelled = false;
     findNearbyPosts(currentCoords)
-      .then((posts) => {
+      .then((allPosts) => {
         if (cancelled) return;
+        const posts = allPosts.filter(isPostVisible);
         // 気配をタップしたときに、投稿者名と景色の写真を引けるように覚えておく
         nearbyPostsRef.current = new Map(posts.map((post) => [String(post.id), post]));
         // 探索（レーダー）画面にも同じ一覧を出す
@@ -492,7 +503,9 @@ export default function App(): React.JSX.Element {
     return () => {
       cancelled = true;
     };
-  }, [isLocationActive, currentCoords, interestTags]);
+    // isPostVisible は interestTags・表示の設定・user で変わる
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isLocationActive, currentCoords, interestTags, onlyInterestTags, hideNegativePosts, user?.id]);
 
   const handleWorldMapStatus = async (event: WorldMapStatusEvent) => {
     // 依頼は受け取ってもらえたので消す。残すと、作り直された AR ビューが古い依頼をもう一度処理してしまう
@@ -965,6 +978,7 @@ export default function App(): React.JSX.Element {
         visible={isPostModalVisible}
         onClose={() => setIsPostModalVisible(false)}
         onSubmit={handlePostSubmit}
+        preferredTags={interestTags}
       />
 
       {/* Tag Management Modal (Tag filter / Calm settings) */}
@@ -972,7 +986,17 @@ export default function App(): React.JSX.Element {
         visible={isTagModalVisible}
         onClose={() => setIsTagModalVisible(false)}
         initialTags={interestTags}
-        onSave={setInterestTags}
+        initialSettings={{ onlyInterestTags, hideNegativePosts, isPocketNoticeOn: pocketNoticeEnabled }}
+        onSave={(tags, settings) => {
+          setInterestTags(tags);
+          if (settings) {
+            updatePreferences({
+              onlyInterestTags: settings.onlyInterestTags,
+              hideNegativePosts: settings.hideNegativePosts,
+              pocketNoticeEnabled: settings.isPocketNoticeOn,
+            });
+          }
+        }}
       />
     </SafeAreaView>
   );

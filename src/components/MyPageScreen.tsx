@@ -139,8 +139,18 @@ export function MyPageScreen({
   // AR で目にした他の人の言葉（post_reads）
   const [collectedList, setCollectedList] = useState<CollectedWord[]>(INITIAL_COLLECTED);
   // 関心タグとポケット通知は端末に保存し、AR・地図・通知と共有する（preferencesStore）
-  const { interestTags, toggleInterestTag, pocketNoticeEnabled, setPocketNoticeEnabled, showDevInfo, setShowDevInfo } =
-    usePreferences();
+  const {
+    interestTags,
+    toggleInterestTag,
+    pocketNoticeEnabled,
+    setPocketNoticeEnabled,
+    onlyInterestTags,
+    setOnlyInterestTags,
+    hideNegativePosts,
+    setHideNegativePosts,
+    showDevInfo,
+    setShowDevInfo,
+  } = usePreferences();
   const tags: InterestTag[] = INITIAL_TAGS.map((tag) => ({
     ...tag,
     enabled: interestTags.includes(`#${tag.name}`),
@@ -820,6 +830,39 @@ export function MyPageScreen({
               />
             </View>
 
+            {/* 表示の設定（AR・地図に出す言葉を絞る） */}
+            <View style={[styles.pocketNoticeCard, styles.filterSettingCard]}>
+              <View style={{ flex: 1, marginRight: 10 }}>
+                <Text style={[styles.pocketNoticeTitle, styles.filterSettingTitle]}>関心タグの言葉だけ表示</Text>
+                <Text style={[styles.pocketNoticeDesc, styles.filterSettingDesc]}>
+                  ARと地図に、関心タグ（と近いジャンル）の言葉だけを出します。
+                </Text>
+              </View>
+              <Switch
+                value={onlyInterestTags}
+                onValueChange={setOnlyInterestTags}
+                trackColor={{ false: '#CBD5E1', true: '#10B981' }}
+                ios_backgroundColor="#CBD5E1"
+                thumbColor="#FFFFFF"
+              />
+            </View>
+
+            <View style={[styles.pocketNoticeCard, styles.filterSettingCard]}>
+              <View style={{ flex: 1, marginRight: 10 }}>
+                <Text style={[styles.pocketNoticeTitle, styles.filterSettingTitle]}>安心フィルター</Text>
+                <Text style={[styles.pocketNoticeDesc, styles.filterSettingDesc]}>
+                  強いネガティブな表現を含む言葉は、ARと地図に出しません。
+                </Text>
+              </View>
+              <Switch
+                value={hideNegativePosts}
+                onValueChange={setHideNegativePosts}
+                trackColor={{ false: '#CBD5E1', true: '#10B981' }}
+                ios_backgroundColor="#CBD5E1"
+                thumbColor="#FFFFFF"
+              />
+            </View>
+
             <Text style={styles.subSectionTitle}>
               空間で見たいジャンル（今はこの気分）
             </Text>
@@ -865,6 +908,16 @@ export function MyPageScreen({
 }
 
 const styles = StyleSheet.create({
+  filterSettingCard: {
+    backgroundColor: '#FFFFFF',
+    borderColor: '#E2E8F0',
+  },
+  filterSettingTitle: {
+    color: '#0F172A',
+  },
+  filterSettingDesc: {
+    color: '#64748B',
+  },
   container: {
     flex: 1,
     backgroundColor: '#F8FAFC',

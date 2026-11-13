@@ -26,11 +26,13 @@ type Props = {
     category: string;
     sentiment?: SentimentResult;
   }) => void;
+  /** 関心タグ。タグの提案で優先し、候補に無ければ「あなたの関心タグから追加」に出す */
+  preferredTags?: string[];
 };
 
 const DEFAULT_INITIAL_MESSAGE = '今日はいい日になりそう ☀️';
 
-export function PostModal({ visible, onClose, onSubmit }: Props): React.JSX.Element {
+export function PostModal({ visible, onClose, onSubmit, preferredTags = [] }: Props): React.JSX.Element {
   const [message, setMessage] = useState<string>(DEFAULT_INITIAL_MESSAGE);
   // タグは本文から提案されたものを選ぶ。最初から何かを選んでおくと、どの投稿にも同じタグが付いてしまう
   const [suggestedTags, setSuggestedTags] = useState<string[]>([]);
@@ -81,7 +83,7 @@ export function PostModal({ visible, onClose, onSubmit }: Props): React.JSX.Elem
 
     debounceTimerRef.current = setTimeout(async () => {
       try {
-        const { tags, sentiment: analyzedSentiment } = await suggestTagsAndSentiment(message);
+        const { tags, sentiment: analyzedSentiment } = await suggestTagsAndSentiment(message, preferredTags);
         setSuggestedTags(tags);
         setSentiment(analyzedSentiment);
 
@@ -101,7 +103,7 @@ export function PostModal({ visible, onClose, onSubmit }: Props): React.JSX.Elem
         clearTimeout(debounceTimerRef.current);
       }
     };
-  }, [message, visible]);
+  }, [message, visible, preferredTags]);
 
   const toggleTag = (tag: string) => {
     hasEditedTagsRef.current = true;
@@ -172,6 +174,15 @@ export function PostModal({ visible, onClose, onSubmit }: Props): React.JSX.Elem
               />
             </View>
 
+            {/* 強いネガティブな表現があるとき（安心フィルターをオンにしている人には表示されない） */}
+            {sentiment?.isNegative && (
+              <View style={styles.negativeNoticeBox}>
+                <Text style={styles.negativeNoticeText}>
+                  強い言葉が含まれているようです。安心フィルターをオンにしている人には表示されません。
+                </Text>
+              </View>
+            )}
+
             {/* AI Tag Suggestion Section */}
             <View style={styles.sectionGroup}>
               <View style={styles.sectionTitleRow}>
@@ -207,6 +218,32 @@ export function PostModal({ visible, onClose, onSubmit }: Props): React.JSX.Elem
                 })}
               </View>
             </View>
+
+            {/* 候補に出ていない関心タグを、ワンタップで足せるように */}
+            {preferredTags.some((tag) => !suggestedTags.includes(tag)) && (
+              <View style={styles.sectionGroup}>
+                <Text style={styles.subSectionTitle}>あなたの関心タグから追加</Text>
+                <View style={styles.tagsWrap}>
+                  {preferredTags
+                    .filter((tag) => !suggestedTags.includes(tag))
+                    .map((tag) => {
+                      const isSelected = selectedTags.includes(tag);
+                      return (
+                        <TouchableOpacity
+                          key={tag}
+                          style={[styles.tagChip, isSelected && styles.tagChipActive]}
+                          onPress={() => toggleTag(tag)}
+                          activeOpacity={0.7}
+                        >
+                          <Text style={[styles.tagText, isSelected && styles.tagTextActive]}>
+                            {isSelected ? `✓ ${tag}` : `+ ${tag}`}
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                </View>
+              </View>
+            )}
 
             {/* Manual Tag Input */}
             <View style={styles.sectionGroup}>
@@ -319,6 +356,26 @@ const styles = StyleSheet.create({
     color: '#0F172A',
     fontWeight: '600',
     lineHeight: 24,
+  },
+  negativeNoticeBox: {
+    backgroundColor: '#F8FAFC',
+    borderColor: '#E2E8F0',
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    marginBottom: 14,
+  },
+  negativeNoticeText: {
+    color: '#64748B',
+    fontSize: 12,
+    lineHeight: 17,
+  },
+  subSectionTitle: {
+    color: '#64748B',
+    fontSize: 12,
+    fontWeight: '600',
+    marginBottom: 2,
   },
   sectionGroup: {
     marginBottom: 16,

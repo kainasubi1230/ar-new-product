@@ -27,9 +27,13 @@ Thumbs.db
 # iOS / Xcode
 ios/build/
 ios/Pods/
+ios/.xcode.env.local
+ios/.bundle/
+ios/vendor/
 *.xcworkspace/xcuserdata/
 *.xcodeproj/xcuserdata/
-*.xcodeproj/project.xcworkspace/xcuserdata/
+*.xcodeproj/project.xcworkspace/
+**/xcuserdata/
 DerivedData/
 
 # Android / Gradle

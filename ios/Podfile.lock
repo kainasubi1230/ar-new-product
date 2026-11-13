@@ -2130,7 +2130,7 @@ SPEC CHECKSUMS:
   React-callinvoker: 28b25d21b124c26cebaea713ba7d801b9351dc48
   React-Core: 02ed7d2ffb70437bdf2aba074a13078a7b0b9ff0
   React-Core-prebuilt: acbae65832190d0c53de4e07ec730a7eb4c199d8
-  React-CoreModules: b3a5a42dadcde3b5d47b325bd912eb2ced89e146
+  React-CoreModules: 7b706de8edfd408f5fa3b100f6f61903df616a16
   React-cxxreact: fe8f88dda044e5905e99a00f41b7a874c3908716
   React-debug: 92944dc4d89f56d640e75498266cbde557a48189
   React-defaultsnativemodule: cd64bc09d7ca24112bbaf1b91edbbcf3d81ea7dc
@@ -2196,6 +2196,6 @@ SPEC CHECKSUMS:
   ReactNativeDependencies: f06e3f7604217665ac927aca39fe85ba64cd5639
   Yoga: 77dfa8673de2874e1855002ae59c68b8be9b007b
 
-PODFILE CHECKSUM: 1e5ca8b9911b41d6e7ad461e82832b95417a7c35
+PODFILE CHECKSUM: bac3a01a97cc143c630cce1b2973a1e1318056db
 
 COCOAPODS: 1.17.0

@@ -10,6 +10,10 @@ export type Preferences = {
   interestTags: string[];
   /** ポケット通知（関心タグの言葉の近くに来たら通知）。オンのときだけ見張る */
   pocketNoticeEnabled: boolean;
+  /** 関心タグ（と関連タグ）に合う投稿だけを AR・地図に出すか */
+  onlyInterestTags: boolean;
+  /** 強いネガティブ表現の投稿を AR・地図に出さないか（安心フィルター） */
+  hideNegativePosts: boolean;
   /** 開発用の情報（通知画面のポケット通知の状態など）を出すか。開発ビルドのときだけマイページの設定で切り替えられる */
   showDevInfo: boolean;
 };
@@ -20,6 +24,8 @@ const STORAGE_KEY = 'loca:preferences';
 const DEFAULT_PREFERENCES: Preferences = {
   interestTags: ['#散歩', '#カフェ', '#日常', '#本'],
   pocketNoticeEnabled: true,
+  onlyInterestTags: false,
+  hideNegativePosts: true,
   showDevInfo: false,
 };
 
@@ -92,5 +98,7 @@ export const usePreferences = () => {
     },
     setPocketNoticeEnabled: (pocketNoticeEnabled: boolean) => updatePreferences({ pocketNoticeEnabled }),
     setShowDevInfo: (showDevInfo: boolean) => updatePreferences({ showDevInfo }),
+    setOnlyInterestTags: (onlyInterestTags: boolean) => updatePreferences({ onlyInterestTags }),
+    setHideNegativePosts: (hideNegativePosts: boolean) => updatePreferences({ hideNegativePosts }),
   };
 };
