@@ -12,8 +12,12 @@ export type Preferences = {
   pocketNoticeEnabled: boolean;
   /** 関心タグ（と関連タグ）に合う投稿だけを AR・地図に出すか */
   onlyInterestTags: boolean;
-  /** 強いネガティブ表現の投稿を AR・地図に出さないか（安心フィルター） */
+  /** 安心フィルター: 見たくない投稿（ネガティブ表現や除外タグ）を AR・地図に出さないか */
   hideNegativePosts: boolean;
+  /** 安心フィルターで除外するタグ一覧（「#」付き） */
+  mutedTags: string[];
+  /** ユーザーのアバターアイコン識別子（例: 'mypage', 'cafe', 'walking', 'book', 'art', 'herb' など） */
+  userAvatarIcon: string;
   /** 開発用の情報（通知画面のポケット通知の状態など）を出すか。開発ビルドのときだけマイページの設定で切り替えられる */
   showDevInfo: boolean;
 };
@@ -26,6 +30,8 @@ const DEFAULT_PREFERENCES: Preferences = {
   pocketNoticeEnabled: true,
   onlyInterestTags: false,
   hideNegativePosts: true,
+  mutedTags: ['#愚痴', '#混雑', '#騒音', '#危険'],
+  userAvatarIcon: 'mypage',
   showDevInfo: false,
 };
 
@@ -100,5 +106,15 @@ export const usePreferences = () => {
     setShowDevInfo: (showDevInfo: boolean) => updatePreferences({ showDevInfo }),
     setOnlyInterestTags: (onlyInterestTags: boolean) => updatePreferences({ onlyInterestTags }),
     setHideNegativePosts: (hideNegativePosts: boolean) => updatePreferences({ hideNegativePosts }),
+    setMutedTags: (mutedTags: string[]) => updatePreferences({ mutedTags }),
+    toggleMutedTag: (tag: string) => {
+      const normalized = normalizeTag(tag);
+      updatePreferences({
+        mutedTags: current.mutedTags.includes(normalized)
+          ? current.mutedTags.filter((t) => t !== normalized)
+          : [...current.mutedTags, normalized],
+      });
+    },
+    setUserAvatarIcon: (userAvatarIcon: string) => updatePreferences({ userAvatarIcon }),
   };
 };

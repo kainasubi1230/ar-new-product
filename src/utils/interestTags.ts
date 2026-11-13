@@ -22,12 +22,35 @@ export const matchesInterestTags = (
  */
 export const isVisibleUnderFilters = (
   post: { message?: string | null; tags?: readonly string[] | null },
-  options: { interestTags: readonly string[]; onlyInterestTags: boolean; hideNegativePosts: boolean; isOwn: boolean }
+  options: {
+    interestTags: readonly string[];
+    onlyInterestTags: boolean;
+    hideNegativePosts: boolean;
+    mutedTags?: readonly string[];
+    isOwn: boolean;
+  }
 ): boolean => {
   if (options.isOwn) return true;
-  if (options.hideNegativePosts && post.message && analyzeSentiment(post.message).isNegative) {
-    return false;
+
+  // 安心フィルターが有効な場合：
+  if (options.hideNegativePosts) {
+    // 1. 強いネガティブ表現の自動判定
+    if (post.message && analyzeSentiment(post.message).isNegative) {
+      return false;
+    }
+    // 2. ユーザーが見たくないものとして選んだ除外タグ（mutedTags）のチェック
+    if (options.mutedTags && options.mutedTags.length > 0) {
+      const normalizedMuted = options.mutedTags.map(normalizeTag);
+      const postTags = (post.tags ?? []).map(normalizeTag);
+      for (const mt of normalizedMuted) {
+        if (!mt) continue;
+        if (postTags.includes(mt)) return false;
+        const rawWord = mt.replace(/^#+/, '');
+        if (rawWord && post.message && post.message.includes(rawWord)) return false;
+      }
+    }
   }
+
   if (options.onlyInterestTags && options.interestTags.length > 0 && !matchesInterestTags(post.tags, options.interestTags)) {
     return false;
   }

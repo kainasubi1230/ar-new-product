@@ -25,11 +25,32 @@ import { signInWithEmail, signUpWithEmail } from '../services/authService';
 import { deleteMyPost, fillPostPlaceName } from '../services/postService';
 import { usePreferences } from '../services/preferencesStore';
 import { SHOW_AR_DEBUG } from '../config/debug';
-import { WordCard, WordCardAvatar, WordCardDate, WordCardMeta, WordCardReadCount } from './WordCard';
+import {
+  WordCard,
+  WordCardAvatar,
+  WordCardDate,
+  WordCardMeta,
+  WordCardReadCount,
+  getAvatarIconSource,
+} from './WordCard';
 import { fetchCollectedPosts, uncollectPost } from '../services/readService';
 import { supabase } from '../lib/supabase';
+import { normalizeTag, DEFAULT_MUTED_TAG_PRESETS } from '../services/interestTagService';
 
 const { width } = Dimensions.get('window');
+
+export const AVATAR_OPTIONS = [
+  { key: 'mypage', label: 'ひと', icon: Icons.mypage },
+  { key: 'walking', label: '散歩', icon: Icons.walking },
+  { key: 'cafe', label: 'カフェ', icon: Icons.cafe },
+  { key: 'book', label: '読書', icon: Icons.book },
+  { key: 'art', label: 'アート', icon: Icons.art },
+  { key: 'gourmet', label: 'グルメ', icon: Icons.gourmet },
+  { key: 'herb', label: '自然', icon: Icons.herb },
+  { key: 'history', label: '歴史', icon: Icons.history },
+  { key: 'view', label: '絶景', icon: Icons.view },
+  { key: 'footprints', label: '足跡', icon: Icons.footprints },
+];
 
 // 1. 自分が置いた言葉（残した言葉）
 type PlacedMemory = {
@@ -42,7 +63,6 @@ type PlacedMemory = {
   placedAt: string;
   readCount: number; // 「誰かが読んだよ 🐾」
   expiresIn: string; // 寿命（公開期限）
-  mapCoord: { xPercent: number; yPercent: number };
 };
 
 // 2. 出会った言葉の記録（拾った言葉コレクション）
@@ -132,13 +152,13 @@ export function MyPageScreen({
   onSignOut,
 }: Props): React.JSX.Element {
   const [activeTab, setActiveTab] = useState<'placed' | 'collected' | 'tags'>('placed');
-  const [placedViewMode, setPlacedViewMode] = useState<'list' | 'map'>('list');
 
   // データ状態
   const [placedList, setPlacedList] = useState<PlacedMemory[]>(INITIAL_PLACED);
   // AR で目にした他の人の言葉（post_reads）
   const [collectedList, setCollectedList] = useState<CollectedWord[]>(INITIAL_COLLECTED);
-  // 関心タグとポケット通知は端末に保存し、AR・地図・通知と共有する（preferencesStore）
+
+  // 関心タグ・安心フィルター・アイコン設定（preferencesStore）
   const {
     interestTags,
     toggleInterestTag,
@@ -148,14 +168,22 @@ export function MyPageScreen({
     setOnlyInterestTags,
     hideNegativePosts,
     setHideNegativePosts,
+    mutedTags = [],
+    toggleMutedTag,
+    setMutedTags,
+    userAvatarIcon = 'mypage',
+    setUserAvatarIcon,
     showDevInfo,
     setShowDevInfo,
   } = usePreferences();
+
+  const [isAvatarModalVisible, setIsAvatarModalVisible] = useState(false);
+  const [customMutedTagInput, setCustomMutedTagInput] = useState('');
+
   const tags: InterestTag[] = INITIAL_TAGS.map((tag) => ({
     ...tag,
     enabled: interestTags.includes(`#${tag.name}`),
   }));
-  const [selectedMapPin, setSelectedMapPin] = useState<PlacedMemory | null>(null);
   const isPocketNoticeOn = pocketNoticeEnabled;
   const setIsPocketNoticeOn = setPocketNoticeEnabled;
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -173,7 +201,7 @@ export function MyPageScreen({
 
       if (error) throw error;
 
-      const formatted: PlacedMemory[] = (data || []).map((p, idx) => ({
+      const formatted: PlacedMemory[] = (data || []).map((p) => ({
         id: p.id,
         // 置いた場所の名前（無ければ空。下で後から埋める）
         placeName: p.place_name ?? '',
@@ -183,10 +211,6 @@ export function MyPageScreen({
         placedAt: new Date(p.created_at).toLocaleDateString('ja-JP'),
         readCount: 0,
         expiresIn: '無期限',
-        mapCoord: {
-          xPercent: 50 + (((idx * 17) % 60) - 30),
-          yPercent: 50 + (((idx * 23) % 60) - 30),
-        },
       }));
 
       // 自分の言葉が何人に拾われたか（posts.read_count。拾われるたびに DB が数える）
@@ -196,9 +220,6 @@ export function MyPageScreen({
       }));
 
       setPlacedList(withCounts);
-      if (withCounts.length > 0) {
-        setSelectedMapPin((prev) => prev ?? withCounts[0]);
-      }
 
       // 場所の名前がまだ無い投稿（この機能の前に置いたもの）は、位置から名前を求めて書き足す（一度に 10 件まで）
       const missing = (data ?? []).filter((p) => !p.place_name && p.lat != null && p.lng != null).slice(0, 10);
@@ -243,6 +264,32 @@ export function MyPageScreen({
     setIsRefreshing(false);
   };
 
+  // アバターアイコンの変更
+  const handleSelectAvatar = async (iconKey: string) => {
+    setUserAvatarIcon(iconKey);
+    setIsAvatarModalVisible(false);
+    if (user) {
+      try {
+        await supabase.auth.updateUser({
+          data: { avatar_icon: iconKey },
+        });
+      } catch (e) {
+        console.warn('アバターアイコン保存エラー:', e);
+      }
+    }
+  };
+
+  // 安心フィルターの除外タグ追加
+  const handleAddCustomMutedTag = () => {
+    const trimmed = customMutedTagInput.trim();
+    if (!trimmed) return;
+    const formatted = normalizeTag(trimmed);
+    if (!mutedTags.includes(formatted)) {
+      setMutedTags([...mutedTags, formatted]);
+    }
+    setCustomMutedTagInput('');
+  };
+
   // 1. 言葉の削除
   const handleDeleteMemory = (id: string, message: string) => {
     Alert.alert(
@@ -262,9 +309,6 @@ export function MyPageScreen({
               return;
             }
             setPlacedList((prev) => prev.filter((item) => item.id !== id));
-            if (selectedMapPin?.id === id) {
-              setSelectedMapPin(null);
-            }
           },
         },
       ]
@@ -491,14 +535,14 @@ export function MyPageScreen({
   const displayName =
     user.user_metadata?.username || user.email?.split('@')[0] || 'ユーザー';
 
-  // 右上の設定ボタンのメニュー（関心タグの編集・開発用の情報の表示（開発ビルドのみ）・ログアウト）
+  // 右上の設定ボタンのメニュー（開発用の情報の表示（開発ビルドのみ）・ログアウト）
+  // ※「関心タグの編集」は削除済み
   const openSettingsMenu = () => {
     const canSignOut = user != null && onSignOut != null;
     const devInfoLabel = showDevInfo ? '開発用の情報を隠す' : '開発用の情報を表示';
     const toggleDevInfo = () => setShowDevInfo(!showDevInfo);
     if (Platform.OS === 'ios') {
       const options = [
-        '関心タグを編集',
         ...(SHOW_AR_DEBUG ? [devInfoLabel] : []),
         ...(canSignOut ? ['ログアウト'] : []),
         'キャンセル',
@@ -510,7 +554,6 @@ export function MyPageScreen({
           destructiveButtonIndex: canSignOut ? options.indexOf('ログアウト') : undefined,
         },
         (index) => {
-          if (options[index] === '関心タグを編集') onOpenTagManage();
           if (options[index] === devInfoLabel) toggleDevInfo();
           if (options[index] === 'ログアウト') onSignOut?.();
         }
@@ -518,7 +561,6 @@ export function MyPageScreen({
       return;
     }
     Alert.alert('設定', undefined, [
-      { text: '関心タグを編集', onPress: onOpenTagManage },
       ...(SHOW_AR_DEBUG ? [{ text: devInfoLabel, onPress: toggleDevInfo }] : []),
       ...(canSignOut ? [{ text: 'ログアウト', style: 'destructive' as const, onPress: onSignOut }] : []),
       { text: 'キャンセル', style: 'cancel' as const },
@@ -546,14 +588,26 @@ export function MyPageScreen({
       >
         {/* Profile Card */}
         <View style={styles.profileSection}>
-          <View style={styles.avatarCircle}>
-            <Image
-              source={Icons.mypage}
-              style={styles.avatarIcon}
-              resizeMode="contain"
-            />
-          </View>
+          <TouchableOpacity
+            style={styles.avatarButton}
+            onPress={() => setIsAvatarModalVisible(true)}
+            activeOpacity={0.8}
+          >
+            <View style={styles.avatarCircle}>
+              <Image
+                source={getAvatarIconSource(userAvatarIcon)}
+                style={styles.avatarIcon}
+                resizeMode="contain"
+              />
+            </View>
+            <View style={styles.avatarEditBadge}>
+              <Text style={styles.avatarEditBadgeText}>✎</Text>
+            </View>
+          </TouchableOpacity>
           <Text style={styles.userName}>{displayName}</Text>
+          <TouchableOpacity onPress={() => setIsAvatarModalVisible(true)} activeOpacity={0.6}>
+            <Text style={styles.changeAvatarHintText}>アイコンを変更 ↗</Text>
+          </TouchableOpacity>
           <Text style={styles.userBio}>{user.email}</Text>
 
           {/* Footprint Count Summary */}
@@ -622,10 +676,10 @@ export function MyPageScreen({
 
         {/* ═══════════════════════════════════════════════════════
             1. 自分が置いた言葉（「残した言葉」リスト）
+            ※マップ制度は廃止し、シンプルなリスト表示に一本化
         ═══════════════════════════════════════════════════════ */}
         {activeTab === 'placed' && (
           <View style={styles.tabSection}>
-            {/* View Mode Toggle: [リスト ≡] / [プライベートマップ 🗺️] */}
             <View style={styles.subHeaderRow}>
               <View style={styles.subHeaderTitleGroup}>
                 <Image source={Icons.footprints} style={styles.subHeaderFootprintIcon} resizeMode="contain" />
@@ -633,125 +687,33 @@ export function MyPageScreen({
                   街に残した言葉 ({placedList.length})
                 </Text>
               </View>
-              <View style={styles.viewModeToggle}>
-                <TouchableOpacity
-                  style={[styles.modeToggleBtn, placedViewMode === 'list' && styles.modeToggleBtnActive]}
-                  onPress={() => setPlacedViewMode('list')}
-                  activeOpacity={0.8}
-                >
-                  <Text style={[styles.modeToggleText, placedViewMode === 'list' && styles.modeToggleTextActive]}>
-                    リスト
-                  </Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[styles.modeToggleBtn, placedViewMode === 'map' && styles.modeToggleBtnActive]}
-                  onPress={() => setPlacedViewMode('map')}
-                  activeOpacity={0.8}
-                >
-                  <Text style={[styles.modeToggleText, placedViewMode === 'map' && styles.modeToggleTextActive]}>
-                    マップ
-                  </Text>
-                </TouchableOpacity>
-              </View>
             </View>
 
-            {/* List Mode */}
-            {placedViewMode === 'list' && (
-              <View style={styles.cardListContainer}>
-                {placedList.map((item) => (
-                  <WordCard
-                    key={item.id}
-                    message={item.message}
-                    tags={item.tags}
-                    onDelete={() => handleDeleteMemory(item.id, item.message)}
-                    footer={
-                      <>
-                        <WordCardDate date={item.placedAt} placeName={item.placeName} action="placed" />
-                        {item.readCount > 0 && <WordCardReadCount count={item.readCount} />}
-                      </>
-                    }
-                  />
-                ))}
+            <View style={styles.cardListContainer}>
+              {placedList.map((item) => (
+                <WordCard
+                  key={item.id}
+                  message={item.message}
+                  tags={item.tags}
+                  onDelete={() => handleDeleteMemory(item.id, item.message)}
+                  footer={
+                    <>
+                      <WordCardAvatar name={displayName} icon={userAvatarIcon} />
+                      <WordCardDate date={item.placedAt} placeName={item.placeName} action="placed" />
+                      {item.readCount > 0 && <WordCardReadCount count={item.readCount} />}
+                    </>
+                  }
+                />
+              ))}
 
-                {placedList.length === 0 && (
-                  <View style={styles.emptyStateBox}>
-                    <Image source={Icons.footprints} style={styles.emptyFootprintsIcon} resizeMode="contain" />
-                    <Text style={styles.emptyStateText}>まだ街に残した言葉がありません</Text>
-                    <Text style={styles.emptyStateSub}>ホーム画面の「＋」ボタンから、今いる場所に言葉を設置できます。</Text>
-                  </View>
-                )}
-              </View>
-            )}
-
-            {/* Map Mode (プライベートマップ化) */}
-            {placedViewMode === 'map' && (
-              <View style={styles.privateMapContainer}>
-                <View style={styles.privateMapCanvas}>
-                  {/* Map Grid Lines */}
-                  <View style={styles.mapGridLineH} />
-                  <View style={styles.mapGridLineV} />
-                  <View style={styles.mapWaterCircle} />
-
-                  <Text style={styles.mapCityLabel}>Tenjin Private Map</Text>
-
-                  {/* Placed Pins */}
-                  {placedList.map((item) => {
-                    const isSelected = selectedMapPin?.id === item.id;
-                    return (
-                      <TouchableOpacity
-                        key={item.id}
-                        style={[
-                          styles.mapPinWrapper,
-                          {
-                            left: `${item.mapCoord.xPercent}%`,
-                            top: `${item.mapCoord.yPercent}%`,
-                          },
-                          isSelected && styles.mapPinWrapperSelected,
-                        ]}
-                        onPress={() => setSelectedMapPin(item)}
-                        activeOpacity={0.8}
-                      >
-                        <View style={[styles.mapPinBubble, isSelected && styles.mapPinBubbleSelected]}>
-                          <Image
-                            source={Icons.pin}
-                            style={[styles.mapPinIconImage, isSelected && styles.mapPinIconImageSelected]}
-                            resizeMode="contain"
-                          />
-                        </View>
-                        <Text style={[styles.mapPinLabel, isSelected && styles.mapPinLabelSelected]} numberOfLines={1}>
-                          {item.placeName.split(' ')[0]}
-                        </Text>
-                      </TouchableOpacity>
-                    );
-                  })}
+              {placedList.length === 0 && (
+                <View style={styles.emptyStateBox}>
+                  <Image source={Icons.footprints} style={styles.emptyFootprintsIcon} resizeMode="contain" />
+                  <Text style={styles.emptyStateText}>まだ街に残した言葉がありません</Text>
+                  <Text style={styles.emptyStateSub}>ホーム画面の「＋」ボタンから、今いる場所に言葉を設置できます。</Text>
                 </View>
-
-                {/* Selected Pin Detail Callout */}
-                {selectedMapPin && (
-                  <View style={styles.mapSelectedCard}>
-                    <View style={styles.mapSelectedHeader}>
-                      <View style={{ flex: 1 }}>
-                        <View style={styles.mapSelectedPlaceRow}>
-                          <Image source={Icons.pin} style={styles.mapSelectedPinIcon} resizeMode="contain" />
-                          <Text style={styles.mapSelectedPlace}>{selectedMapPin.placeName}</Text>
-                        </View>
-                        <View style={styles.mapSelectedMetaRow}>
-                          <Image source={Icons.calendar} style={styles.calendarIconSmall} resizeMode="contain" />
-                          <Text style={styles.mapSelectedDate}>{selectedMapPin.placedAt}</Text>
-                          <Image source={Icons.hourglass} style={styles.hourglassIconSmall} resizeMode="contain" />
-                          <Text style={styles.mapSelectedExpiry}>{selectedMapPin.expiresIn}</Text>
-                        </View>
-                      </View>
-                      <View style={styles.footprintBadge}>
-                        <Image source={Icons.footprints} style={styles.footprintIcon} resizeMode="contain" />
-                        <Text style={styles.footprintText}>{selectedMapPin.readCount}</Text>
-                      </View>
-                    </View>
-                    <Text style={styles.mapSelectedMessage}>{selectedMapPin.message}</Text>
-                  </View>
-                )}
-              </View>
-            )}
+              )}
+            </View>
           </View>
         )}
 
@@ -778,7 +740,7 @@ export function MyPageScreen({
                   onDelete={() => handleUncollect(item.id, item.author)}
                   footer={
                     <>
-                      <WordCardAvatar name={item.author} />
+                      <WordCardAvatar name={item.author} icon={item.stampIcon || item.handle} />
                       <WordCardMeta>{item.author}さん</WordCardMeta>
                       <WordCardDate date={item.collectedAt} placeName={item.placeName} action="collected" />
                     </>
@@ -802,23 +764,28 @@ export function MyPageScreen({
         ═══════════════════════════════════════════════════════ */}
         {activeTab === 'tags' && (
           <View style={styles.tabSection}>
-            {/* Master Notification Switch */}
-            <View style={[styles.pocketNoticeCard, !isPocketNoticeOn && styles.pocketNoticeCardOff]}>
-              <View style={[styles.pocketNoticeIconCircle, !isPocketNoticeOn && styles.pocketNoticeIconCircleOff]}>
+            {/* 1. ポケット通知 */}
+            <View style={[styles.filterToggleCard, isPocketNoticeOn && styles.filterToggleCardOn]}>
+              <View style={[styles.filterToggleIconBox, isPocketNoticeOn && styles.filterToggleIconBoxOn]}>
                 <Image
                   source={Icons.herb}
-                  style={[styles.pocketNoticeHerb, !isPocketNoticeOn && styles.pocketNoticeHerbOff]}
+                  style={[styles.filterToggleIcon, isPocketNoticeOn && styles.filterToggleIconOn]}
                   resizeMode="contain"
                 />
               </View>
-              <View style={{ flex: 1, marginRight: 10 }}>
-                <Text style={[styles.pocketNoticeTitle, !isPocketNoticeOn && styles.pocketNoticeTitleOff]}>
-                  ポケット通知
-                </Text>
-                <Text style={[styles.pocketNoticeDesc, !isPocketNoticeOn && styles.pocketNoticeDescOff]}>
-                  {isPocketNoticeOn
-                    ? '関心タグに設定した言葉が近くにある時だけ、通知が届きます。'
-                    : 'ポケット通知はオフです。近くに言葉があっても通知されません。'}
+              <View style={styles.filterToggleTextGroup}>
+                <View style={styles.filterToggleTitleRow}>
+                  <Text style={[styles.filterToggleTitle, isPocketNoticeOn && styles.filterToggleTitleOn]}>
+                    ポケット通知
+                  </Text>
+                  <View style={[styles.statusBadge, isPocketNoticeOn ? styles.statusBadgeOn : styles.statusBadgeOff]}>
+                    <Text style={[styles.statusBadgeText, isPocketNoticeOn ? styles.statusBadgeTextOn : styles.statusBadgeTextOff]}>
+                      {isPocketNoticeOn ? 'ON' : 'OFF'}
+                    </Text>
+                  </View>
+                </View>
+                <Text style={styles.filterToggleDesc}>
+                  関心タグに設定した言葉が近くにある時だけ、通知が届きます。
                 </Text>
               </View>
               <Switch
@@ -830,12 +797,28 @@ export function MyPageScreen({
               />
             </View>
 
-            {/* 表示の設定（AR・地図に出す言葉を絞る） */}
-            <View style={[styles.pocketNoticeCard, styles.filterSettingCard]}>
-              <View style={{ flex: 1, marginRight: 10 }}>
-                <Text style={[styles.pocketNoticeTitle, styles.filterSettingTitle]}>関心タグの言葉だけ表示</Text>
-                <Text style={[styles.pocketNoticeDesc, styles.filterSettingDesc]}>
-                  ARと地図に、関心タグ（と近いジャンル）の言葉だけを出します。
+            {/* 2. 関心タグの言葉だけ表示 */}
+            <View style={[styles.filterToggleCard, onlyInterestTags && styles.filterToggleCardOn]}>
+              <View style={[styles.filterToggleIconBox, onlyInterestTags && styles.filterToggleIconBoxOn]}>
+                <Image
+                  source={Icons.search}
+                  style={[styles.filterToggleIcon, onlyInterestTags && styles.filterToggleIconOn]}
+                  resizeMode="contain"
+                />
+              </View>
+              <View style={styles.filterToggleTextGroup}>
+                <View style={styles.filterToggleTitleRow}>
+                  <Text style={[styles.filterToggleTitle, onlyInterestTags && styles.filterToggleTitleOn]}>
+                    関心タグの言葉だけ表示
+                  </Text>
+                  <View style={[styles.statusBadge, onlyInterestTags ? styles.statusBadgeOn : styles.statusBadgeOff]}>
+                    <Text style={[styles.statusBadgeText, onlyInterestTags ? styles.statusBadgeTextOn : styles.statusBadgeTextOff]}>
+                      {onlyInterestTags ? 'ON' : 'OFF'}
+                    </Text>
+                  </View>
+                </View>
+                <Text style={styles.filterToggleDesc}>
+                  ARカメラと地図に、関心タグ（と近いジャンル）の言葉だけを出します。
                 </Text>
               </View>
               <Switch
@@ -847,11 +830,28 @@ export function MyPageScreen({
               />
             </View>
 
-            <View style={[styles.pocketNoticeCard, styles.filterSettingCard]}>
-              <View style={{ flex: 1, marginRight: 10 }}>
-                <Text style={[styles.pocketNoticeTitle, styles.filterSettingTitle]}>安心フィルター</Text>
-                <Text style={[styles.pocketNoticeDesc, styles.filterSettingDesc]}>
-                  強いネガティブな表現を含む言葉は、ARと地図に出しません。
+            {/* 3. 安心フィルター */}
+            <View style={[styles.filterToggleCard, hideNegativePosts && styles.filterToggleCardOn]}>
+              <View style={[styles.filterToggleIconBox, hideNegativePosts && styles.filterToggleIconBoxOn]}>
+                <Image
+                  source={Icons.aplicalm}
+                  style={[styles.filterToggleIcon, hideNegativePosts && styles.filterToggleIconOn]}
+                  resizeMode="contain"
+                />
+              </View>
+              <View style={styles.filterToggleTextGroup}>
+                <View style={styles.filterToggleTitleRow}>
+                  <Text style={[styles.filterToggleTitle, hideNegativePosts && styles.filterToggleTitleOn]}>
+                    安心フィルター
+                  </Text>
+                  <View style={[styles.statusBadge, hideNegativePosts ? styles.statusBadgeOn : styles.statusBadgeOff]}>
+                    <Text style={[styles.statusBadgeText, hideNegativePosts ? styles.statusBadgeTextOn : styles.statusBadgeTextOff]}>
+                      {hideNegativePosts ? 'ON' : 'OFF'}
+                    </Text>
+                  </View>
+                </View>
+                <Text style={styles.filterToggleDesc}>
+                  ネガティブな表現や、見たくない除外タグの言葉をARと地図に出しません。
                 </Text>
               </View>
               <Switch
@@ -862,6 +862,70 @@ export function MyPageScreen({
                 thumbColor="#FFFFFF"
               />
             </View>
+
+            {/* 安心フィルターの除外タグカスタマイズ（安心フィルターがONのとき表示） */}
+            {hideNegativePosts && (
+              <View style={styles.mutedConfigCard}>
+                <Text style={styles.mutedConfigTitle}>🛡️ 見たくない言葉・除外タグの選択</Text>
+                <Text style={styles.mutedConfigSub}>
+                  選択したタグを含む言葉は、空間に表示されなくなります。
+                </Text>
+
+                {/* プリセット候補 */}
+                <View style={styles.mutedChipWrap}>
+                  {DEFAULT_MUTED_TAG_PRESETS.map((tag) => {
+                    const isMuted = mutedTags.includes(tag);
+                    return (
+                      <TouchableOpacity
+                        key={tag}
+                        style={[styles.mutedChip, isMuted && styles.mutedChipSelected]}
+                        onPress={() => toggleMutedTag(tag)}
+                        activeOpacity={0.7}
+                      >
+                        <Text style={[styles.mutedChipText, isMuted && styles.mutedChipTextSelected]}>
+                          {isMuted ? `✓ ${tag}` : `+ ${tag}`}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+
+                {/* 選択中の除外タグ一覧 */}
+                {mutedTags.length > 0 && (
+                  <View style={{ marginTop: 12 }}>
+                    <Text style={styles.mutedSelectedLabel}>除外中のタグ ({mutedTags.length}個):</Text>
+                    <View style={styles.mutedSelectedRow}>
+                      {mutedTags.map((tag) => (
+                        <View key={tag} style={styles.mutedActiveBadge}>
+                          <Text style={styles.mutedActiveBadgeText}>{tag}</Text>
+                          <TouchableOpacity onPress={() => toggleMutedTag(tag)} style={styles.mutedRemoveBtn}>
+                            <Text style={styles.mutedRemoveText}>×</Text>
+                          </TouchableOpacity>
+                        </View>
+                      ))}
+                    </View>
+                  </View>
+                )}
+
+                {/* 自由な除外キーワード/タグ追加入力 */}
+                <View style={styles.customMutedRow}>
+                  <TextInput
+                    style={styles.customMutedInput}
+                    placeholder="# 除外したい単語・タグを入力..."
+                    placeholderTextColor="#94A3B8"
+                    value={customMutedTagInput}
+                    onChangeText={setCustomMutedTagInput}
+                    onSubmitEditing={handleAddCustomMutedTag}
+                    returnKeyType="done"
+                  />
+                  {customMutedTagInput.trim().length > 0 && (
+                    <TouchableOpacity style={styles.customMutedAddBtn} onPress={handleAddCustomMutedTag}>
+                      <Text style={styles.customMutedAddBtnText}>追加</Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
+              </View>
+            )}
 
             <Text style={styles.subSectionTitle}>
               空間で見たいジャンル（今はこの気分）
@@ -903,21 +967,68 @@ export function MyPageScreen({
           </View>
         )}
       </ScrollView>
+
+      {/* アバターアイコン選択モーダル */}
+      <Modal
+        visible={isAvatarModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setIsAvatarModalVisible(false)}
+      >
+        <TouchableOpacity
+          style={styles.avatarModalOverlay}
+          activeOpacity={1}
+          onPress={() => setIsAvatarModalVisible(false)}
+        >
+          <View style={styles.avatarModalSheet} onStartShouldSetResponder={() => true}>
+            <View style={styles.avatarModalHeader}>
+              <View>
+                <Text style={styles.avatarModalTitle}>アバターアイコンを選択</Text>
+                <Text style={styles.avatarModalSub}>
+                  メッセージカードや拾った言葉に表示されます
+                </Text>
+              </View>
+              <TouchableOpacity
+                onPress={() => setIsAvatarModalVisible(false)}
+                style={styles.avatarModalCloseBtn}
+              >
+                <Text style={styles.avatarModalCloseText}>✕</Text>
+              </TouchableOpacity>
+            </View>
+
+            <View style={styles.avatarGrid}>
+              {AVATAR_OPTIONS.map((opt) => {
+                const isSelected = userAvatarIcon === opt.key;
+                return (
+                  <TouchableOpacity
+                    key={opt.key}
+                    style={[styles.avatarOptionItem, isSelected && styles.avatarOptionItemSelected]}
+                    onPress={() => handleSelectAvatar(opt.key)}
+                    activeOpacity={0.7}
+                  >
+                    <View style={[styles.avatarOptionCircle, isSelected && styles.avatarOptionCircleSelected]}>
+                      <Image
+                        source={opt.icon}
+                        style={[styles.avatarOptionImage, isSelected && styles.avatarOptionImageSelected]}
+                        resizeMode="contain"
+                      />
+                    </View>
+                    <Text style={[styles.avatarOptionLabel, isSelected && styles.avatarOptionLabelSelected]}>
+                      {opt.label}
+                    </Text>
+                    {isSelected && <Text style={styles.avatarSelectedBadge}>✓ 選択中</Text>}
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+          </View>
+        </TouchableOpacity>
+      </Modal>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  filterSettingCard: {
-    backgroundColor: '#FFFFFF',
-    borderColor: '#E2E8F0',
-  },
-  filterSettingTitle: {
-    color: '#0F172A',
-  },
-  filterSettingDesc: {
-    color: '#64748B',
-  },
   container: {
     flex: 1,
     backgroundColor: '#F8FAFC',
@@ -938,38 +1049,378 @@ const styles = StyleSheet.create({
     paddingBottom: 40,
   },
 
-  // Profile Section
+  // Profile Section & Avatar
   profileSection: {
     alignItems: 'center',
     marginTop: 10,
     marginBottom: 20,
   },
+  avatarButton: {
+    position: 'relative',
+    marginBottom: 10,
+  },
   avatarCircle: {
-    width: 76,
-    height: 76,
-    borderRadius: 38,
+    width: 80,
+    height: 80,
+    borderRadius: 40,
     backgroundColor: '#ECFDF5',
     justifyContent: 'center',
     alignItems: 'center',
-    marginBottom: 10,
-    borderWidth: 2.5,
+    borderWidth: 3,
     borderColor: '#10B981',
+    shadowColor: '#10B981',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.2,
+    shadowRadius: 8,
+    elevation: 4,
   },
   avatarIcon: {
-    width: 42,
-    height: 42,
+    width: 44,
+    height: 44,
     tintColor: '#10B981',
+  },
+  avatarEditBadge: {
+    position: 'absolute',
+    bottom: 0,
+    right: 0,
+    backgroundColor: '#10B981',
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 2,
+    borderColor: '#FFFFFF',
+  },
+  avatarEditBadgeText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '800',
   },
   userName: {
     color: '#0F172A',
     fontSize: 19,
     fontWeight: '800',
-    marginBottom: 3,
+    marginBottom: 2,
+  },
+  changeAvatarHintText: {
+    color: '#059669',
+    fontSize: 12,
+    fontWeight: '700',
+    marginBottom: 6,
   },
   userBio: {
     color: '#64748B',
     fontSize: 13,
     marginBottom: 16,
+  },
+
+  // 3つのトグルカード（ポケット通知、関心タグのみ、安心フィルターで統一）
+  filterToggleCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FFFFFF',
+    borderRadius: 18,
+    padding: 14,
+    borderWidth: 1.5,
+    borderColor: '#E2E8F0',
+    marginBottom: 12,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.03,
+    shadowRadius: 6,
+    elevation: 2,
+  },
+  filterToggleCardOn: {
+    backgroundColor: '#F0FDF4',
+    borderColor: '#86EFAC',
+  },
+  filterToggleIconBox: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#F1F5F9',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 12,
+  },
+  filterToggleIconBoxOn: {
+    backgroundColor: '#DCFCE7',
+  },
+  filterToggleIcon: {
+    width: 20,
+    height: 20,
+    tintColor: '#64748B',
+  },
+  filterToggleIconOn: {
+    tintColor: '#059669',
+  },
+  filterToggleTextGroup: {
+    flex: 1,
+    marginRight: 10,
+  },
+  filterToggleTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginBottom: 2,
+  },
+  filterToggleTitle: {
+    color: '#334155',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  filterToggleTitleOn: {
+    color: '#065F46',
+    fontWeight: '800',
+  },
+  filterToggleDesc: {
+    color: '#64748B',
+    fontSize: 11,
+    lineHeight: 16,
+  },
+  statusBadge: {
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+    borderRadius: 8,
+  },
+  statusBadgeOn: {
+    backgroundColor: '#10B981',
+  },
+  statusBadgeOff: {
+    backgroundColor: '#CBD5E1',
+  },
+  statusBadgeText: {
+    fontSize: 9,
+    fontWeight: '800',
+  },
+  statusBadgeTextOn: {
+    color: '#FFFFFF',
+  },
+  statusBadgeTextOff: {
+    color: '#475569',
+  },
+
+  // 安心フィルター除外設定カード
+  mutedConfigCard: {
+    backgroundColor: '#FEF2F2',
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: '#FECACA',
+    padding: 14,
+    marginBottom: 16,
+  },
+  mutedConfigTitle: {
+    color: '#991B1B',
+    fontSize: 13,
+    fontWeight: '800',
+    marginBottom: 2,
+  },
+  mutedConfigSub: {
+    color: '#B91C1C',
+    fontSize: 11,
+    lineHeight: 15,
+    marginBottom: 10,
+  },
+  mutedChipWrap: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  mutedChip: {
+    backgroundColor: '#FFFFFF',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#FCA5A5',
+  },
+  mutedChipSelected: {
+    backgroundColor: '#EF4444',
+    borderColor: '#EF4444',
+  },
+  mutedChipText: {
+    color: '#B91C1C',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  mutedChipTextSelected: {
+    color: '#FFFFFF',
+    fontWeight: '700',
+  },
+  mutedSelectedLabel: {
+    color: '#991B1B',
+    fontSize: 11,
+    fontWeight: '700',
+    marginBottom: 6,
+  },
+  mutedSelectedRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+  },
+  mutedActiveBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FEE2E2',
+    paddingLeft: 10,
+    paddingRight: 6,
+    paddingVertical: 4,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#F87171',
+    gap: 4,
+  },
+  mutedActiveBadgeText: {
+    color: '#B91C1C',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  mutedRemoveBtn: {
+    width: 16,
+    height: 16,
+    borderRadius: 8,
+    backgroundColor: '#EF4444',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  mutedRemoveText: {
+    color: '#FFFFFF',
+    fontSize: 11,
+    fontWeight: '800',
+    lineHeight: 13,
+  },
+  customMutedRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FFFFFF',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#FCA5A5',
+    paddingHorizontal: 10,
+    marginTop: 10,
+  },
+  customMutedInput: {
+    flex: 1,
+    height: 38,
+    fontSize: 13,
+    color: '#0F172A',
+  },
+  customMutedAddBtn: {
+    backgroundColor: '#EF4444',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 8,
+  },
+  customMutedAddBtnText: {
+    color: '#FFFFFF',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+
+  // アバターモーダル
+  avatarModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.45)',
+    justifyContent: 'flex-end',
+  },
+  avatarModalSheet: {
+    backgroundColor: '#FFFFFF',
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    padding: 20,
+    paddingBottom: Platform.OS === 'ios' ? 36 : 24,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: -4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 10,
+    elevation: 8,
+  },
+  avatarModalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    marginBottom: 16,
+  },
+  avatarModalTitle: {
+    color: '#0F172A',
+    fontSize: 17,
+    fontWeight: '800',
+    marginBottom: 2,
+  },
+  avatarModalSub: {
+    color: '#64748B',
+    fontSize: 12,
+  },
+  avatarModalCloseBtn: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: '#F1F5F9',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  avatarModalCloseText: {
+    color: '#64748B',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  avatarGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 12,
+    justifyContent: 'space-between',
+  },
+  avatarOptionItem: {
+    width: (width - 40 - 36) / 4,
+    alignItems: 'center',
+    paddingVertical: 8,
+    borderRadius: 16,
+    borderWidth: 1.5,
+    borderColor: '#E2E8F0',
+    backgroundColor: '#F8FAFC',
+  },
+  avatarOptionItemSelected: {
+    borderColor: '#10B981',
+    backgroundColor: '#ECFDF5',
+  },
+  avatarOptionCircle: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: '#FFFFFF',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    marginBottom: 4,
+  },
+  avatarOptionCircleSelected: {
+    borderColor: '#10B981',
+    backgroundColor: '#10B981',
+  },
+  avatarOptionImage: {
+    width: 22,
+    height: 22,
+    tintColor: '#475569',
+  },
+  avatarOptionImageSelected: {
+    tintColor: '#FFFFFF',
+  },
+  avatarOptionLabel: {
+    color: '#475569',
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  avatarOptionLabelSelected: {
+    color: '#065F46',
+    fontWeight: '800',
+  },
+  avatarSelectedBadge: {
+    color: '#059669',
+    fontSize: 9,
+    fontWeight: '800',
+    marginTop: 2,
   },
 
   // Footprint Summary Stats

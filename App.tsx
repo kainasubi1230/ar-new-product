@@ -139,14 +139,22 @@ export default function App(): React.JSX.Element {
   // GPS の生の値が fallbackMaxAccuracyM 以内なら使う（候補を広めに探して、景色で確かめるため）
   const [relocalizeCoords, setRelocalizeCoords] = useState<LocationCoords | null>(null);
   // 関心タグとポケット通知の設定（マイページ・タグ管理で変える。端末に保存）
-  const { interestTags, setInterestTags, pocketNoticeEnabled, onlyInterestTags, hideNegativePosts } =
-    usePreferences();
+  const {
+    interestTags,
+    setInterestTags,
+    pocketNoticeEnabled,
+    onlyInterestTags,
+    hideNegativePosts,
+    mutedTags,
+    userAvatarIcon,
+  } = usePreferences();
   // 表示の設定（関心タグのみ表示・安心フィルター）で、AR・地図に出すか。自分の投稿はいつも出す
   const isPostVisible = (post: { message?: string | null; tags?: readonly string[] | null; user_id?: string | null }) =>
     isVisibleUnderFilters(post, {
       interestTags,
       onlyInterestTags,
       hideNegativePosts,
+      mutedTags,
       isOwn: user != null && post.user_id === user.id,
     });
   // 位置情報が「おおよそ」でしか許可されていないと、方角タグが大きくずれる
@@ -704,7 +712,7 @@ export default function App(): React.JSX.Element {
             cardTitle={currentAuthor}
             cardDescription={currentMessage}
             cardColor="#10B981"
-            cardIcon={currentHandle}
+            cardIcon={userAvatarIcon || currentHandle}
             cardTags={selectedTags}
             placeTrigger={placeTrigger}
             isPreviewActive={isPlacementMode}
@@ -736,7 +744,7 @@ export default function App(): React.JSX.Element {
               const messageToSave = cardDescription || currentMessage;
               const authorName =
                 user?.user_metadata?.username || user?.email?.split('@')[0] || currentAuthor;
-              const authorHandle = user?.email ? `@${user.email.split('@')[0]}` : currentHandle;
+              const authorHandle = userAvatarIcon || (user?.email ? `@${user.email.split('@')[0]}` : currentHandle);
 
               showToast('言葉を置いています…', 'info', { symbol: 'arrow.up.circle' });
               try {

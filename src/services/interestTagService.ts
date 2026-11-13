@@ -16,16 +16,29 @@ export interface InterestTagPreset {
 export interface FilterSettings {
   /** 関心タグのみをAR空間・レーダーに表示するか */
   onlyInterestTags: boolean;
-  /** ネガティブ判定された投稿を自動で非表示にするか（安心フィルター） */
+  /** 安心フィルター（ネガティブ投稿や見たくないタグを非表示にするか） */
   hideNegativePosts: boolean;
   /** ポケット通知（関心タグ一致時の通知）をONにするか */
   isPocketNoticeOn: boolean;
+  /** 安心フィルターで除外するタグ一覧（「#」付き） */
+  mutedTags?: string[];
 }
+
+export const DEFAULT_MUTED_TAG_PRESETS = [
+  '#愚痴',
+  '#混雑',
+  '#騒音',
+  '#危険',
+  '#タバコ',
+  '#クレーム',
+  '#トラブル',
+];
 
 export const DEFAULT_FILTER_SETTINGS: FilterSettings = {
   onlyInterestTags: false,
   hideNegativePosts: true,
   isPocketNoticeOn: true,
+  mutedTags: ['#愚痴', '#混雑', '#騒音', '#危険'],
 };
 
 export const INTEREST_TAG_PRESETS: InterestTagPreset[] = [
@@ -216,6 +229,9 @@ export async function loadFilterSettings(): Promise<FilterSettings> {
         typeof parsed?.isPocketNoticeOn === 'boolean'
           ? parsed.isPocketNoticeOn
           : DEFAULT_FILTER_SETTINGS.isPocketNoticeOn,
+      mutedTags: Array.isArray(parsed?.mutedTags)
+        ? parsed.mutedTags.map(normalizeTag).filter(Boolean)
+        : DEFAULT_FILTER_SETTINGS.mutedTags,
     };
   } catch (e) {
     console.warn('[interestTagService] Failed to load filter settings:', e);
@@ -297,6 +313,8 @@ export interface PostFilterOptions {
   onlyInterestTags?: boolean;
   /** ネガティブ投稿を非表示にするか */
   hideNegativePosts?: boolean;
+  /** 安心フィルターで除外するタグ一覧 */
+  mutedTags?: string[];
   /** 検索キーワード（任意） */
   searchQuery?: string;
 }
@@ -313,6 +331,7 @@ export function filterPostsByCriteria<T extends FilterablePost>(
     interestTags = [],
     onlyInterestTags = false,
     hideNegativePosts = true,
+    mutedTags = [],
     searchQuery = '',
   } = options;
 
@@ -322,11 +341,23 @@ export function filterPostsByCriteria<T extends FilterablePost>(
     const message = post.message ?? '';
     const postTags = post.tags && post.tags.length > 0 ? post.tags : ['#日常'];
 
-    // 1. ネガティブ感情フィルタリング（安心フィルター）
-    if (hideNegativePosts && message) {
-      const sentiment = analyzeSentiment(message);
-      if (sentiment.isNegative) {
-        return false;
+    // 1. 安心フィルター（ネガティブ判定 ＋ 見たくないタグ/キーワード除外）
+    if (hideNegativePosts) {
+      if (message) {
+        const sentiment = analyzeSentiment(message);
+        if (sentiment.isNegative) {
+          return false;
+        }
+      }
+      if (mutedTags && mutedTags.length > 0) {
+        const normMuted = mutedTags.map(normalizeTag);
+        const normPostTags = postTags.map(normalizeTag);
+        for (const mt of normMuted) {
+          if (!mt) continue;
+          if (normPostTags.includes(mt)) return false;
+          const raw = mt.replace(/^#+/, '');
+          if (raw && message.includes(raw)) return false;
+        }
       }
     }
 

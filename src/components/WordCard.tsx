@@ -85,11 +85,42 @@ export function WordCardReadCount({ count }: { count: number }): React.JSX.Eleme
   );
 }
 
-/** 下の行に置く、投稿者の頭文字の丸 */
-export function WordCardAvatar({ name }: { name: string }): React.JSX.Element {
+export const AVATAR_ICON_MAP: Record<string, any> = {
+  mypage: Icons.mypage,
+  walking: Icons.walking,
+  cafe: Icons.cafe,
+  book: Icons.book,
+  art: Icons.art,
+  gourmet: Icons.gourmet,
+  herb: Icons.herb,
+  view: Icons.view,
+  history: Icons.history,
+  footprints: Icons.footprints,
+};
+
+export const getAvatarIconSource = (key?: string | null): any => {
+  if (!key) return Icons.mypage;
+  const cleanKey = key.replace('@', '').toLowerCase().trim();
+  return AVATAR_ICON_MAP[cleanKey] || Icons.mypage;
+};
+
+/** 下の行に置く、投稿者のアイコン（または頭文字の丸） */
+export function WordCardAvatar({
+  name,
+  icon,
+}: {
+  name: string;
+  icon?: string | null;
+}): React.JSX.Element {
+  const iconSource = icon ? getAvatarIconSource(icon) : null;
+
   return (
     <View style={styles.avatar}>
-      <Text style={styles.avatarText}>{name.slice(0, 1)}</Text>
+      {iconSource ? (
+        <Image source={iconSource} style={styles.avatarIconImage} resizeMode="contain" />
+      ) : (
+        <Text style={styles.avatarText}>{name.slice(0, 1)}</Text>
+      )}
     </View>
   );
 }
@@ -176,12 +207,18 @@ const styles = StyleSheet.create({
     tintColor: '#64748B',
   },
   avatar: {
-    width: 20,
-    height: 20,
-    borderRadius: 10,
+    width: 22,
+    height: 22,
+    borderRadius: 11,
     backgroundColor: 'rgba(16, 185, 129, 0.18)',
     alignItems: 'center',
     justifyContent: 'center',
+    overflow: 'hidden',
+  },
+  avatarIconImage: {
+    width: 14,
+    height: 14,
+    tintColor: '#047857',
   },
   avatarText: {
     color: '#047857',

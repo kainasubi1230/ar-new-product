@@ -624,7 +624,13 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
     guard !isFloatingPlacement, let hit = hits.first, let hitPos else {
       // 空中：カメラの真正面に、カメラの方を向けて浮かべる（接地リングは出さない）
       let forward = -SIMD3<Float>(cameraTransform.columns.2.x, cameraTransform.columns.2.y, cameraTransform.columns.2.z)
-      previewAnchor.position = cameraPosition + simd_normalize(forward) * Self.floatingPlacementDistance
+      let targetPos = cameraPosition + simd_normalize(forward) * Self.floatingPlacementDistance
+      if simd_length(previewAnchor.position) < 0.001 || simd_distance(previewAnchor.position, targetPos) > 1.8 {
+        previewAnchor.position = targetPos
+      } else {
+        // スムーズな補間でプレビューの瞬間移動・ジッターを防止
+        previewAnchor.position = simd_mix(previewAnchor.position, targetPos, SIMD3<Float>(repeating: 0.25))
+      }
       reticleEntity?.isEnabled = false
       ghostCardEntity?.position = .zero
       faceGhostCardToCamera(cameraPosition)
@@ -632,7 +638,12 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
     }
 
     reticleEntity?.isEnabled = true
-    previewAnchor.position = hitPos
+    if simd_length(previewAnchor.position) < 0.001 || simd_distance(previewAnchor.position, hitPos) > 1.8 {
+      previewAnchor.position = hitPos
+    } else {
+      // 平面追従時の瞬間移動・急激なジャンプを滑らかに補間
+      previewAnchor.position = simd_mix(previewAnchor.position, hitPos, SIMD3<Float>(repeating: 0.28))
+    }
 
     let normalY = hit.worldTransform.columns.1.y
     let isHorizontal = abs(normalY) > 0.5
@@ -906,14 +917,21 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
     captureSnapshot(anchorId: anchorId)
 
     let anchorEntity = AnchorEntity(anchor: arAnchor)
-    anchorEntity.addChild(makeCardEntity(
+    let cardEntity = makeCardEntity(
       title: currentCardTitle,
       description: currentCardDescription,
       handle: currentCardIcon,
       color: currentCardColor,
       tags: currentCardTags
-    ))
+    )
+    // 瞬間移動感をなくし、その場に吸い付くように実体化させるスムーズなイージング
+    cardEntity.scale = SIMD3<Float>(repeating: 0.92)
+    anchorEntity.addChild(cardEntity)
     arView.scene.addAnchor(anchorEntity)
+    var targetTransform = cardEntity.transform
+    targetTransform.scale = .one
+    cardEntity.move(to: targetTransform, relativeTo: cardEntity.parent, duration: 0.18, timingFunction: .easeOut)
+
     pendingCardAnchors[anchorId] = (arAnchor, anchorEntity)
     placedCardEntities.append(anchorEntity)
 
@@ -1082,14 +1100,45 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
       let avatarPath = UIBezierPath(ovalIn: avatarRect)
       UIColor(red: 52/255.0, green: 211/255.0, blue: 153/255.0, alpha: 0.35).setFill()
       avatarPath.fill()
-      let avatarInitial = String(authorDisplay.prefix(1))
-      let initialAttrs: [NSAttributedString.Key: Any] = [
-        .font: UIFont.systemFont(ofSize: 26, weight: .bold),
-        .foregroundColor: UIColor(red: 5/255.0, green: 150/255.0, blue: 105/255.0, alpha: 1.0)
+
+      let iconColor = UIColor(red: 5/255.0, green: 150/255.0, blue: 105/255.0, alpha: 1.0)
+      var drewIcon = false
+      let cleanIconName = handle.replacingOccurrences(of: "@", with: "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+      let sfMap: [String: String] = [
+        "walking": "figure.walk",
+        "cafe": "cup.and.saucer.fill",
+        "book": "book.closed.fill",
+        "art": "paintpalette.fill",
+        "gourmet": "fork.knife",
+        "herb": "leaf.fill",
+        "history": "clock.arrow.circlepath",
+        "view": "binoculars.fill",
+        "footprints": "shoe.2.fill",
+        "mypage": "person.fill",
+        "person": "person.fill"
       ]
-      let initialSize = (avatarInitial as NSString).size(withAttributes: initialAttrs)
-      let initialRect = CGRect(x: avatarRect.midX - initialSize.width / 2, y: avatarRect.midY - initialSize.height / 2, width: initialSize.width, height: initialSize.height)
-      avatarInitial.draw(in: initialRect, withAttributes: initialAttrs)
+
+      if cleanIconName == "footprints", let footImg = UIImage(named: "Footprints")?.withTintColor(iconColor, renderingMode: .alwaysOriginal) {
+        let pad: CGFloat = 8
+        footImg.draw(in: avatarRect.insetBy(dx: pad, dy: pad))
+        drewIcon = true
+      } else if let sfName = sfMap[cleanIconName] ?? (UIImage(systemName: cleanIconName) != nil ? cleanIconName : nil),
+                let sfImg = UIImage(systemName: sfName)?.withTintColor(iconColor, renderingMode: .alwaysOriginal) {
+        let pad: CGFloat = 8
+        sfImg.draw(in: avatarRect.insetBy(dx: pad, dy: pad))
+        drewIcon = true
+      }
+
+      if !drewIcon {
+        let avatarInitial = String(authorDisplay.prefix(1))
+        let initialAttrs: [NSAttributedString.Key: Any] = [
+          .font: UIFont.systemFont(ofSize: 26, weight: .bold),
+          .foregroundColor: iconColor
+        ]
+        let initialSize = (avatarInitial as NSString).size(withAttributes: initialAttrs)
+        let initialRect = CGRect(x: avatarRect.midX - initialSize.width / 2, y: avatarRect.midY - initialSize.height / 2, width: initialSize.width, height: initialSize.height)
+        avatarInitial.draw(in: initialRect, withAttributes: initialAttrs)
+      }
 
       // 8. Footer: Author Name ("sora")
       let nameAttributes: [NSAttributedString.Key: Any] = [
