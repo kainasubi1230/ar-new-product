@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -11,7 +11,12 @@ import {
   TouchableWithoutFeedback,
   View,
 } from 'react-native';
-import { suggestTagsAndSentiment, SentimentResult } from '../services/tagSuggestionService';
+import {
+  generateTagsLocally,
+  SentimentResult,
+  suggestTagsAndSentiment,
+} from '../services/tagSuggestionService';
+import { normalizeTag } from '../services/interestTagService';
 
 type Props = {
   visible: boolean;
@@ -22,19 +27,68 @@ type Props = {
     category: string;
     sentiment?: SentimentResult;
   }) => void;
+  preferredTags?: string[];
 };
 
 const DEFAULT_INITIAL_MESSAGE = '今日はいい日になりそう ☀️';
 
-export function PostModal({ visible, onClose, onSubmit }: Props): React.JSX.Element {
+export function PostModal({
+  visible,
+  onClose,
+  onSubmit,
+  preferredTags = [],
+}: Props): React.JSX.Element {
   const [message, setMessage] = useState<string>(DEFAULT_INITIAL_MESSAGE);
-  const [suggestedTags, setSuggestedTags] = useState<string[]>(['#日常', '#カフェ', '#街歩き']);
-  const [selectedTags, setSelectedTags] = useState<string[]>(['#日常', '#カフェ']);
+  const [suggestedTags, setSuggestedTags] = useState<string[]>(['#いい天気', '#日常', '#カフェ', '#散歩']);
+  const [selectedTags, setSelectedTags] = useState<string[]>(['#いい天気', '#日常']);
   const [manualTag, setManualTag] = useState<string>('');
   const [isLoadingTags, setIsLoadingTags] = useState<boolean>(false);
   const [sentiment, setSentiment] = useState<SentimentResult | null>(null);
+  const [autoSelectEnabled, setAutoSelectEnabled] = useState<boolean>(true);
 
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const manualAddedTagsRef = useRef<Set<string>>(new Set());
+
+  // モーダルを開いたときに状態を初期化
+  useEffect(() => {
+    if (visible) {
+      manualAddedTagsRef.current.clear();
+      setAutoSelectEnabled(true);
+      const initialLocal = generateTagsLocally(message, preferredTags);
+      setSuggestedTags(initialLocal);
+      setSelectedTags(initialLocal.slice(0, 2));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible]);
+
+  const runTagGeneration = useCallback(
+    async (targetMessage: string, forceAutoSelect = false) => {
+      setIsLoadingTags(true);
+      try {
+        const { tags, sentiment: analyzedSentiment } = await suggestTagsAndSentiment(
+          targetMessage,
+          preferredTags
+        );
+        // 手動で追加したタグがあれば候補リストにも残す
+        const manualList = Array.from(manualAddedTagsRef.current);
+        const mergedSuggestions = Array.from(new Set([...tags, ...manualList])).slice(0, 7);
+
+        setSuggestedTags(mergedSuggestions);
+        setSentiment(analyzedSentiment);
+
+        if (autoSelectEnabled || forceAutoSelect) {
+          const autoPicked = tags.slice(0, 2);
+          const combined = Array.from(new Set([...autoPicked, ...manualList]));
+          setSelectedTags(combined.length > 0 ? combined : tags.slice(0, 1));
+        }
+      } catch (err) {
+        console.error('タグ生成エラー:', err);
+      } finally {
+        setIsLoadingTags(false);
+      }
+    },
+    [autoSelectEnabled, preferredTags]
+  );
 
   // メッセージ入力に伴うタグ自動生成＆センチメント（ポジ/ネガ度）分析
   useEffect(() => {
@@ -44,62 +98,69 @@ export function PostModal({ visible, onClose, onSubmit }: Props): React.JSX.Elem
       clearTimeout(debounceTimerRef.current);
     }
 
+    // 即座にローカル推論で候補をプレビュー反映し、デバウンス後にバックエンド(Edge Function/LLM)も呼ぶ
+    const instantTags = generateTagsLocally(message, preferredTags);
+    const manualList = Array.from(manualAddedTagsRef.current);
+    setSuggestedTags(Array.from(new Set([...instantTags, ...manualList])).slice(0, 7));
+    if (autoSelectEnabled) {
+      setSelectedTags(Array.from(new Set([...instantTags.slice(0, 2), ...manualList])));
+    }
+
     setIsLoadingTags(true);
-
-    debounceTimerRef.current = setTimeout(async () => {
-      try {
-        const { tags, sentiment: analyzedSentiment } = await suggestTagsAndSentiment(message);
-        setSuggestedTags(tags);
-        setSentiment(analyzedSentiment);
-
-        // 初回などでタグが未選択の場合は先頭1〜2個を自動選択
-        setSelectedTags((prev) => {
-          if (prev.length === 0 && tags.length > 0) {
-            return tags.slice(0, 2);
-          }
-          return prev;
-        });
-      } catch (err) {
-        console.error('タグ生成エラー:', err);
-      } finally {
-        setIsLoadingTags(false);
-      }
-    }, 450);
+    debounceTimerRef.current = setTimeout(() => {
+      runTagGeneration(message);
+    }, 380);
 
     return () => {
       if (debounceTimerRef.current) {
         clearTimeout(debounceTimerRef.current);
       }
     };
-  }, [message, visible]);
+  }, [message, visible, preferredTags, autoSelectEnabled, runTagGeneration]);
 
   const toggleTag = (tag: string) => {
+    setAutoSelectEnabled(false);
     if (selectedTags.includes(tag)) {
       setSelectedTags(selectedTags.filter((t) => t !== tag));
+      manualAddedTagsRef.current.delete(tag);
     } else {
       setSelectedTags([...selectedTags, tag]);
     }
   };
 
   const handleAddManualTag = () => {
-    const trimmed = manualTag.trim();
-    if (!trimmed) return;
-    const formatted = trimmed.startsWith('#') ? trimmed : `#${trimmed}`;
+    const formatted = normalizeTag(manualTag);
+    if (!formatted) return;
+    manualAddedTagsRef.current.add(formatted);
+    setAutoSelectEnabled(false);
+
     if (!selectedTags.includes(formatted)) {
-      setSelectedTags([...selectedTags, formatted]);
+      setSelectedTags((prev) => [...prev, formatted]);
     }
-    // 候補リストにもなければ追加
     if (!suggestedTags.includes(formatted)) {
       setSuggestedTags((prev) => [...prev, formatted]);
     }
     setManualTag('');
   };
 
+  const handleRegenerateTags = () => {
+    setAutoSelectEnabled(true);
+    runTagGeneration(message, true);
+  };
+
   const handleSubmit = () => {
+    const finalMessage = message.trim().length > 0 ? message.trim() : DEFAULT_INITIAL_MESSAGE;
+    const finalTags =
+      selectedTags.length > 0
+        ? selectedTags
+        : suggestedTags.length > 0
+          ? suggestedTags.slice(0, 2)
+          : ['#日常'];
+
     onSubmit({
-      message: message.trim().length > 0 ? message : DEFAULT_INITIAL_MESSAGE,
-      tags: selectedTags,
-      category: selectedTags[0] ? selectedTags[0].replace('#', '') : '日常',
+      message: finalMessage,
+      tags: finalTags,
+      category: finalTags[0] ? finalTags[0].replace('#', '') : '日常',
       sentiment: sentiment ?? undefined,
     });
   };
@@ -118,7 +179,10 @@ export function PostModal({ visible, onClose, onSubmit }: Props): React.JSX.Elem
           <View style={styles.sheetContainer}>
             {/* Header */}
             <View style={styles.headerRow}>
-              <TouchableOpacity onPress={onClose} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+              <TouchableOpacity
+                onPress={onClose}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              >
                 <Text style={styles.cancelText}>キャンセル</Text>
               </TouchableOpacity>
 
@@ -140,21 +204,40 @@ export function PostModal({ visible, onClose, onSubmit }: Props): React.JSX.Elem
               />
             </View>
 
+            {/* Sentiment Filter Notice (when negative expression detected) */}
+            {sentiment?.isNegative && (
+              <View style={styles.negativeWarningBox}>
+                <Text style={styles.negativeWarningText}>
+                  🛡️ 強いネガティブ表現が含まれているため、安心フィルター有効時は他のユーザーの空間に表示されません。
+                </Text>
+              </View>
+            )}
+
             {/* AI Tag Suggestion Section */}
             <View style={styles.sectionGroup}>
               <View style={styles.sectionTitleRow}>
                 <Text style={styles.sparkleIcon}>✨</Text>
-                <Text style={styles.sectionTitle}>AIタグ候補</Text>
+                <Text style={styles.sectionTitle}>AI自動タグ候補</Text>
                 {isLoadingTags ? (
                   <View style={styles.loadingContainer}>
                     <ActivityIndicator size="small" color="#10B981" />
-                    <Text style={styles.loadingText}>生成中...</Text>
+                    <Text style={styles.loadingText}>解析中...</Text>
                   </View>
                 ) : (
                   <View style={styles.badgeContainer}>
-                    <Text style={styles.badgeText}>タップで選択</Text>
+                    <Text style={styles.badgeText}>
+                      {autoSelectEnabled ? '自動選択中・タップで調整' : 'タップで選択'}
+                    </Text>
                   </View>
                 )}
+
+                <TouchableOpacity
+                  style={styles.regenerateBtn}
+                  onPress={handleRegenerateTags}
+                  activeOpacity={0.7}
+                >
+                  <Text style={styles.regenerateBtnText}>↻ 自動選択に戻す</Text>
+                </TouchableOpacity>
               </View>
 
               <View style={styles.tagsWrap}>
@@ -176,9 +259,36 @@ export function PostModal({ visible, onClose, onSubmit }: Props): React.JSX.Elem
               </View>
             </View>
 
+            {/* Quick Interest Tags Selection (if any enabled interest tags are not yet in suggestedTags) */}
+            {preferredTags.some((pt) => !suggestedTags.includes(normalizeTag(pt))) && (
+              <View style={styles.sectionGroup}>
+                <Text style={styles.subSectionTitle}>あなたの関心タグから追加</Text>
+                <View style={styles.tagsWrap}>
+                  {preferredTags
+                    .map(normalizeTag)
+                    .filter((pt) => pt && !suggestedTags.includes(pt))
+                    .map((tag) => {
+                      const isSelected = selectedTags.includes(tag);
+                      return (
+                        <TouchableOpacity
+                          key={tag}
+                          style={[styles.tagChip, isSelected && styles.tagChipActive]}
+                          onPress={() => toggleTag(tag)}
+                          activeOpacity={0.7}
+                        >
+                          <Text style={[styles.tagText, isSelected && styles.tagTextActive]}>
+                            {isSelected ? `✓ ${tag}` : `+ ${tag}`}
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                </View>
+              </View>
+            )}
+
             {/* Manual Tag Input */}
             <View style={styles.sectionGroup}>
-              <Text style={styles.sectionTitle}>手動でタグを追加</Text>
+              <Text style={styles.sectionTitle}>手動でタグを追加 ({selectedTags.length}個選択中)</Text>
               <View style={styles.manualInputRow}>
                 <TextInput
                   style={styles.manualInput}
@@ -218,7 +328,7 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-end',
   },
   overlay: {
-    ...StyleSheet.absoluteFill,
+    ...StyleSheet.absoluteFillObject,
     backgroundColor: 'rgba(0, 0, 0, 0.45)',
   },
   keyboardContainer: {
@@ -277,8 +387,8 @@ const styles = StyleSheet.create({
     borderWidth: 1.5,
     borderColor: 'rgba(16, 185, 129, 0.3)',
     padding: 14,
-    minHeight: 90,
-    marginBottom: 18,
+    minHeight: 84,
+    marginBottom: 14,
   },
   messageTextInput: {
     fontSize: 17,
@@ -286,13 +396,28 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     lineHeight: 24,
   },
+  negativeWarningBox: {
+    backgroundColor: '#FEF2F2',
+    borderColor: '#FECACA',
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    marginBottom: 12,
+  },
+  negativeWarningText: {
+    color: '#B91C1C',
+    fontSize: 11,
+    fontWeight: '600',
+    lineHeight: 16,
+  },
   sectionGroup: {
-    marginBottom: 16,
+    marginBottom: 14,
   },
   sectionTitleRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 10,
+    marginBottom: 6,
   },
   sparkleIcon: {
     fontSize: 14,
@@ -302,6 +427,12 @@ const styles = StyleSheet.create({
     color: '#334155',
     fontSize: 13,
     fontWeight: '700',
+  },
+  subSectionTitle: {
+    color: '#64748B',
+    fontSize: 12,
+    fontWeight: '600',
+    marginBottom: 4,
   },
   loadingContainer: {
     flexDirection: 'row',
@@ -328,11 +459,21 @@ const styles = StyleSheet.create({
     color: '#059669',
     fontWeight: '600',
   },
+  regenerateBtn: {
+    marginLeft: 'auto',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+  },
+  regenerateBtnText: {
+    color: '#059669',
+    fontSize: 11,
+    fontWeight: '700',
+  },
   tagsWrap: {
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: 8,
-    marginTop: 8,
+    marginTop: 6,
   },
   tagChip: {
     paddingHorizontal: 14,
@@ -363,17 +504,18 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#E2E8F0',
     paddingHorizontal: 14,
+    marginTop: 6,
   },
   manualInput: {
     flex: 1,
-    height: 44,
+    height: 42,
     fontSize: 14,
     color: '#0F172A',
   },
   addTagBtn: {
     backgroundColor: '#10B981',
-    paddingHorizontal: 10,
-    paddingVertical: 5,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
     borderRadius: 10,
   },
   addTagBtnText: {

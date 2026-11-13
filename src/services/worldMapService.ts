@@ -5,6 +5,9 @@ import { getCurrentLocation, type LocationCoords } from './postService';
 /** この距離以内の投稿の地図を読み込む */
 export const WORLDMAP_RADIUS_M = 30;
 
+/** 探索レーダーで周囲の投稿を検索する半径（メートル） */
+export const RADAR_SEARCH_RADIUS_M = 500;
+
 const METERS_PER_DEGREE_LAT = 111320;
 
 export interface NearbyWorldMapPost {
@@ -12,7 +15,23 @@ export interface NearbyWorldMapPost {
   message: string | null;
   author: string | null;
   handle: string | null;
+  tags: string[] | null;
+  lat: number;
+  lng: number;
   worldmap_path: string;
+  created_at: string;
+  distanceM: number;
+}
+
+export interface NearbyPostItem {
+  id: string | number;
+  message: string | null;
+  author: string | null;
+  handle: string | null;
+  tags: string[] | null;
+  lat: number;
+  lng: number;
+  worldmap_path: string | null;
   created_at: string;
   distanceM: number;
 }
@@ -76,7 +95,7 @@ export const findNearbyWorldMapPosts = async (
 
   const { data, error } = await supabase
     .from('posts')
-    .select('id, message, author, handle, lat, lng, worldmap_path, created_at')
+    .select('id, message, author, handle, tags, lat, lng, worldmap_path, created_at')
     .not('worldmap_path', 'is', null)
     .gte('lat', latitude - latDelta)
     .lte('lat', latitude + latDelta)
@@ -90,8 +109,44 @@ export const findNearbyWorldMapPosts = async (
   return (data ?? [])
     .map((post) => ({
       ...post,
+      tags: Array.isArray(post.tags) ? post.tags : null,
       distanceM: distanceInMeters(latitude, longitude, post.lat, post.lng),
     }))
     .filter((post) => post.distanceM <= WORLDMAP_RADIUS_M)
     .sort((a, b) => b.created_at.localeCompare(a.created_at));
+};
+
+/**
+ * 探索レーダーや周辺検索向けに、指定半径（デフォルト500m）以内の投稿を取得する
+ */
+export const fetchNearbyPosts = async (
+  coords?: LocationCoords | null,
+  radiusM: number = RADAR_SEARCH_RADIUS_M
+): Promise<NearbyPostItem[]> => {
+  const targetCoords = coords ?? (await getCurrentLocation().catch(() => null));
+
+  const query = supabase
+    .from('posts')
+    .select('id, message, author, handle, tags, lat, lng, worldmap_path, created_at')
+    .order('created_at', { ascending: false })
+    .limit(50);
+
+  const { data, error } = await query;
+  if (error || !data) {
+    return [];
+  }
+
+  return data
+    .filter((post) => typeof post.lat === 'number' && typeof post.lng === 'number')
+    .map((post) => {
+      const distanceM = targetCoords
+        ? Math.round(distanceInMeters(targetCoords.latitude, targetCoords.longitude, post.lat, post.lng))
+        : 120;
+      return {
+        ...post,
+        tags: Array.isArray(post.tags) ? post.tags : ['#日常'],
+        distanceM,
+      };
+    })
+    .filter((post) => !targetCoords || post.distanceM <= radiusM);
 };

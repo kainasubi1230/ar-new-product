@@ -22,6 +22,13 @@ import { Icons } from '../assets/icons';
 import { ScreenHeader } from './ScreenHeader';
 import { signInWithEmail, signUpWithEmail } from '../services/authService';
 import { supabase } from '../lib/supabase';
+import {
+  DEFAULT_FILTER_SETTINGS,
+  FilterSettings,
+  filterPostsByCriteria,
+  INTEREST_TAG_PRESETS,
+  normalizeTag,
+} from '../services/interestTagService';
 
 const { width } = Dimensions.get('window');
 
@@ -32,6 +39,7 @@ type PlacedMemory = {
   locationHint: string;
   message: string;
   tag: string;
+  tags: string[];
   placedAt: string;
   readCount: number; // 「誰かが読んだよ 🐾」
   expiresIn: string; // 寿命（公開期限）
@@ -47,6 +55,7 @@ type CollectedWord = {
   handle: string;
   message: string;
   tag: string;
+  tags: string[];
   stampIcon: string;
 };
 
@@ -54,6 +63,7 @@ type CollectedWord = {
 type InterestTag = {
   id: string;
   name: string;
+  tag: string;
   icon: ImageSourcePropType;
   enabled: boolean;
   desc: string;
@@ -64,45 +74,52 @@ type Props = {
   onOpenTagManage: () => void;
   user?: User | null;
   onSignOut?: () => void;
+  interestTags?: string[];
+  onChangeInterestTags?: (tags: string[]) => void;
+  filterSettings?: FilterSettings;
+  onChangeFilterSettings?: (settings: FilterSettings) => void;
 };
 
 // 初期表示用（Supabaseから読み込むため初期値は空）
 const INITIAL_PLACED: PlacedMemory[] = [];
 const INITIAL_COLLECTED: CollectedWord[] = [];
 
-const INITIAL_TAGS: InterestTag[] = [
-  { id: 't1', name: '散歩', icon: Icons.walking, enabled: true, desc: '街歩きや小道、おすすめの休憩スポット' },
-  { id: 't2', name: 'カフェ', icon: Icons.cafe, enabled: true, desc: '落ち着ける席や美味しい珈琲の記録' },
-  { id: 't3', name: '日常', icon: Icons.everyday, enabled: true, desc: '街で見つけた小さな気づきや独り言' },
-  { id: 't4', name: '本', icon: Icons.book, enabled: true, desc: '本と読書、心に残る一節のしおり' },
-  { id: 't5', name: 'グルメ', icon: Icons.gourmet, enabled: false, desc: '路地裏の隠れ家やおすすめの一皿' },
-  { id: 't6', name: '歴史', icon: Icons.history, enabled: false, desc: '街の記憶、昔話、碑の由来' },
-  { id: 't7', name: 'アート', icon: Icons.art, enabled: false, desc: 'ストリートアートやギャラリーの発見' },
-  { id: 't8', name: '自然', icon: Icons.herb, enabled: false, desc: '公園や木漏れ日、季節の移ろいを感じる場所' },
-];
-
 export const getTagIcon = (tag: string): ImageSourcePropType => {
   const normalized = tag.replace('#', '').trim();
   switch (normalized) {
     case '散歩':
+    case '街歩き':
+    case 'お散歩日和':
       return Icons.walking;
     case 'カフェ':
+    case 'カフェ巡り':
+    case 'スイーツ':
       return Icons.cafe;
     case '日常':
+    case '休日':
       return Icons.everyday;
     case '本':
+    case '読書':
       return Icons.book;
     case 'グルメ':
+    case 'ラーメン':
+    case 'ランチ':
+    case 'ディナー':
       return Icons.gourmet;
     case '歴史':
+    case '神社仏閣':
+    case '思い出':
       return Icons.history;
     case 'アート':
+    case '写真':
       return Icons.art;
     case '夜景':
     case '景色':
     case '風景':
+    case '絶景':
       return Icons.view;
     case '自然':
+    case '公園':
     case 'ハーブ':
       return Icons.herb;
     default:
@@ -110,24 +127,68 @@ export const getTagIcon = (tag: string): ImageSourcePropType => {
   }
 };
 
+const buildInterestTagItems = (enabledTags: string[]): InterestTag[] => {
+  const normalizedEnabled = new Set(enabledTags.map(normalizeTag).filter(Boolean));
+  const presetItems: InterestTag[] = INTEREST_TAG_PRESETS.map((p) => ({
+    id: p.id,
+    name: p.name,
+    tag: p.tag,
+    icon: getTagIcon(p.tag),
+    enabled: normalizedEnabled.has(p.tag),
+    desc: p.desc,
+  }));
+
+  const presetTagSet = new Set(INTEREST_TAG_PRESETS.map((p) => p.tag));
+  const customItems: InterestTag[] = Array.from(normalizedEnabled)
+    .filter((t) => !presetTagSet.has(t))
+    .map((t, idx) => ({
+      id: `custom-${idx}-${t}`,
+      name: t.replace(/^#+/, ''),
+      tag: t,
+      icon: getTagIcon(t),
+      enabled: true,
+      desc: 'カスタム追加した関心タグ',
+    }));
+
+  return [...presetItems, ...customItems];
+};
+
 export function MyPageScreen({
-  onOpenARLens,
+  onOpenARLens: _onOpenARLens,
   onOpenTagManage,
   user,
   onSignOut,
+  interestTags: propInterestTags,
+  onChangeInterestTags,
+  filterSettings: propFilterSettings,
+  onChangeFilterSettings,
 }: Props): React.JSX.Element {
   const [activeTab, setActiveTab] = useState<'placed' | 'collected' | 'tags'>('placed');
   const [placedViewMode, setPlacedViewMode] = useState<'list' | 'map'>('list');
+  const [placedFilterTag, setPlacedFilterTag] = useState<string>('ALL');
 
   // データ状態
   const [placedList, setPlacedList] = useState<PlacedMemory[]>(INITIAL_PLACED);
-  const [collectedList] = useState<CollectedWord[]>(INITIAL_COLLECTED);
-  const [tags, setTags] = useState<InterestTag[]>(INITIAL_TAGS);
+  const [collectedList, setCollectedList] = useState<CollectedWord[]>(INITIAL_COLLECTED);
+  const [localEnabledTags, setLocalEnabledTags] = useState<string[]>([
+    '#散歩',
+    '#カフェ',
+    '#日常',
+    '#本',
+  ]);
+  const [localFilterSettings, setLocalFilterSettings] =
+    useState<FilterSettings>(DEFAULT_FILTER_SETTINGS);
   const [selectedMapPin, setSelectedMapPin] = useState<PlacedMemory | null>(null);
-  const [isPocketNoticeOn, setIsPocketNoticeOn] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
 
-  // Supabaseから自分の投稿を取得する
+  const effectiveEnabledTags = propInterestTags ?? localEnabledTags;
+  const effectiveSettings = propFilterSettings ?? localFilterSettings;
+  const tags = React.useMemo(
+    () => buildInterestTagItems(effectiveEnabledTags),
+    [effectiveEnabledTags]
+  );
+
+  // Supabaseから自分の投稿と周囲の投稿を取得する
   const fetchPosts = useCallback(async () => {
     if (!user) return;
     try {
@@ -141,9 +202,12 @@ export function MyPageScreen({
 
       if (error) throw error;
 
-      // ユーザー自身の投稿（または開発テスト用として全体）
-      const myPosts = (data || []).filter(
+      const allRows = data || [];
+
+      // ユーザー自身の投稿
+      const myPosts = allRows.filter(
         (p) =>
+          p.user_id === user.id ||
           p.author === displayName ||
           p.handle === userHandle ||
           p.author === 'sora' ||
@@ -151,25 +215,55 @@ export function MyPageScreen({
           !p.author
       );
 
-      const formatted: PlacedMemory[] = myPosts.map((p, idx) => ({
-        id: p.id,
-        placeName: `位置 (${p.lat?.toFixed(3)}, ${p.lng?.toFixed(3)})`,
-        locationHint: `GPS精度: 約${Math.round(p.accuracy_m || 10)}m`,
-        message: p.message,
-        tag: p.tags?.[0] || '#日常',
-        placedAt: new Date(p.created_at).toLocaleDateString('ja-JP'),
-        readCount: 0,
-        expiresIn: '無期限',
-        mapCoord: {
-          xPercent: 50 + (((idx * 17) % 60) - 30),
-          yPercent: 50 + (((idx * 23) % 60) - 30),
-        },
-      }));
+      const formatted: PlacedMemory[] = myPosts.map((p, idx) => {
+        const postTags =
+          Array.isArray(p.tags) && p.tags.length > 0
+            ? p.tags.map(normalizeTag).filter(Boolean)
+            : ['#日常'];
+        return {
+          id: String(p.id),
+          placeName: `位置 (${p.lat?.toFixed(3)}, ${p.lng?.toFixed(3)})`,
+          locationHint: `GPS精度: 約${Math.round(p.accuracy_m || 10)}m`,
+          message: p.message ?? '',
+          tag: postTags[0] || '#日常',
+          tags: postTags,
+          placedAt: new Date(p.created_at).toLocaleDateString('ja-JP'),
+          readCount: 0,
+          expiresIn: '無期限',
+          mapCoord: {
+            xPercent: 50 + (((idx * 17) % 60) - 30),
+            yPercent: 50 + (((idx * 23) % 60) - 30),
+          },
+        };
+      });
 
       setPlacedList(formatted);
       if (formatted.length > 0) {
         setSelectedMapPin((prev) => prev ?? formatted[0]);
       }
+
+      // 他のユーザーの投稿を「拾った言葉」として表示
+      const otherPosts = allRows.filter(
+        (p) => p.user_id && p.user_id !== user.id && p.author !== displayName
+      );
+      const formattedCollected: CollectedWord[] = otherPosts.slice(0, 20).map((p) => {
+        const postTags =
+          Array.isArray(p.tags) && p.tags.length > 0
+            ? p.tags.map(normalizeTag).filter(Boolean)
+            : ['#日常'];
+        return {
+          id: String(p.id),
+          collectedAt: new Date(p.created_at).toLocaleDateString('ja-JP'),
+          placeName: `位置 (${p.lat?.toFixed(3)}, ${p.lng?.toFixed(3)})`,
+          author: p.author || 'guest',
+          handle: p.handle || '@guest',
+          message: p.message ?? '',
+          tag: postTags[0] || '#日常',
+          tags: postTags,
+          stampIcon: 'herb',
+        };
+      });
+      setCollectedList(formattedCollected);
     } catch (e) {
       console.warn('投稿取得エラー:', e);
     }
@@ -224,12 +318,78 @@ export function MyPageScreen({
     );
   };
 
-  // 3. タグ切り替え
-  const handleToggleTag = (tagId: string) => {
-    setTags((prev) =>
-      prev.map((t) => (t.id === tagId ? { ...t, enabled: !t.enabled } : t))
-    );
+  // 3. タグ切り替え（グローバルな関心タグと同期）
+  const handleToggleTag = (tagItem: InterestTag) => {
+    const norm = normalizeTag(tagItem.tag);
+    const currentSet = new Set(effectiveEnabledTags.map(normalizeTag));
+    if (currentSet.has(norm)) {
+      currentSet.delete(norm);
+    } else {
+      currentSet.add(norm);
+    }
+    const nextTags = Array.from(currentSet);
+    if (onChangeInterestTags) {
+      onChangeInterestTags(nextTags);
+    } else {
+      setLocalEnabledTags(nextTags);
+    }
   };
+
+  const handleTogglePocketNotice = (val: boolean) => {
+    const nextSettings: FilterSettings = {
+      ...effectiveSettings,
+      isPocketNoticeOn: val,
+    };
+    if (onChangeFilterSettings) {
+      onChangeFilterSettings(nextSettings);
+    } else {
+      setLocalFilterSettings(nextSettings);
+    }
+  };
+
+  const handleToggleOnlyInterestTags = (val: boolean) => {
+    const nextSettings: FilterSettings = {
+      ...effectiveSettings,
+      onlyInterestTags: val,
+    };
+    if (onChangeFilterSettings) {
+      onChangeFilterSettings(nextSettings);
+    } else {
+      setLocalFilterSettings(nextSettings);
+    }
+  };
+
+  const handleToggleHideNegative = (val: boolean) => {
+    const nextSettings: FilterSettings = {
+      ...effectiveSettings,
+      hideNegativePosts: val,
+    };
+    if (onChangeFilterSettings) {
+      onChangeFilterSettings(nextSettings);
+    } else {
+      setLocalFilterSettings(nextSettings);
+    }
+  };
+
+  // 残した言葉のタグ一覧とフィルタリング済みリスト
+  const placedAvailableTags = React.useMemo(() => {
+    const set = new Set<string>();
+    for (const item of placedList) {
+      for (const t of item.tags) {
+        set.add(normalizeTag(t));
+      }
+    }
+    return Array.from(set).filter(Boolean);
+  }, [placedList]);
+
+  const filteredPlacedList = React.useMemo(() => {
+    return filterPostsByCriteria(placedList, {
+      activeFilterTag: placedFilterTag,
+      interestTags: effectiveEnabledTags,
+      onlyInterestTags: false,
+      hideNegativePosts: false,
+    });
+  }, [placedList, placedFilterTag, effectiveEnabledTags]);
 
   // 未ログイン時の認証フォーム用ステート
   const [authMode, setAuthMode] = useState<'signin' | 'signup'>('signin');
@@ -546,10 +706,58 @@ export function MyPageScreen({
               </View>
             </View>
 
+            {/* Tag Filter Chips for Placed Memories */}
+            {placedAvailableTags.length > 0 && (
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                style={{ marginBottom: 12 }}
+                contentContainerStyle={{ gap: 8 }}
+              >
+                <TouchableOpacity
+                  style={[
+                    styles.modeToggleBtn,
+                    placedFilterTag === 'ALL' && styles.modeToggleBtnActive,
+                    { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 14 },
+                  ]}
+                  onPress={() => setPlacedFilterTag('ALL')}
+                >
+                  <Text
+                    style={[
+                      styles.modeToggleText,
+                      placedFilterTag === 'ALL' && styles.modeToggleTextActive,
+                    ]}
+                  >
+                    すべて ({placedList.length})
+                  </Text>
+                </TouchableOpacity>
+                {placedAvailableTags.map((t) => (
+                  <TouchableOpacity
+                    key={t}
+                    style={[
+                      styles.modeToggleBtn,
+                      placedFilterTag === t && styles.modeToggleBtnActive,
+                      { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 14 },
+                    ]}
+                    onPress={() => setPlacedFilterTag(placedFilterTag === t ? 'ALL' : t)}
+                  >
+                    <Text
+                      style={[
+                        styles.modeToggleText,
+                        placedFilterTag === t && styles.modeToggleTextActive,
+                      ]}
+                    >
+                      {t}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            )}
+
             {/* List Mode */}
             {placedViewMode === 'list' && (
               <View style={styles.cardListContainer}>
-                {placedList.map((item) => (
+                {filteredPlacedList.map((item) => (
                   <View key={item.id} style={styles.placedCard}>
                     {/* Top Row: Place & Expiry */}
                     <View style={styles.cardHeaderRow}>
@@ -583,11 +791,15 @@ export function MyPageScreen({
                     {/* Message Body */}
                     <Text style={styles.memoryMessageText}>{item.message}</Text>
 
-                    {/* Footer Row: Tag, Warm Read Footprint, Delete Action */}
+                    {/* Footer Row: Tags, Warm Read Footprint, Delete Action */}
                     <View style={styles.memoryFooterRow}>
-                      <View style={styles.memoryTagPill}>
-                        <Image source={getTagIcon(item.tag)} style={styles.memoryTagIcon} resizeMode="contain" />
-                        <Text style={styles.memoryTagText}>{item.tag}</Text>
+                      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 4, flex: 1, marginRight: 6 }}>
+                        {item.tags.map((t) => (
+                          <View key={t} style={styles.memoryTagPill}>
+                            <Image source={getTagIcon(t)} style={styles.memoryTagIcon} resizeMode="contain" />
+                            <Text style={styles.memoryTagText}>{t}</Text>
+                          </View>
+                        ))}
                       </View>
 
                       {/* 温かい足跡メーター（承認欲求ではなく「誰かが読んだよ」） */}
@@ -608,7 +820,7 @@ export function MyPageScreen({
                   </View>
                 ))}
 
-                {placedList.length === 0 && (
+                {filteredPlacedList.length === 0 && (
                   <View style={styles.emptyStateBox}>
                     <Image source={Icons.footprints} style={styles.emptyFootprintsIcon} resizeMode="contain" />
                     <Text style={styles.emptyStateText}>まだ街に残した言葉がありません</Text>
@@ -765,36 +977,103 @@ export function MyPageScreen({
         {activeTab === 'tags' && (
           <View style={styles.tabSection}>
             {/* Master Notification Switch */}
-            <View style={[styles.pocketNoticeCard, !isPocketNoticeOn && styles.pocketNoticeCardOff]}>
-              <View style={[styles.pocketNoticeIconCircle, !isPocketNoticeOn && styles.pocketNoticeIconCircleOff]}>
+            <View
+              style={[
+                styles.pocketNoticeCard,
+                !effectiveSettings.isPocketNoticeOn && styles.pocketNoticeCardOff,
+              ]}
+            >
+              <View
+                style={[
+                  styles.pocketNoticeIconCircle,
+                  !effectiveSettings.isPocketNoticeOn && styles.pocketNoticeIconCircleOff,
+                ]}
+              >
                 <Image
                   source={Icons.herb}
-                  style={[styles.pocketNoticeHerb, !isPocketNoticeOn && styles.pocketNoticeHerbOff]}
+                  style={[
+                    styles.pocketNoticeHerb,
+                    !effectiveSettings.isPocketNoticeOn && styles.pocketNoticeHerbOff,
+                  ]}
                   resizeMode="contain"
                 />
               </View>
               <View style={{ flex: 1, marginRight: 10 }}>
-                <Text style={[styles.pocketNoticeTitle, !isPocketNoticeOn && styles.pocketNoticeTitleOff]}>
+                <Text
+                  style={[
+                    styles.pocketNoticeTitle,
+                    !effectiveSettings.isPocketNoticeOn && styles.pocketNoticeTitleOff,
+                  ]}
+                >
                   ポケット通知
                 </Text>
-                <Text style={[styles.pocketNoticeDesc, !isPocketNoticeOn && styles.pocketNoticeDescOff]}>
-                  {isPocketNoticeOn
+                <Text
+                  style={[
+                    styles.pocketNoticeDesc,
+                    !effectiveSettings.isPocketNoticeOn && styles.pocketNoticeDescOff,
+                  ]}
+                >
+                  {effectiveSettings.isPocketNoticeOn
                     ? '関心タグに設定した言葉が近くにある時だけ、通知が届きます。'
                     : 'ポケット通知はオフです。近くに言葉があっても通知されません。'}
                 </Text>
               </View>
               <Switch
-                value={isPocketNoticeOn}
-                onValueChange={setIsPocketNoticeOn}
+                value={effectiveSettings.isPocketNoticeOn}
+                onValueChange={handleTogglePocketNotice}
                 trackColor={{ false: '#CBD5E1', true: '#10B981' }}
                 ios_backgroundColor="#CBD5E1"
                 thumbColor="#FFFFFF"
               />
             </View>
 
-            <Text style={styles.subSectionTitle}>
-              空間で見たいジャンル（今はこの気分）
-            </Text>
+            {/* Quick Spatial Filter Switches */}
+            <View style={[styles.pocketNoticeCard, { backgroundColor: '#FFFFFF', borderColor: '#E2E8F0' }]}>
+              <View style={{ flex: 1, marginRight: 10 }}>
+                <Text style={[styles.pocketNoticeTitle, { color: '#0F172A' }]}>
+                  関心タグのみを空間に表示
+                </Text>
+                <Text style={[styles.pocketNoticeDesc, { color: '#64748B' }]}>
+                  ARカメラ・レーダーで関心タグ（および関連ジャンル）に一致する言葉だけに絞り込みます。
+                </Text>
+              </View>
+              <Switch
+                value={effectiveSettings.onlyInterestTags}
+                onValueChange={handleToggleOnlyInterestTags}
+                trackColor={{ false: '#CBD5E1', true: '#10B981' }}
+                ios_backgroundColor="#CBD5E1"
+                thumbColor="#FFFFFF"
+              />
+            </View>
+
+            <View style={[styles.pocketNoticeCard, { backgroundColor: '#FFFFFF', borderColor: '#E2E8F0' }]}>
+              <View style={{ flex: 1, marginRight: 10 }}>
+                <Text style={[styles.pocketNoticeTitle, { color: '#0F172A' }]}>
+                  安心フィルター（ネガティブ非表示）
+                </Text>
+                <Text style={[styles.pocketNoticeDesc, { color: '#64748B' }]}>
+                  AI感情分析により、強いネガティブ表現を含む投稿を空間から自動的に非表示にします。
+                </Text>
+              </View>
+              <Switch
+                value={effectiveSettings.hideNegativePosts}
+                onValueChange={handleToggleHideNegative}
+                trackColor={{ false: '#CBD5E1', true: '#10B981' }}
+                ios_backgroundColor="#CBD5E1"
+                thumbColor="#FFFFFF"
+              />
+            </View>
+
+            <View style={styles.subHeaderRow}>
+              <Text style={styles.subSectionTitle}>
+                空間で見たいジャンル（今はこの気分）
+              </Text>
+              <TouchableOpacity onPress={onOpenTagManage} activeOpacity={0.7}>
+                <Text style={{ color: '#059669', fontSize: 12, fontWeight: '700' }}>
+                  ＋ タグを追加・編集
+                </Text>
+              </TouchableOpacity>
+            </View>
             <Text style={styles.tagsGuideSub}>
               タグをタップしてON/OFFを切り替えます。選んだタグの言葉がAR空間に浮かび上がり、レーダーに反応します。
             </Text>
@@ -805,7 +1084,7 @@ export function MyPageScreen({
                 <TouchableOpacity
                   key={tag.id}
                   style={[styles.tagToggleCard, tag.enabled && styles.tagToggleCardActive]}
-                  onPress={() => handleToggleTag(tag.id)}
+                  onPress={() => handleToggleTag(tag)}
                   activeOpacity={0.8}
                 >
                   <View style={styles.tagCardTopRow}>

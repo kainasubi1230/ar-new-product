@@ -37,6 +37,16 @@ import {
   updatePostWorldMapPath,
 } from './src/services/worldMapService';
 import { supabase } from './src/lib/supabase';
+import {
+  DEFAULT_FILTER_SETTINGS,
+  FilterSettings,
+  filterPostsByCriteria,
+  loadFilterSettings,
+  loadInterestTags,
+  normalizeTag,
+  saveFilterSettings,
+  saveInterestTags,
+} from './src/services/interestTagService';
 
 type TabType = 'home' | 'radar' | 'notifications' | 'mypage';
 
@@ -48,6 +58,11 @@ export default function App(): React.JSX.Element {
   const [activeTab, setActiveTab] = useState<TabType>('home');
   const [isPostModalVisible, setIsPostModalVisible] = useState<boolean>(false);
   const [isTagModalVisible, setIsTagModalVisible] = useState<boolean>(false);
+
+  // 関心タグとフィルター設定
+  const [interestTags, setInterestTags] = useState<string[]>(['#散歩', '#カフェ', '#日常', '#本']);
+  const [filterSettings, setFilterSettings] = useState<FilterSettings>(DEFAULT_FILTER_SETTINGS);
+  const [activeFilterTag, setActiveFilterTag] = useState<string | null>(null);
 
   // Auth User
   const [user, setUser] = useState<User | null>(null);
@@ -92,6 +107,14 @@ export default function App(): React.JSX.Element {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((_event, session) => {
       setUser(session?.user ?? null);
+    });
+
+    // 関心タグとフィルター設定の永続ストレージからの復元
+    loadInterestTags().then((tags) => {
+      if (tags && tags.length > 0) setInterestTags(tags);
+    });
+    loadFilterSettings().then((settings) => {
+      if (settings) setFilterSettings(settings);
     });
 
     return () => {
@@ -157,8 +180,18 @@ export default function App(): React.JSX.Element {
     (async () => {
       try {
         const posts = await findNearbyWorldMapPosts(currentCoords);
+        // 関心タグや安心フィルター（ネガティブ投稿非表示）を適用してAR空間に表示するカードを選定
+        const visiblePosts = filterPostsByCriteria(posts, {
+          activeFilterTag,
+          interestTags,
+          onlyInterestTags: filterSettings.onlyInterestTags,
+          hideNegativePosts: filterSettings.hideNegativePosts,
+        });
+
         // 新しい地図ほど多くのカードが入っている。ただし今のセッションで自分が置いた投稿の地図は選ばない
-        const mapPost = posts.find((post) => !ownPostIdsRef.current.has(String(post.id)));
+        const mapPost = (visiblePosts.length > 0 ? visiblePosts : posts).find(
+          (post) => !ownPostIdsRef.current.has(String(post.id))
+        );
         if (cancelled || !mapPost) return;
         // いま読み込んでいる地図の範囲内なら何もしない（読み直すと出ているカードが消える）
         const current = relocalizeTargetRef.current;
@@ -171,7 +204,7 @@ export default function App(): React.JSX.Element {
         setRelocalizeTarget({
           postId: String(mapPost.id),
           worldMapPath: mapPost.worldmap_path,
-          cards: posts.map((post) => ({
+          cards: visiblePosts.map((post) => ({
             postId: String(post.id),
             cardTitle: post.author ?? 'guest',
             cardDescription: post.message ?? '',
@@ -427,7 +460,18 @@ export default function App(): React.JSX.Element {
         {activeTab === 'radar' && (
           <DiscoveryRadarScreen
             onBack={() => setActiveTab('home')}
-            onStartNavigation={() => setActiveTab('home')}
+            onStartNavigation={(tag) => {
+              if (tag) {
+                setSelectedTag(normalizeTag(tag));
+                setActiveFilterTag(normalizeTag(tag));
+              }
+              setActiveTab('home');
+            }}
+            interestTags={interestTags}
+            filterSettings={filterSettings}
+            activeFilterTag={activeFilterTag}
+            onSelectFilterTag={(tag) => setActiveFilterTag(tag)}
+            onOpenTagManage={() => setIsTagModalVisible(true)}
           />
         )}
 
@@ -435,9 +479,14 @@ export default function App(): React.JSX.Element {
         {activeTab === 'notifications' && (
           <NotificationScreen
             onOpenARWithTag={(tag) => {
-              setSelectedTag(tag);
+              const norm = normalizeTag(tag);
+              setSelectedTag(norm);
+              setActiveFilterTag(norm);
               setActiveTab('home');
             }}
+            interestTags={interestTags}
+            filterSettings={filterSettings}
+            onOpenTagManage={() => setIsTagModalVisible(true)}
           />
         )}
 
@@ -450,6 +499,16 @@ export default function App(): React.JSX.Element {
             onSignOut={async () => {
               await signOut();
               showToast('ログアウトしました');
+            }}
+            interestTags={interestTags}
+            onChangeInterestTags={(newTags) => {
+              setInterestTags(newTags);
+              saveInterestTags(newTags);
+            }}
+            filterSettings={filterSettings}
+            onChangeFilterSettings={(newSettings) => {
+              setFilterSettings(newSettings);
+              saveFilterSettings(newSettings);
             }}
           />
         )}
@@ -536,14 +595,24 @@ export default function App(): React.JSX.Element {
         visible={isPostModalVisible}
         onClose={() => setIsPostModalVisible(false)}
         onSubmit={handlePostSubmit}
+        preferredTags={interestTags}
       />
 
       {/* Tag Management Modal (Tag filter / Calm settings) */}
       <TagManageModal
         visible={isTagModalVisible}
         onClose={() => setIsTagModalVisible(false)}
-        onSave={(tags) => {
+        initialTags={interestTags}
+        initialSettings={filterSettings}
+        onSave={(tags, newSettings) => {
+          setInterestTags(tags);
+          saveInterestTags(tags);
+          if (newSettings) {
+            setFilterSettings(newSettings);
+            saveFilterSettings(newSettings);
+          }
           if (tags[0]) setSelectedTag(tags[0]);
+          showToast('🏷️ 関心タグとフィルター設定を更新しました');
         }}
       />
     </SafeAreaView>
