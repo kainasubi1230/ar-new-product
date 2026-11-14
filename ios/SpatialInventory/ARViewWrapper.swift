@@ -260,6 +260,9 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
   private var relocalization: RelocalizationTarget?
   // initialWorldMap 付きでセッションを走らせているか
   private var isRunningWithWorldMap = false
+  // WorldMapのアンカーが現実世界の景色と照合されたか（未照合のまま今いる場所に出すのを防止）
+  private var hasRelocalizedToWorldMap = false
+  private var didObserveRelocalizingState = false
 
   private struct MapGrowth {
     let mapPostId: String
@@ -1668,6 +1671,8 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
     config.initialWorldMap = worldMap
     arView.session.run(config, options: [.resetTracking, .removeExistingAnchors])
     isRunningWithWorldMap = true
+    hasRelocalizedToWorldMap = false
+    didObserveRelocalizingState = false
 
     debugRelocalizationStartedAt = Date()
     debugLoadedMapPostId = postId
@@ -1681,9 +1686,10 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
     DispatchQueue.main.asyncAfter(deadline: .now() + Self.relocalizationTimeout) { [weak self] in
       guard let self, self.isRunningWithWorldMap,
             let target = self.relocalization, target.postId == postId, !target.didFindAnchor else { return }
-      if case .normal = self.arView.session.currentFrame?.camera.trackingState { return }
       self.relocalization = nil
       self.isRunningWithWorldMap = false
+      self.hasRelocalizedToWorldMap = false
+      self.didObserveRelocalizingState = false
       self.mapGrowth = nil
       self.preciseCardPostIds.removeAll()
       self.northOffset = nil
@@ -1699,6 +1705,8 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
     // 再位置合わせ待ちのままだと座標系が後でずれるので、地図なしのセッションに戻す
     if isRunningWithWorldMap {
       isRunningWithWorldMap = false
+      hasRelocalizedToWorldMap = false
+      didObserveRelocalizingState = false
       mapGrowth = nil
       preciseCardPostIds.removeAll()
       northOffset = nil
@@ -1709,8 +1717,10 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
   }
 
   // 地図に入っていた名前付きアンカーがここに届く。
-  // ただし地図付きセッションでは、位置合わせが終わる（trackingState が normal になる）までアンカーの位置は当てにならない。
-  // その前に届いたアンカーは取っておき、normal になってからカードにする（正確なふりをして出さない）
+  // 注意: initialWorldMap 付きセッション開始時に届くアンカーは、過去のセッションの原点からの相対座標のままであり、
+  // 現実世界の景色と照合（リロカリゼーション）が完了するまで今いる空間の位置とは一致しない。
+  // 照合前にカードを画面に出すと「以前の投稿が今いる場所に突然現れる」バグの原因になるため、
+  // 照合完了（didUpdate通知または.relocalizing経由の正常復帰）までは絶対に実体化せず保留する。
   func session(_ session: ARSession, didAdd anchors: [ARAnchor]) {
     let postAnchors = anchors.filter { $0.name?.hasPrefix("post:") == true }
     if isRunningWithWorldMap {
@@ -1720,11 +1730,34 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
     }
     guard relocalization != nil, !postAnchors.isEmpty else { return }
 
-    if isRunningWithWorldMap, !Self.isNormal(session.currentFrame?.camera.trackingState) {
-      pendingRelocalizedAnchors.append(contentsOf: postAnchors)
-      return
+    if isRunningWithWorldMap {
+      // 照合が未完了の場合は保留リストに入れ、この時点では一切実体化しない
+      if !hasRelocalizedToWorldMap {
+        pendingRelocalizedAnchors.append(contentsOf: postAnchors)
+        return
+      }
     }
     presentRelocalizedAnchors(postAnchors)
+  }
+
+  // ARKitがWorldMapとの照合（リロカリゼーション）に成功したとき、アンカーの座標が現実世界に合わせて更新される。
+  // この通知こそが、アンカーが現在の空間に正しく位置づけられた確実な証拠。
+  func session(_ session: ARSession, didUpdate anchors: [ARAnchor]) {
+    guard isRunningWithWorldMap, relocalization != nil else { return }
+    let postAnchors = anchors.filter { $0.name?.hasPrefix("post:") == true }
+    guard !postAnchors.isEmpty else { return }
+
+    // 照合完了！
+    hasRelocalizedToWorldMap = true
+    var anchorsToPresent = postAnchors
+    if !pendingRelocalizedAnchors.isEmpty {
+      let pendingIds = Set(pendingRelocalizedAnchors.compactMap(\.identifier))
+      let sessionAnchors = session.currentFrame?.anchors ?? []
+      let updatedPending = sessionAnchors.filter { pendingIds.contains($0.identifier) }
+      anchorsToPresent.append(contentsOf: updatedPending)
+      pendingRelocalizedAnchors.removeAll()
+    }
+    presentRelocalizedAnchors(anchorsToPresent)
   }
 
   // 地図に入っている post: アンカーの投稿 ID
@@ -1743,6 +1776,8 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
   // 同じ起動中に置いた投稿は後の地図にもまとめて入っているので、知っている投稿のアンカーはすべてカードにする
   private func presentRelocalizedAnchors(_ anchors: [ARAnchor]) {
     guard var target = relocalization else { return }
+    // 照合成功前にはカードを絶対に出さない（未照合アンカーが今いる場所に出現するバグを徹底防止）
+    guard hasRelocalizedToWorldMap else { return }
     let sessionAnchors = arView.session.currentFrame?.anchors ?? []
     for stored in anchors {
       // 取っておいた間に位置合わせで位置が直っているので、セッションの最新のアンカーを使う
@@ -1783,14 +1818,21 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
 
   // 位置合わせ自体はできたのにカードのアンカーが来ない場合を知らせる（原因の切り分け用）
   func session(_ session: ARSession, cameraDidChangeTrackingState camera: ARCamera) {
-    if isRunningWithWorldMap, case .normal = camera.trackingState, debugTrackingNormalAt == nil {
-      debugTrackingNormalAt = Date()
-    }
-    // 位置合わせが終わったので、取っておいたアンカーをカードにする（found と地図を育てる処理もここから始まる）
-    if isRunningWithWorldMap, case .normal = camera.trackingState, !pendingRelocalizedAnchors.isEmpty {
-      let pending = pendingRelocalizedAnchors
-      pendingRelocalizedAnchors.removeAll()
-      presentRelocalizedAnchors(pending)
+    if isRunningWithWorldMap {
+      if case .limited(let reason) = camera.trackingState, reason == .relocalizing {
+        didObserveRelocalizingState = true
+      }
+      if case .normal = camera.trackingState, debugTrackingNormalAt == nil {
+        debugTrackingNormalAt = Date()
+      }
+
+      // .relocalizing を経て .normal に復帰した場合、ARKit のリロカリゼーションが完了したと判定
+      if case .normal = camera.trackingState, didObserveRelocalizingState, !pendingRelocalizedAnchors.isEmpty {
+        hasRelocalizedToWorldMap = true
+        let pending = pendingRelocalizedAnchors
+        pendingRelocalizedAnchors.removeAll()
+        presentRelocalizedAnchors(pending)
+      }
     }
     guard isRunningWithWorldMap, case .normal = camera.trackingState,
           let target = relocalization, !target.didReportRelocalized else { return }
