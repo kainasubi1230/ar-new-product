@@ -7,6 +7,7 @@ import {
   Image,
   ImageSourcePropType,
   KeyboardAvoidingView,
+  Modal,
   Platform,
   RefreshControl,
   ScrollView,
@@ -605,9 +606,6 @@ export function MyPageScreen({
             </View>
           </TouchableOpacity>
           <Text style={styles.userName}>{displayName}</Text>
-          <TouchableOpacity onPress={() => setIsAvatarModalVisible(true)} activeOpacity={0.6}>
-            <Text style={styles.changeAvatarHintText}>アイコンを変更 ↗</Text>
-          </TouchableOpacity>
           <Text style={styles.userBio}>{user.email}</Text>
 
           {/* Footprint Count Summary */}
@@ -768,7 +766,7 @@ export function MyPageScreen({
             <View style={[styles.filterToggleCard, isPocketNoticeOn && styles.filterToggleCardOn]}>
               <View style={[styles.filterToggleIconBox, isPocketNoticeOn && styles.filterToggleIconBoxOn]}>
                 <Image
-                  source={Icons.herb}
+                  source={Icons.notice}
                   style={[styles.filterToggleIcon, isPocketNoticeOn && styles.filterToggleIconOn]}
                   resizeMode="contain"
                 />
@@ -778,11 +776,6 @@ export function MyPageScreen({
                   <Text style={[styles.filterToggleTitle, isPocketNoticeOn && styles.filterToggleTitleOn]}>
                     ポケット通知
                   </Text>
-                  <View style={[styles.statusBadge, isPocketNoticeOn ? styles.statusBadgeOn : styles.statusBadgeOff]}>
-                    <Text style={[styles.statusBadgeText, isPocketNoticeOn ? styles.statusBadgeTextOn : styles.statusBadgeTextOff]}>
-                      {isPocketNoticeOn ? 'ON' : 'OFF'}
-                    </Text>
-                  </View>
                 </View>
                 <Text style={styles.filterToggleDesc}>
                   関心タグに設定した言葉が近くにある時だけ、通知が届きます。
@@ -811,11 +804,6 @@ export function MyPageScreen({
                   <Text style={[styles.filterToggleTitle, onlyInterestTags && styles.filterToggleTitleOn]}>
                     関心タグの言葉だけ表示
                   </Text>
-                  <View style={[styles.statusBadge, onlyInterestTags ? styles.statusBadgeOn : styles.statusBadgeOff]}>
-                    <Text style={[styles.statusBadgeText, onlyInterestTags ? styles.statusBadgeTextOn : styles.statusBadgeTextOff]}>
-                      {onlyInterestTags ? 'ON' : 'OFF'}
-                    </Text>
-                  </View>
                 </View>
                 <Text style={styles.filterToggleDesc}>
                   ARカメラと地図に、関心タグ（と近いジャンル）の言葉だけを出します。
@@ -834,7 +822,7 @@ export function MyPageScreen({
             <View style={[styles.filterToggleCard, hideNegativePosts && styles.filterToggleCardOn]}>
               <View style={[styles.filterToggleIconBox, hideNegativePosts && styles.filterToggleIconBoxOn]}>
                 <Image
-                  source={Icons.aplicalm}
+                  source={Icons.herb}
                   style={[styles.filterToggleIcon, hideNegativePosts && styles.filterToggleIconOn]}
                   resizeMode="contain"
                 />
@@ -844,11 +832,6 @@ export function MyPageScreen({
                   <Text style={[styles.filterToggleTitle, hideNegativePosts && styles.filterToggleTitleOn]}>
                     安心フィルター
                   </Text>
-                  <View style={[styles.statusBadge, hideNegativePosts ? styles.statusBadgeOn : styles.statusBadgeOff]}>
-                    <Text style={[styles.statusBadgeText, hideNegativePosts ? styles.statusBadgeTextOn : styles.statusBadgeTextOff]}>
-                      {hideNegativePosts ? 'ON' : 'OFF'}
-                    </Text>
-                  </View>
                 </View>
                 <Text style={styles.filterToggleDesc}>
                   ネガティブな表現や、見たくない除外タグの言葉をARと地図に出しません。
@@ -866,7 +849,10 @@ export function MyPageScreen({
             {/* 安心フィルターの除外タグカスタマイズ（安心フィルターがONのとき表示） */}
             {hideNegativePosts && (
               <View style={styles.mutedConfigCard}>
-                <Text style={styles.mutedConfigTitle}>🛡️ 見たくない言葉・除外タグの選択</Text>
+                <View style={styles.mutedConfigTitleRow}>
+                  <Image source={Icons.herb} style={styles.mutedConfigTitleIcon} resizeMode="contain" />
+                  <Text style={styles.mutedConfigTitle}>見たくない言葉・除外タグの選択</Text>
+                </View>
                 <Text style={styles.mutedConfigSub}>
                   選択したタグを含む言葉は、空間に表示されなくなります。
                 </Text>
@@ -1103,12 +1089,6 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     marginBottom: 2,
   },
-  changeAvatarHintText: {
-    color: '#059669',
-    fontSize: 12,
-    fontWeight: '700',
-    marginBottom: 6,
-  },
   userBio: {
     color: '#64748B',
     fontSize: 13,
@@ -1179,27 +1159,6 @@ const styles = StyleSheet.create({
     fontSize: 11,
     lineHeight: 16,
   },
-  statusBadge: {
-    paddingHorizontal: 6,
-    paddingVertical: 1,
-    borderRadius: 8,
-  },
-  statusBadgeOn: {
-    backgroundColor: '#10B981',
-  },
-  statusBadgeOff: {
-    backgroundColor: '#CBD5E1',
-  },
-  statusBadgeText: {
-    fontSize: 9,
-    fontWeight: '800',
-  },
-  statusBadgeTextOn: {
-    color: '#FFFFFF',
-  },
-  statusBadgeTextOff: {
-    color: '#475569',
-  },
 
   // 安心フィルター除外設定カード
   mutedConfigCard: {
@@ -1209,6 +1168,17 @@ const styles = StyleSheet.create({
     borderColor: '#FECACA',
     padding: 14,
     marginBottom: 16,
+  },
+  mutedConfigTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginBottom: 2,
+  },
+  mutedConfigTitleIcon: {
+    width: 15,
+    height: 15,
+    tintColor: '#991B1B',
   },
   mutedConfigTitle: {
     color: '#991B1B',

@@ -43,7 +43,7 @@ import {
 import { PresenceSheet } from './src/components/PresenceSheet';
 import { CalmToast, type ToastKind, type ToastMessage } from './src/components/CalmToast';
 import { SparkleBurst, type Sparkle } from './src/components/SparkleBurst';
-import { isVisibleUnderFilters, matchesInterestTags } from './src/utils/interestTags';
+import { findMatchedInterestTag, isVisibleUnderFilters, matchesInterestTags } from './src/utils/interestTags';
 import { updatePreferences, usePreferences } from './src/services/preferencesStore';
 import { collectPost } from './src/services/readService';
 import { reverseGeocode } from './src/services/geocoder';
@@ -332,16 +332,14 @@ export default function App(): React.JSX.Element {
           .filter((post) => !user || post.user_id !== user.id)
           .filter((post) => matchesInterestTags(post.tags, interestTags))
           .map((post) => {
-            const tag =
-              (post.tags ?? [])
-                .map((t) => (t.trim().startsWith('#') ? t.trim() : `#${t.trim()}`))
-                .find((t) => interestTags.includes(t)) ?? '';
+            // 関連タグで合った投稿（#街歩き → 関心タグ #散歩）も、合った関心タグの名前で知らせる
+            const tag = findMatchedInterestTag(post.tags, interestTags);
             return {
               postId: String(post.id),
               latitude: post.latitude,
               longitude: post.longitude,
               // Calm：本文は出さず、「このあたりにある」ことだけ伝える
-              title: `近くに ${tag} の言葉があります`,
+              title: tag ? `近くに ${tag} の言葉があります` : '近くに関心のある言葉があります',
               body: 'このあたりに置かれています。ARでそっとのぞいてみてください',
             };
           });

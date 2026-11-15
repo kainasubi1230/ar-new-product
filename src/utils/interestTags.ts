@@ -17,6 +17,22 @@ export const matchesInterestTags = (
 };
 
 /**
+ * 投稿がどの関心タグに合ったか（そのまま合うものを優先し、無ければ関連タグで合ったもの）。
+ * ポケット通知の文言「近くに #散歩 の言葉があります」に使う。合わなければ null
+ */
+export const findMatchedInterestTag = (
+  postTags: readonly string[] | null | undefined,
+  interestTags: readonly string[]
+): string | null => {
+  if (!postTags || postTags.length === 0 || interestTags.length === 0) return null;
+  const tags = new Set(postTags.map(normalizeTag));
+  const direct = interestTags.find((t) => tags.has(normalizeTag(t)));
+  if (direct) return normalizeTag(direct);
+  const related = interestTags.find((t) => [...expandInterestTags([t])].some((rel) => tags.has(rel)));
+  return related ? normalizeTag(related) : null;
+};
+
+/**
  * 表示の設定（関心タグのみ表示・安心フィルター）で、この投稿を AR・地図に出すか。
  * 自分の投稿はいつも出す
  */

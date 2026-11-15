@@ -1,16 +1,18 @@
-import React, { useCallback, useEffect, useState } from 'react';
-import { Alert, Image, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { Alert, AppState, Image, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { ScreenHeader } from './ScreenHeader';
 import { NotificationCard } from './NotificationCard';
 import { Icons } from '../assets/icons';
 import { SHOW_AR_DEBUG } from '../config/debug';
 import { PocketDebugPanel } from './PocketDebugPanel';
 import { usePreferences } from '../services/preferencesStore';
+import { interestTagIcon } from '../utils/tagIcon';
 import type { NotificationItem } from '../data/notifications';
 import {
   clearPocketHistory,
-  getPocketHistory,
+  getUnseenPocketHistory,
   isPocketNoticeSupported,
+  markPocketSeenUntil,
   onPocketNotified,
   type PocketHistoryEntry,
 } from '../services/pocketNotificationService';
@@ -32,30 +34,62 @@ const relativeTime = (unixSec: number) => {
   return `${date.getMonth() + 1}/${date.getDate()}`;
 };
 
+/** 通知の文言「近くに #散歩 の言葉があります」から、合った関心タグを取り出す */
+const tagOf = (entry: PocketHistoryEntry) => entry.title.match(/#\S+/)?.[0] ?? null;
+
 const toItem = (entry: PocketHistoryEntry): NotificationItem => ({
   id: `${entry.postId}-${entry.at}`,
   title: entry.title,
   body: entry.title,
   time: relativeTime(entry.at),
-  tag: entry.title.match(/#\S+/)?.[0] ?? '#言葉',
+  tag: tagOf(entry) ?? '#言葉',
 });
+
+/** 関心タグの絵。自分で作ったタグなど絵の無いものはベル */
+const iconOf = (entry: PocketHistoryEntry) => {
+  const tag = tagOf(entry);
+  return (tag && interestTagIcon(tag)) || Icons.notice;
+};
 
 /** 通知画面：届いたポケット通知の履歴（端末に保存されている） */
 export function NotificationScreen({ pocketNoticeEnabled, interestTags, onOpenAR }: Props): React.JSX.Element {
   const [history, setHistory] = useState<PocketHistoryEntry[]>([]);
   const { showDevInfo } = usePreferences();
 
+  // 画面に出した通知のうち、いちばん新しい時刻。画面を離れたらここまでを「見た」ことにする
+  const latestShownAtRef = useRef(0);
+
   const reload = useCallback(() => {
-    getPocketHistory()
+    getUnseenPocketHistory()
       .then(setHistory)
       .catch(() => {});
   }, []);
 
   useEffect(() => {
+    latestShownAtRef.current = history.reduce((max, entry) => Math.max(max, entry.at), 0);
+  }, [history]);
+
+  useEffect(() => {
     reload();
     // 開いている間に届いた通知も足す
     const subscription = onPocketNotified((entry) => setHistory((prev) => [entry, ...prev]));
-    return () => subscription?.remove();
+    const markSeen = () => {
+      if (latestShownAtRef.current > 0) markPocketSeenUntil(latestShownAtRef.current);
+    };
+    // アプリを閉じたときも、見た通知は消す（次に開いたら新しい通知だけになる）
+    const appStateSub = AppState.addEventListener('change', (state) => {
+      if (state === 'background') {
+        markSeen();
+        setHistory([]);
+      } else if (state === 'active') {
+        reload();
+      }
+    });
+    return () => {
+      subscription?.remove();
+      appStateSub.remove();
+      markSeen();
+    };
   }, [reload]);
 
   const handleClear = () => {
@@ -98,7 +132,7 @@ export function NotificationScreen({ pocketNoticeEnabled, interestTags, onOpenAR
 
       <ScrollView contentContainerStyle={styles.listContent}>
         <View style={styles.calmNoticeBox}>
-          <Image source={Icons.herb} style={styles.calmIcon} resizeMode="contain" />
+          <Image source={Icons.notice} style={styles.calmIcon} resizeMode="contain" />
           <View style={styles.calmTextGroup}>
             <Text style={styles.calmTitle}>{noticeTitle}</Text>
             <Text style={styles.calmDesc}>{noticeDesc}</Text>
@@ -108,11 +142,19 @@ export function NotificationScreen({ pocketNoticeEnabled, interestTags, onOpenAR
         {SHOW_AR_DEBUG && showDevInfo && isPocketNoticeSupported && <PocketDebugPanel />}
 
         {history.length === 0 ? (
-          <Text style={styles.emptyText}>まだ通知はありません</Text>
+          <Text style={styles.emptyText}>新しい通知はありません</Text>
         ) : (
-          history.map((entry) => (
-            <NotificationCard key={`${entry.postId}-${entry.at}`} item={toItem(entry)} onPress={onOpenAR} />
-          ))
+          <>
+            {history.map((entry) => (
+              <NotificationCard
+                key={`${entry.postId}-${entry.at}`}
+                item={toItem(entry)}
+                icon={iconOf(entry)}
+                onPress={onOpenAR}
+              />
+            ))}
+            <Text style={styles.seenHintText}>見た通知は、この画面を離れると消えます</Text>
+          </>
         )}
       </ScrollView>
     </View>
@@ -168,6 +210,12 @@ const styles = StyleSheet.create({
     color: '#047857',
     fontSize: 11,
     lineHeight: 16,
+  },
+  seenHintText: {
+    marginTop: 4,
+    textAlign: 'center',
+    color: '#94A3B8',
+    fontSize: 11,
   },
   emptyText: {
     marginTop: 24,

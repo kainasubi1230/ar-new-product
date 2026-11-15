@@ -1,14 +1,16 @@
 import React from 'react';
-import { StyleSheet, Text, TouchableOpacity, View, ViewStyle } from 'react-native';
+import { Image, ImageSourcePropType, StyleSheet, Text, TouchableOpacity, View, ViewStyle } from 'react-native';
 import { NotificationItem } from '../data/notifications';
 
 type Props = {
   item: NotificationItem;
   onPress?: () => void;
   style?: ViewStyle;
+  /** 左の丸に出す絵（関心タグの絵など）。無ければ「L」 */
+  icon?: ImageSourcePropType | null;
 };
 
-export function NotificationCard({ item, onPress, style }: Props): React.JSX.Element {
+export function NotificationCard({ item, onPress, style, icon }: Props): React.JSX.Element {
   return (
     <TouchableOpacity
       style={[styles.notificationCard, style]}
@@ -17,7 +19,11 @@ export function NotificationCard({ item, onPress, style }: Props): React.JSX.Ele
       disabled={!onPress}
     >
       <View style={styles.appIconCircle}>
-        <Text style={styles.appIconLetter}>L</Text>
+        {icon ? (
+          <Image source={icon} style={styles.appIconImage} resizeMode="contain" />
+        ) : (
+          <Text style={styles.appIconLetter}>L</Text>
+        )}
       </View>
 
       <View style={styles.cardMain}>
@@ -61,6 +67,11 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     marginRight: 12,
+  },
+  appIconImage: {
+    width: 20,
+    height: 20,
+    tintColor: '#FFFFFF',
   },
   appIconLetter: {
     color: '#FFFFFF',

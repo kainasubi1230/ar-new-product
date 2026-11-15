@@ -1,3 +1,4 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { NativeEventEmitter, NativeModules, Platform } from 'react-native';
 import { POCKET_NOTICE } from '../config/pocketNotice';
 
@@ -46,6 +47,30 @@ export const getPocketHistory = async (): Promise<PocketHistoryEntry[]> =>
   LocaPocket ? LocaPocket.getHistory() : [];
 
 export const clearPocketHistory = () => LocaPocket?.clearHistory();
+
+// 通知画面で見た通知は、画面を離れたら消す。ネイティブの履歴はそのままにして、
+// 「ここまで見た」時刻（UNIX 秒）を端末に覚えておき、それより前の通知を出さない
+const SEEN_UNTIL_KEY = 'loca:pocketSeenUntil';
+
+/** まだ見ていない通知の履歴（新しい順） */
+export const getUnseenPocketHistory = async (): Promise<PocketHistoryEntry[]> => {
+  const [history, seenRaw] = await Promise.all([
+    getPocketHistory(),
+    AsyncStorage.getItem(SEEN_UNTIL_KEY).catch(() => null),
+  ]);
+  const seenUntil = Number(seenRaw) || 0;
+  return history.filter((entry) => entry.at > seenUntil);
+};
+
+/** at（UNIX 秒）までの通知を見たことにする */
+export const markPocketSeenUntil = async (at: number) => {
+  try {
+    const current = Number(await AsyncStorage.getItem(SEEN_UNTIL_KEY)) || 0;
+    if (at > current) await AsyncStorage.setItem(SEEN_UNTIL_KEY, String(at));
+  } catch (error) {
+    console.warn('[pocket] 見た通知の記録に失敗', error);
+  }
+};
 
 /** ポケットの中でも届く位置（50m 動くごと）。対象のメッセージを取り直すのに使う */
 export const onPocketLocation = (
