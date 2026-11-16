@@ -214,6 +214,17 @@ export default function App(): React.JSX.Element {
       setRelocalizationPhase(null);
       // 戻ってきたら、その時点の GPS で照合の候補を探し直す
       setRelocalizeCoords(null);
+      // 「景色が見つかりませんでした」などの表示中のお知らせをクリア（戻った時に作り直された AR ビューで再表示されるのを防ぐ）
+      if (noticeTimerRef.current) {
+        clearTimeout(noticeTimerRef.current);
+        noticeTimerRef.current = null;
+      }
+      if (toastTimerRef.current) {
+        clearTimeout(toastTimerRef.current);
+        toastTimerRef.current = null;
+      }
+      setNotice(null);
+      setToast(null);
     }
   }, [activeTab]);
 
@@ -251,6 +262,7 @@ export default function App(): React.JSX.Element {
     //    （タグはネイティブ側でなめらかに移動する）
     const averager = new GpsAverager();
     let lastCommitted: LocationCoords | null = null;
+    const watchStartedAt = Date.now();
     const watchId = Geolocation.watchPosition(
       (position) => {
         if (SHOW_AR_DEBUG) {
@@ -261,13 +273,19 @@ export default function App(): React.JSX.Element {
           longitude: position.coords.longitude,
           accuracy: position.coords.accuracy,
         };
-        if (raw.accuracy != null && raw.accuracy <= LOCATION_ACCURACY.fallbackMaxAccuracyM) {
+        const elapsedMs = Date.now() - watchStartedAt;
+        const maxRelocalizeAcc =
+          elapsedMs >= LOCATION_ACCURACY.relocalizeFallbackAfterMs
+            ? LOCATION_ACCURACY.relocalizeFallbackAccuracyM
+            : LOCATION_ACCURACY.relocalizeMaxAccuracyM;
+
+        if (raw.accuracy != null && raw.accuracy <= maxRelocalizeAcc) {
           // 少し動いたか、誤差がはっきり良くなったときだけ差し替える（そのたびに候補を探し直さない）
           setRelocalizeCoords((prev) =>
             !prev ||
             distanceInMeters(prev.latitude, prev.longitude, raw.latitude, raw.longitude) >=
               LOCATION_ACCURACY.commitDistanceM ||
-            raw.accuracy < (prev.accuracy ?? Infinity) - 10
+            raw.accuracy < (prev.accuracy ?? Infinity) - 8
               ? raw
               : prev
           );

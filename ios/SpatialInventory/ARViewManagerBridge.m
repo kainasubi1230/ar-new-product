@@ -47,3 +47,7 @@ RCT_EXTERN_METHOD(resetNotified)
 @interface RCT_EXTERN_MODULE(LocaGeocoder, NSObject)
 RCT_EXTERN_METHOD(reverseGeocode:(double)latitude longitude:(double)longitude resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject)
 @end
+
+@interface RCT_EXTERN_MODULE(LocaAvatarPicker, NSObject)
+RCT_EXTERN_METHOD(pickAvatarImage:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject)
+@end

@@ -130,9 +130,12 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
       DispatchQueue.main.async { [weak self] in
         guard let self else { return }
         self.geoTagData = tags
-        // 距離・方角は「今の GPS の位置」から測ったもの。その位置に当たる AR 上の点として、今のカメラ位置を覚えておき、
-        // 次に GPS の位置が更新されるまでは、そこを基準にタグを空間に固定する（今のカメラ基準にすると、歩いた分だけ逃げていく）
-        if let transform = self.arView.session.currentFrame?.camera.transform {
+        let isRelocalizingActive = self.isRunningWithWorldMap
+          && self.relocalization != nil
+          && !(self.relocalization?.didFindAnchor ?? false)
+        // 再取得中（照合中）はモヤが動かないよう、既存の基準位置を保持する
+        if !isRelocalizingActive || self.geoOriginCameraPosition == nil,
+           let transform = self.arView.session.currentFrame?.camera.transform {
           self.geoOriginCameraPosition = SIMD3<Float>(transform.columns.3.x, transform.columns.3.y, transform.columns.3.z)
         }
         self.lastGeoLayoutAt = .distantPast
@@ -317,7 +320,19 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
     // 画面に現れたことを JS に知らせたか（拾った言葉の記録は 1 回だけ）
     var hasBeenSeen = false
     var distance: Float = 0
+    // カードを乗せている入れ物（ワールド座標）。ARAnchor の位置へ毎フレーム滑らかに寄せる
+    let holder: AnchorEntity
+    // 追いかける ARAnchor（照合後も ARKit が位置を細かく直し続ける）
+    let anchorIdentifier: UUID
+    // アンカーの位置が落ち着いたか。落ち着くまではカードを出さない（出てから跳ねるのを防ぐ）
+    var isSettled = false
+    var lastAnchorPosition: SIMD3<Float>?
+    var stableSince: Date?
   }
+  // アンカーの位置がこの距離（m）以内の揺れに収まっていれば「落ち着いた」とみなす
+  private static let anchorSettleTolerance: Float = 0.015
+  // その状態がこの時間続いたらカードを出す
+  private static let anchorSettleDuration: TimeInterval = 0.5
   private var revealCards: [RevealCard] = []
   private static let revealGlowSize: Float = 0.6
   // 隠れている間の光の濃さ（別の部屋にメッセージがあることのヒント。くっきりは見せない）
@@ -325,7 +340,7 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
   // 見えるかどうかを調べる間隔（毎フレームは重い）
   private static let occlusionCheckInterval: TimeInterval = 0.25
   // カード自身が乗っている壁・床を「間にある物」と数えないための余白（m）
-  private static let occlusionMargin: Float = 0.3
+  private static let occlusionMargin: Float = 0.45
   private var lastRevealFrameAt: Date?
   private var lastOcclusionCheckAt = Date.distantPast
 
@@ -530,10 +545,14 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
 
   private func handlePreviewActiveChanged() {
     if isPreviewActive {
+      lastValidPreviewPosition = nil
+      lastValidPreviewOrientation = nil
       updateGhostCardTexture()
     } else {
       previewAnchor.isEnabled = false
       lastTapLocation = nil
+      lastValidPreviewPosition = nil
+      lastValidPreviewOrientation = nil
     }
   }
 
@@ -604,10 +623,19 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
       )
     }
 
-    guard let cameraTransform = arView.session.currentFrame?.camera.transform else {
+    guard let frame = arView.session.currentFrame else {
       previewAnchor.isEnabled = false
       return
     }
+    let cameraTransform = frame.camera.transform
+
+    // トラッキングが不安定（激しく動かした直後や特徴点不足）な間は、直前の安定位置をホールドして瞬間移動を防ぐ
+    if case .limited(let reason) = frame.camera.trackingState,
+       reason == .excessiveMotion || reason == .insufficientFeatures,
+       lastValidPreviewPosition != nil {
+      return
+    }
+
     let cameraPosition = SIMD3<Float>(
       cameraTransform.columns.3.x,
       cameraTransform.columns.3.y,
@@ -624,28 +652,32 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
 
     previewAnchor.isEnabled = true
 
+    let isFirstPlacement = lastValidPreviewPosition == nil || simd_length(previewAnchor.position) < 0.001
+
     guard !isFloatingPlacement, let hit = hits.first, let hitPos else {
       // 空中：カメラの真正面に、カメラの方を向けて浮かべる（接地リングは出さない）
       let forward = -SIMD3<Float>(cameraTransform.columns.2.x, cameraTransform.columns.2.y, cameraTransform.columns.2.z)
       let targetPos = cameraPosition + simd_normalize(forward) * Self.floatingPlacementDistance
-      if simd_length(previewAnchor.position) < 0.001 || simd_distance(previewAnchor.position, targetPos) > 1.8 {
+      if isFirstPlacement {
         previewAnchor.position = targetPos
       } else {
-        // スムーズな補間でプレビューの瞬間移動・ジッターを防止
-        previewAnchor.position = simd_mix(previewAnchor.position, targetPos, SIMD3<Float>(repeating: 0.25))
+        // 距離にかかわらず常に滑らかに補間し、瞬間移動を完全に禁止
+        previewAnchor.position = simd_mix(previewAnchor.position, targetPos, SIMD3<Float>(repeating: 0.22))
       }
       reticleEntity?.isEnabled = false
-      ghostCardEntity?.position = .zero
-      faceGhostCardToCamera(cameraPosition)
+      if let ghost = ghostCardEntity {
+        ghost.position = simd_mix(ghost.position, .zero, SIMD3<Float>(repeating: 0.25))
+      }
+      faceGhostCardToCamera(cameraPosition, smooth: !isFirstPlacement)
       return
     }
 
     reticleEntity?.isEnabled = true
-    if simd_length(previewAnchor.position) < 0.001 || simd_distance(previewAnchor.position, hitPos) > 1.8 {
+    if isFirstPlacement {
       previewAnchor.position = hitPos
     } else {
-      // 平面追従時の瞬間移動・急激なジャンプを滑らかに補間
-      previewAnchor.position = simd_mix(previewAnchor.position, hitPos, SIMD3<Float>(repeating: 0.28))
+      // 平面が切り替わっても、ステップ移動（瞬間移動）せず滑らかに追従
+      previewAnchor.position = simd_mix(previewAnchor.position, hitPos, SIMD3<Float>(repeating: 0.24))
     }
 
     let normalY = hit.worldTransform.columns.1.y
@@ -653,7 +685,10 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
 
     if isHorizontal {
       reticleEntity?.orientation = simd_quatf(angle: -.pi / 2, axis: SIMD3<Float>(1, 0, 0))
-      ghostCardEntity?.position = SIMD3<Float>(0, 0.15, 0)
+      if let ghost = ghostCardEntity {
+        let targetOffset = SIMD3<Float>(0, 0.15, 0)
+        ghost.position = isFirstPlacement ? targetOffset : simd_mix(ghost.position, targetOffset, SIMD3<Float>(repeating: 0.25))
+      }
     } else {
       let normal = SIMD3<Float>(
         hit.worldTransform.columns.1.x,
@@ -661,18 +696,28 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
         hit.worldTransform.columns.1.z
       )
       reticleEntity?.orientation = simd_quatf(angle: 0, axis: SIMD3<Float>(1, 0, 0))
-      ghostCardEntity?.position = normal * 0.05
+      if let ghost = ghostCardEntity {
+        let targetOffset = normal * 0.05
+        ghost.position = isFirstPlacement ? targetOffset : simd_mix(ghost.position, targetOffset, SIMD3<Float>(repeating: 0.25))
+      }
     }
 
-    faceGhostCardToCamera(cameraPosition)
+    faceGhostCardToCamera(cameraPosition, smooth: !isFirstPlacement)
   }
 
   // プレビューのカードをカメラの方に向け、「ここに置く」で置く位置・向きとして覚えておく
-  private func faceGhostCardToCamera(_ cameraPosition: SIMD3<Float>) {
+  private func faceGhostCardToCamera(_ cameraPosition: SIMD3<Float>, smooth: Bool = true) {
     guard let ghost = ghostCardEntity else { return }
     let entityWorldPos = previewAnchor.position + ghost.position
-    ghost.look(at: cameraPosition, from: entityWorldPos, relativeTo: nil)
-    ghost.orientation = ghost.orientation * simd_quatf(angle: .pi, axis: SIMD3<Float>(0, 1, 0))
+    let probe = Entity()
+    probe.look(at: cameraPosition, from: entityWorldPos, relativeTo: nil)
+    let targetRot = probe.orientation * simd_quatf(angle: .pi, axis: SIMD3<Float>(0, 1, 0))
+
+    if smooth, let prevRot = lastValidPreviewOrientation {
+      ghost.setOrientation(simd_slerp(prevRot, targetRot, 0.28), relativeTo: nil)
+    } else {
+      ghost.setOrientation(targetRot, relativeTo: nil)
+    }
 
     // プレビューカードの最新ワールド位置・回転を保存
     self.lastValidPreviewPosition = entityWorldPos
@@ -725,8 +770,21 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
   }
 
   private func handleNotice() {
-    guard let notice,
-          let id = (notice["id"] as? NSNumber)?.doubleValue, id != lastNoticeId,
+    guard let notice else {
+      // JS側で notice がクリアされた（タブ切り替え等）場合は、表示中のお知らせを即座に消す
+      if let pending = noticeEndWorkItem {
+        pending.cancel()
+        noticeEndWorkItem = nil
+        if let guide = persistentGuide {
+          guideHUD.show(guide)
+        } else {
+          guideHUD.hide()
+          coachingOverlay.activatesAutomatically = true
+        }
+      }
+      return
+    }
+    guard let id = (notice["id"] as? NSNumber)?.doubleValue, id != lastNoticeId,
           let title = notice["title"] as? String else { return }
     lastNoticeId = id
 
@@ -1121,7 +1179,16 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
         "person": "person.fill"
       ]
 
-      if cleanIconName == "footprints", let footImg = UIImage(named: "Footprints")?.withTintColor(iconColor, renderingMode: .alwaysOriginal) {
+      if handle.hasPrefix("data:image/"),
+         let commaRange = handle.range(of: ","),
+         let imageData = Data(base64Encoded: String(handle[commaRange.upperBound...])),
+         let customImg = UIImage(data: imageData) {
+        cgContext.saveGState()
+        avatarPath.addClip()
+        customImg.draw(in: avatarRect)
+        cgContext.restoreGState()
+        drewIcon = true
+      } else if cleanIconName == "footprints", let footImg = UIImage(named: "Footprints")?.withTintColor(iconColor, renderingMode: .alwaysOriginal) {
         let pad: CGFloat = 8
         footImg.draw(in: avatarRect.insetBy(dx: pad, dy: pad))
         drewIcon = true
@@ -1740,24 +1807,22 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
     presentRelocalizedAnchors(postAnchors)
   }
 
-  // ARKitがWorldMapとの照合（リロカリゼーション）に成功したとき、アンカーの座標が現実世界に合わせて更新される。
-  // この通知こそが、アンカーが現在の空間に正しく位置づけられた確実な証拠。
+  // ARKitがWorldMapとの照合（リロカリゼーション）に成功すると、アンカーの座標が現実世界に合わせて更新される。
+  // ただし照合前の細かい補正でも届くことがあるので、トラッキングが normal のときだけ照合完了の手がかりにする
   func session(_ session: ARSession, didUpdate anchors: [ARAnchor]) {
-    guard isRunningWithWorldMap, relocalization != nil else { return }
-    let postAnchors = anchors.filter { $0.name?.hasPrefix("post:") == true }
-    guard !postAnchors.isEmpty else { return }
+    guard isRunningWithWorldMap, relocalization != nil, !hasRelocalizedToWorldMap else { return }
+    guard anchors.contains(where: { $0.name?.hasPrefix("post:") == true }),
+          Self.isNormal(session.currentFrame?.camera.trackingState) else { return }
+    markRelocalized()
+  }
 
-    // 照合完了！
+  // 照合完了として、保留していたアンカーを最新の位置でカードにする
+  private func markRelocalized() {
     hasRelocalizedToWorldMap = true
-    var anchorsToPresent = postAnchors
-    if !pendingRelocalizedAnchors.isEmpty {
-      let pendingIds = Set(pendingRelocalizedAnchors.compactMap(\.identifier))
-      let sessionAnchors = session.currentFrame?.anchors ?? []
-      let updatedPending = sessionAnchors.filter { pendingIds.contains($0.identifier) }
-      anchorsToPresent.append(contentsOf: updatedPending)
-      pendingRelocalizedAnchors.removeAll()
-    }
-    presentRelocalizedAnchors(anchorsToPresent)
+    guard !pendingRelocalizedAnchors.isEmpty else { return }
+    let pending = pendingRelocalizedAnchors
+    pendingRelocalizedAnchors.removeAll()
+    presentRelocalizedAnchors(pending)
   }
 
   // 地図に入っている post: アンカーの投稿 ID
@@ -1791,7 +1856,9 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
       }
       target.foundPostIds.insert(postId)
       preciseCardPostIds.insert(postId)
-      let anchorEntity = AnchorEntity(anchor: anchor)
+      // ARAnchor に直接ぶら下げると、照合直後に ARKit が位置を直すたびカードが跳ねる。
+      // ワールド座標の入れ物に乗せ、updateCardReveal で ARAnchor の最新位置へ滑らかに寄せる
+      let anchorEntity = AnchorEntity(world: anchor.transform)
       let cardEntity = makeCardEntity(
         title: card.title,
         description: card.description,
@@ -1810,7 +1877,13 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
       anchorEntity.addChild(glowEntity)
       arView.scene.addAnchor(anchorEntity)
       placedCardEntities.append(anchorEntity)
-      revealCards.append(RevealCard(postId: postId, card: cardEntity, glow: glowEntity))
+      revealCards.append(RevealCard(
+        postId: postId,
+        card: cardEntity,
+        glow: glowEntity,
+        holder: anchorEntity,
+        anchorIdentifier: anchor.identifier
+      ))
       emitRelocalizationStatus("found", postId: postId)
     }
     relocalization = target
@@ -1826,12 +1899,10 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
         debugTrackingNormalAt = Date()
       }
 
-      // .relocalizing を経て .normal に復帰した場合、ARKit のリロカリゼーションが完了したと判定
-      if case .normal = camera.trackingState, didObserveRelocalizingState, !pendingRelocalizedAnchors.isEmpty {
-        hasRelocalizedToWorldMap = true
-        let pending = pendingRelocalizedAnchors
-        pendingRelocalizedAnchors.removeAll()
-        presentRelocalizedAnchors(pending)
+      // .relocalizing を経て .normal に戻ったら照合完了。
+      // 保留中のアンカーが無くてもフラグは立てる（ARKit が normal の後でアンカーを渡してくる場合に、didAdd ですぐ出せるように）
+      if case .normal = camera.trackingState, didObserveRelocalizingState, !hasRelocalizedToWorldMap {
+        markRelocalized()
       }
     }
     guard isRunningWithWorldMap, case .normal = camera.trackingState,
@@ -2187,6 +2258,9 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
       case .summary: mesh = geoTagSummaryMesh
       }
       let textureKey = "\(tag.level.rawValue)|\(tag.title)|\(tag.description)|\(tag.tags.joined(separator: ","))|\(distanceText)"
+      let isRelocalizingActive = isRunningWithWorldMap
+        && relocalization != nil
+        && !(relocalization?.didFindAnchor ?? false)
       if var existing = geoTagEntities[tag.postId] {
         if existing.textureKey != textureKey {
           // 近づいて段階が変わったら、形も描く内容も切り替える
@@ -2196,21 +2270,24 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
           existing.textureKey = textureKey
           existing.isPresence = tag.level == .presence
         }
-        existing.target = target
-        existing.targetScale = scale
-        existing.targetOpacity = opacity
+        // 再取得中（照合中）は既に置かれたモヤの位置を固定し、GPSやコンパスの揺れでモヤが移動しないようにする
+        if !(isRelocalizingActive && existing.isPresence) {
+          existing.target = target
+          existing.targetScale = scale
+          existing.targetOpacity = opacity
+          if snap {
+            // 北を求め直した直後は前の座標が当てにならないので、飛ばさずに置き直して、もう一度ふわっと出す
+            existing.entity.position = target
+            existing.scale = scale
+            existing.opacity = opacity
+            existing.appearance = 0
+            existing.appearAt = now + Double(rank) * Self.geoTagStaggerDelay
+          }
+        }
         if existing.isRemoving {
           // 消えかけていた投稿が範囲に戻ってきた
           existing.isRemoving = false
           existing.appearAt = now
-        }
-        if snap {
-          // 北を求め直した直後は前の座標が当てにならないので、飛ばさずに置き直して、もう一度ふわっと出す
-          existing.entity.position = target
-          existing.scale = scale
-          existing.opacity = opacity
-          existing.appearance = 0
-          existing.appearAt = now + Double(rank) * Self.geoTagStaggerDelay
         }
         geoTagEntities[tag.postId] = existing
       } else {
@@ -2404,9 +2481,11 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
     let now = Date()
     let dt = Float(min(now.timeIntervalSince(lastRevealFrameAt ?? now), 0.1))
     lastRevealFrameAt = now
-    guard !revealCards.isEmpty, let cameraTransform = arView.session.currentFrame?.camera.transform else { return }
+    guard !revealCards.isEmpty, let frame = arView.session.currentFrame else { return }
+    let cameraTransform = frame.camera.transform
     let cameraPosition = SIMD3<Float>(cameraTransform.columns.3.x, cameraTransform.columns.3.y, cameraTransform.columns.3.z)
     let follow = 1 - exp(-3 * dt)
+    let anchorFollow = 1 - exp(-6 * dt)
     let breathing = 0.85 + 0.15 * Float(sin(now.timeIntervalSince1970 * 2 * .pi / 4))
 
     let shouldCheckOcclusion = now.timeIntervalSince(lastOcclusionCheckAt) >= Self.occlusionCheckInterval
@@ -2416,7 +2495,50 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
 
     for index in revealCards.indices {
       var item = revealCards[index]
-      if shouldCheckOcclusion, let frame = arView.session.currentFrame {
+
+      // ARAnchor の最新座標へ滑らかに追従させ、照合直後の位置補正による瞬間移動・跳ねを抑止
+      if let liveAnchor = frame.anchors.first(where: { $0.identifier == item.anchorIdentifier }) {
+        let targetPos = SIMD3<Float>(
+          liveAnchor.transform.columns.3.x,
+          liveAnchor.transform.columns.3.y,
+          liveAnchor.transform.columns.3.z
+        )
+        let targetRot = simd_quatf(liveAnchor.transform)
+        let currentPos = item.holder.position(relativeTo: nil)
+        let currentRot = item.holder.orientation(relativeTo: nil)
+
+        if simd_distance(currentPos, targetPos) > 0.02 {
+          item.holder.setPosition(simd_mix(currentPos, targetPos, SIMD3<Float>(repeating: anchorFollow)), relativeTo: nil)
+        }
+        item.holder.setOrientation(simd_slerp(currentRot, targetRot, anchorFollow), relativeTo: nil)
+
+        if !item.isSettled {
+          if let prevPos = item.lastAnchorPosition,
+             simd_distance(prevPos, targetPos) <= Self.anchorSettleTolerance {
+            if let since = item.stableSince {
+              if now.timeIntervalSince(since) >= Self.anchorSettleDuration {
+                item.isSettled = true
+              }
+            } else {
+              item.stableSince = now
+            }
+          } else {
+            item.stableSince = now
+          }
+          item.lastAnchorPosition = targetPos
+        }
+      } else if !item.isSettled {
+        // セッションからアンカーがまだ取得できない場合は経過時間でフォールバック
+        if let since = item.stableSince {
+          if now.timeIntervalSince(since) >= 1.5 {
+            item.isSettled = true
+          }
+        } else {
+          item.stableSince = now
+        }
+      }
+
+      if shouldCheckOcclusion {
         let position = item.card.position(relativeTo: nil)
         item.distance = simd_distance(position, cameraPosition)
         if isInView(position, frame: frame) {
@@ -2434,7 +2556,9 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
           item.occlusionReason = "画面外(前の状態のまま)"
         }
       }
-      let target: Float = item.isOccluded ? 0 : 1
+
+      // アンカー位置が安定（isSettled）するまでは光のみ表示し、安定後にカードを滑らかにフェードインさせる
+      let target: Float = (item.isSettled && !item.isOccluded) ? 1 : 0
       item.reveal += (target - item.reveal) * follow
 
       // 隠れているカードの光も、すぐそばを通ると画面を覆うので、近づくほど薄くする
@@ -2488,13 +2612,6 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
     guard reach > 0.2 else { return (false, "近すぎ") }
     let direction = toTarget / distance
 
-    // LiDAR が無くても使える手がかり：ARKit が今のフレームで拾っている特徴点（景色の模様や角）。
-    // カメラからカードへの細い円すいの中で、カードより手前に特徴点がまとまってあれば、間に何か（椅子・家具・模様のある壁）がある
-    let featureHits = Self.featurePointsBetween(camera: camera, direction: direction, reach: reach, distance: distance, frame: frame)
-    if featureHits >= Self.occlusionFeaturePointThreshold {
-      return (true, "特徴点\(featureHits)個")
-    }
-
     let query = ARRaycastQuery(origin: camera, direction: direction, allowing: .existingPlaneGeometry, alignment: .any)
     let planeHits = arView.session.raycast(query)
     for result in planeHits {
@@ -2512,13 +2629,19 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
       if let hit = meshHits.first {
         return (true, String(format: "メッシュ %.1fm", hit.distance))
       }
-      return (false, "平面\(planeHits.count)件・メッシュとも手前に無し, 特徴点\(featureHits)個")
+      return (false, "平面\(planeHits.count)件・メッシュとも手前に無し")
+    }
+
+    // LiDAR が無い端末でのみ特徴点を補助的に使う（誤検出を防ぐため高い閾値 18個 を要求）
+    let featureHits = Self.featurePointsBetween(camera: camera, direction: direction, reach: reach, distance: distance, frame: frame)
+    if featureHits >= Self.occlusionFeaturePointThreshold {
+      return (true, "特徴点\(featureHits)個")
     }
     return (false, "平面\(planeHits.count)件が手前に無し, 特徴点\(featureHits)個")
   }
 
-  // この数以上の特徴点が、カメラとカードの間の円すいにあれば「間に何かある」
-  private static let occlusionFeaturePointThreshold = 3
+  // この数以上の特徴点が、カメラとカードの間の円すいにあれば「間に何かある」（ノイズ誤爆防止のため18個）
+  private static let occlusionFeaturePointThreshold = 18
 
   private static func featurePointsBetween(
     camera: SIMD3<Float>,
@@ -2528,8 +2651,8 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
     frame: ARFrame
   ) -> Int {
     guard let points = frame.rawFeaturePoints?.points, !points.isEmpty else { return 0 }
-    // 円すいの広がり：カードの大きさ（約 0.25m）が見える角度。ただし最低 3°
-    let halfAngle = max(atan(0.25 / distance), 3 * .pi / 180)
+    // 円すいの広がり：カード中心付近の細い範囲（約 0.18m）のみを判定。最低 2°
+    let halfAngle = max(atan(0.18 / distance), 2 * .pi / 180)
     let cosLimit = cos(halfAngle)
     var count = 0
     for point in points {

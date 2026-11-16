@@ -36,7 +36,12 @@ import {
 } from './WordCard';
 import { fetchCollectedPosts, uncollectPost } from '../services/readService';
 import { supabase } from '../lib/supabase';
-import { normalizeTag, DEFAULT_MUTED_TAG_PRESETS } from '../services/interestTagService';
+import {
+  normalizeTag,
+  DEFAULT_MUTED_TAG_PRESETS,
+  ALL_SUGGESTED_TAGS,
+} from '../services/interestTagService';
+import { pickAvatarImage, isCustomAvatarUri } from '../native/AvatarPicker';
 
 const { width } = Dimensions.get('window');
 
@@ -180,6 +185,7 @@ export function MyPageScreen({
 
   const [isAvatarModalVisible, setIsAvatarModalVisible] = useState(false);
   const [customMutedTagInput, setCustomMutedTagInput] = useState('');
+  const [customInterestTagInput, setCustomInterestTagInput] = useState('');
 
   const tags: InterestTag[] = INITIAL_TAGS.map((tag) => ({
     ...tag,
@@ -278,6 +284,29 @@ export function MyPageScreen({
         console.warn('アバターアイコン保存エラー:', e);
       }
     }
+  };
+
+  // 写真ライブラリから好きな画像を選択（不適切画像はオンデバイスでブロック）
+  const handlePickCustomPhoto = async () => {
+    try {
+      const dataUri = await pickAvatarImage();
+      if (!dataUri) return; // キャンセル
+      await handleSelectAvatar(dataUri);
+    } catch (e: any) {
+      const msg = e?.message || '画像を読み込めませんでした。';
+      Alert.alert('アイコンを設定できませんでした', msg);
+    }
+  };
+
+  // 自由な関心タグの追加
+  const handleAddCustomInterestTag = (raw?: string) => {
+    const target = (raw ?? customInterestTagInput).trim();
+    if (!target) return;
+    const formatted = normalizeTag(target);
+    if (formatted && !interestTags.includes(formatted)) {
+      toggleInterestTag(formatted);
+    }
+    setCustomInterestTagInput('');
   };
 
   // 安心フィルターの除外タグ追加
@@ -595,11 +624,19 @@ export function MyPageScreen({
             activeOpacity={0.8}
           >
             <View style={styles.avatarCircle}>
-              <Image
-                source={getAvatarIconSource(userAvatarIcon)}
-                style={styles.avatarIcon}
-                resizeMode="contain"
-              />
+              {isCustomAvatarUri(userAvatarIcon) ? (
+                <Image
+                  source={{ uri: userAvatarIcon }}
+                  style={styles.avatarCustomPhoto}
+                  resizeMode="cover"
+                />
+              ) : (
+                <Image
+                  source={getAvatarIconSource(userAvatarIcon)}
+                  style={styles.avatarIcon}
+                  resizeMode="contain"
+                />
+              )}
             </View>
             <View style={styles.avatarEditBadge}>
               <Text style={styles.avatarEditBadgeText}>✎</Text>
@@ -914,10 +951,10 @@ export function MyPageScreen({
             )}
 
             <Text style={styles.subSectionTitle}>
-              空間で見たいジャンル（今はこの気分）
+              空間で見たいジャンル（大カテゴリ）
             </Text>
             <Text style={styles.tagsGuideSub}>
-              タグをタップしてON/OFFを切り替えます。選んだタグの言葉は、ARと地図で少し目立って表示され、ポケット通知の対象になります。
+              大カテゴリを選ぶと、関連する派生タグや表記揺れ（例: #cafe・#珈琲）もまとめて自動ヒットします。
             </Text>
 
             {/* Tags Toggle Grid */}
@@ -950,6 +987,89 @@ export function MyPageScreen({
                 </TouchableOpacity>
               ))}
             </View>
+
+            {/* タグ増加対応: フリータグ検索＆追加カード */}
+            <View style={styles.customInterestCard}>
+              <Text style={styles.customInterestTitle}>特定のタグを検索・追加</Text>
+              <Text style={styles.customInterestSub}>
+                大カテゴリ以外の細かいタグも追加できます（表記揺れ・同義語も自動でまとまります）。
+              </Text>
+              <View style={styles.customMutedRow}>
+                <TextInput
+                  style={styles.customMutedInput}
+                  placeholder="# タグを検索・追加 (例: サウナ, 隠れ家)..."
+                  placeholderTextColor="#94A3B8"
+                  value={customInterestTagInput}
+                  onChangeText={setCustomInterestTagInput}
+                  onSubmitEditing={() => handleAddCustomInterestTag()}
+                  returnKeyType="done"
+                />
+                {customInterestTagInput.trim().length > 0 && (
+                  <TouchableOpacity
+                    style={styles.customInterestAddBtn}
+                    onPress={() => handleAddCustomInterestTag()}
+                  >
+                    <Text style={styles.customMutedAddBtnText}>追加</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+
+              {/* インクリメンタル候補チップ */}
+              <View style={styles.mutedChipWrap}>
+                {ALL_SUGGESTED_TAGS.filter((t) => {
+                  const q = customInterestTagInput.trim().replace(/^#+/, '').toLowerCase();
+                  return !q || t.toLowerCase().includes(q);
+                })
+                  .slice(0, 8)
+                  .map((tag) => {
+                    const isAdded = interestTags.includes(tag);
+                    return (
+                      <TouchableOpacity
+                        key={tag}
+                        style={[styles.interestSuggestChip, isAdded && styles.interestSuggestChipActive]}
+                        onPress={() => toggleInterestTag(tag)}
+                        activeOpacity={0.7}
+                      >
+                        <Text
+                          style={[
+                            styles.interestSuggestChipText,
+                            isAdded && styles.interestSuggestChipTextActive,
+                          ]}
+                        >
+                          {isAdded ? `✓ ${tag}` : `+ ${tag}`}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+              </View>
+
+              {/* 追加済みのカスタムタグ（大カテゴリ8種以外） */}
+              {(() => {
+                const presetTagNames = new Set(INITIAL_TAGS.map((t) => `#${t.name}`));
+                const customSelected = interestTags.filter((t) => !presetTagNames.has(t));
+                if (customSelected.length === 0) return null;
+                return (
+                  <View style={{ marginTop: 12 }}>
+                    <Text style={styles.mutedSelectedLabel}>
+                      登録中のカスタムタグ ({customSelected.length}個):
+                    </Text>
+                    <View style={styles.mutedSelectedRow}>
+                      {customSelected.map((tag) => (
+                        <View key={tag} style={styles.interestActiveBadge}>
+                          <Text style={styles.interestActiveBadgeText}>{tag}</Text>
+                          <TouchableOpacity
+                            onPress={() => toggleInterestTag(tag)}
+                            style={styles.mutedRemoveBtn}
+                          >
+                            <Text style={styles.interestRemoveText}>×</Text>
+                          </TouchableOpacity>
+                        </View>
+                      ))}
+                    </View>
+                  </View>
+                );
+              })()}
+            </View>
           </View>
         )}
       </ScrollView>
@@ -981,6 +1101,32 @@ export function MyPageScreen({
                 <Text style={styles.avatarModalCloseText}>✕</Text>
               </TouchableOpacity>
             </View>
+
+            {/* 写真ライブラリからカスタム画像を選ぶ */}
+            <TouchableOpacity
+              style={styles.photoPickerButton}
+              onPress={handlePickCustomPhoto}
+              activeOpacity={0.75}
+            >
+              <View style={styles.photoPickerIconCircle}>
+                {isCustomAvatarUri(userAvatarIcon) ? (
+                  <Image
+                    source={{ uri: userAvatarIcon }}
+                    style={styles.photoPickerCurrentThumb}
+                    resizeMode="cover"
+                  />
+                ) : (
+                  <Text style={styles.photoPickerIconEmoji}>🖼</Text>
+                )}
+              </View>
+              <View style={styles.photoPickerTextWrap}>
+                <Text style={styles.photoPickerTitle}>写真ライブラリから好きな画像を選ぶ</Text>
+                <Text style={styles.photoPickerSub}>
+                  不適切な画像は端末内で自動チェックされ設定できません
+                </Text>
+              </View>
+              <Text style={styles.photoPickerArrow}>›</Text>
+            </TouchableOpacity>
 
             <View style={styles.avatarGrid}>
               {AVATAR_OPTIONS.map((opt) => {
@@ -2177,5 +2323,127 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 16,
     fontWeight: '700',
+  },
+  avatarCustomPhoto: {
+    width: '100%',
+    height: '100%',
+    borderRadius: 999,
+  },
+  customInterestCard: {
+    marginTop: 18,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 18,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  customInterestTitle: {
+    color: '#0F172A',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  customInterestSub: {
+    color: '#64748B',
+    fontSize: 12,
+    lineHeight: 17,
+    marginTop: 4,
+    marginBottom: 10,
+  },
+  customInterestAddBtn: {
+    backgroundColor: '#10B981',
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 12,
+    justifyContent: 'center',
+  },
+  interestSuggestChip: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: '#F1F5F9',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  interestSuggestChipActive: {
+    backgroundColor: '#ECFDF5',
+    borderColor: '#10B981',
+  },
+  interestSuggestChipText: {
+    color: '#475569',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  interestSuggestChipTextActive: {
+    color: '#047857',
+    fontWeight: '700',
+  },
+  interestActiveBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#ECFDF5',
+    borderWidth: 1,
+    borderColor: '#A7F3D0',
+    borderRadius: 999,
+    paddingLeft: 10,
+    paddingRight: 6,
+    paddingVertical: 4,
+    gap: 4,
+  },
+  interestActiveBadgeText: {
+    color: '#047857',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  interestRemoveText: {
+    color: '#059669',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  photoPickerButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F0FDF4',
+    borderWidth: 1,
+    borderColor: '#BBF7D0',
+    borderRadius: 16,
+    padding: 12,
+    marginBottom: 14,
+    gap: 12,
+  },
+  photoPickerIconCircle: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: '#DCFCE7',
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+  },
+  photoPickerCurrentThumb: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+  },
+  photoPickerIconEmoji: {
+    fontSize: 20,
+  },
+  photoPickerTextWrap: {
+    flex: 1,
+  },
+  photoPickerTitle: {
+    color: '#065F46',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  photoPickerSub: {
+    color: '#047857',
+    fontSize: 11,
+    marginTop: 2,
+    lineHeight: 15,
+  },
+  photoPickerArrow: {
+    color: '#059669',
+    fontSize: 22,
+    fontWeight: '600',
   },
 });

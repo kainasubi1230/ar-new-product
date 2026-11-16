@@ -1,8 +1,13 @@
-import { expandInterestTags, normalizeTag } from '../services/interestTagService';
-import { analyzeSentiment } from '../services/tagSuggestionService';
+import {
+  canonicalTagKey,
+  expandInterestTags,
+  isBlockedBySafetyFilter,
+  matchesTagFilter,
+  normalizeTag,
+} from '../services/interestTagService';
 
 /**
- * 関心タグに合う投稿を見分ける。関心タグの関連タグ（#散歩 なら #街歩き など、`INTEREST_TAG_PRESETS`）にも合えば合うとみなす。
+ * 関心タグに合う投稿を見分ける。関心タグの関連タグ・同義語・表記揺れ・派生複合タグにも合えば合うとみなす。
  * 方角タグの `highlighted`・地図のピン・ポケット通知・「関心タグのみ表示」に使う
  */
 export const matchesInterestTags = (
@@ -12,12 +17,11 @@ export const matchesInterestTags = (
   if (!postTags || postTags.length === 0 || interestTags.length === 0) {
     return false;
   }
-  const interests = expandInterestTags([...interestTags]);
-  return postTags.some((tag) => interests.has(normalizeTag(tag)));
+  return matchesTagFilter(postTags, interestTags, true);
 };
 
 /**
- * 投稿がどの関心タグに合ったか（そのまま合うものを優先し、無ければ関連タグで合ったもの）。
+ * 投稿がどの関心タグに合ったか（そのまま合うものを優先し、無ければ関連タグ・同義語で合ったもの）。
  * ポケット通知の文言「近くに #散歩 の言葉があります」に使う。合わなければ null
  */
 export const findMatchedInterestTag = (
@@ -25,10 +29,10 @@ export const findMatchedInterestTag = (
   interestTags: readonly string[]
 ): string | null => {
   if (!postTags || postTags.length === 0 || interestTags.length === 0) return null;
-  const tags = new Set(postTags.map(normalizeTag));
-  const direct = interestTags.find((t) => tags.has(normalizeTag(t)));
+  const tagKeys = new Set(postTags.map(canonicalTagKey));
+  const direct = interestTags.find((t) => tagKeys.has(canonicalTagKey(t)));
   if (direct) return normalizeTag(direct);
-  const related = interestTags.find((t) => [...expandInterestTags([t])].some((rel) => tags.has(rel)));
+  const related = interestTags.find((t) => matchesTagFilter(postTags, [t], true));
   return related ? normalizeTag(related) : null;
 };
 
@@ -48,23 +52,9 @@ export const isVisibleUnderFilters = (
 ): boolean => {
   if (options.isOwn) return true;
 
-  // 安心フィルターが有効な場合：
-  if (options.hideNegativePosts) {
-    // 1. 強いネガティブ表現の自動判定
-    if (post.message && analyzeSentiment(post.message).isNegative) {
-      return false;
-    }
-    // 2. ユーザーが見たくないものとして選んだ除外タグ（mutedTags）のチェック
-    if (options.mutedTags && options.mutedTags.length > 0) {
-      const normalizedMuted = options.mutedTags.map(normalizeTag);
-      const postTags = (post.tags ?? []).map(normalizeTag);
-      for (const mt of normalizedMuted) {
-        if (!mt) continue;
-        if (postTags.includes(mt)) return false;
-        const rawWord = mt.replace(/^#+/, '');
-        if (rawWord && post.message && post.message.includes(rawWord)) return false;
-      }
-    }
+  // 安心フィルターが有効な場合：タグ偽装対策・本文シノニムスキャン・ネガティブ判定を実行
+  if (options.hideNegativePosts && isBlockedBySafetyFilter(post, options.mutedTags)) {
+    return false;
   }
 
   if (options.onlyInterestTags && options.interestTags.length > 0 && !matchesInterestTags(post.tags, options.interestTags)) {

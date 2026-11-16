@@ -158,10 +158,52 @@ export const ALL_SUGGESTED_TAGS: string[] = [
 ];
 
 /**
- * タグ文字列を `#タグ名` の形式に正規化する
+ * 安心フィルターのタグ偽装対策：タグだけでなく本文の表現からも除外対象を検知するための関連語辞書
+ */
+export const MUTED_TOPIC_SYNONYMS: Record<string, string[]> = {
+  '#愚痴': ['愚痴', 'ぐち', '最悪', 'むかつく', 'イライラ', '嫌い', 'だるい', 'しんどい', 'つらい', 'うざい', '最低', 'ありえない'],
+  '#混雑': ['混雑', '混んで', '満員', '行列', 'ぎゅうぎゅう', '人混み', '待ち時間', '激混み', '入れない', '満席'],
+  '#騒音': ['騒音', 'うるさい', '爆音', '工事音', '騒がしい', '叫び声', '鳴り響く', 'やかましい'],
+  '#危険': ['危険', '危ない', '事故', '不審者', '立ち入り禁止', '怪我', '落下', 'スリ', '痴漢', '注意喚起'],
+  '#タバコ': ['タバコ', 'たばこ', '煙草', '喫煙', '副流煙', 'ヤニ', '煙たい'],
+  '#クレーム': ['クレーム', '苦情', '態度悪い', '接客最悪', '二度と行かない', '返金'],
+  '#トラブル': ['トラブル', '揉め事', '喧嘩', '警察', '通報', '破損', '故障'],
+};
+
+/**
+ * 関心タグ増殖対策：表記揺れ・同義語（シノニム）を同じ意味グループとして統合する辞書
+ */
+export const TAG_SYNONYM_GROUPS: string[][] = [
+  ['#カフェ', '#cafe', '#coffee', '#珈琲', '#コーヒー', '#喫茶', '#喫茶店', '#ラテ', '#スタバ'],
+  ['#散歩', '#さんぽ', '#ウォーキング', '#walking', '#散策', '#街歩き', '#お散歩', '#お散歩日和', '#ぶらぶら'],
+  ['#本', '#book', '#読書', '#小説', '#書店', '#本屋', '#図書館', '#マンガ', '#漫画'],
+  ['#グルメ', '#gourmet', '#food', '#ランチ', '#ディナー', '#ごはん', '#美味しい', '#おいしい', '#名店'],
+  ['#アート', '#art', '#美術館', '#ギャラリー', '#展示', '#個展', '#写真', '#camera', '#カメラ'],
+  ['#自然', '#nature', '#herb', '#ハーブ', '#公園', '#緑', '#木漏れ日', '#森林浴', '#海', '#景色', '#絶景'],
+  ['#歴史', '#history', '#史跡', '#レトロ', '#古民家', '#神社仏閣', '#神社', '#お寺'],
+  ['#日常', '#everyday', '#daily', '#日記', '#ひとりごと', '#独り言', '#休日'],
+];
+
+/**
+ * カタカナをひらがなへ変換・小文字化・全角英数を半角化して表記揺れを吸収する比較キー
+ */
+export function canonicalTagKey(raw: string): string {
+  const normalized = raw
+    .normalize('NFKC')
+    .trim()
+    .replace(/^#+/, '')
+    .toLowerCase();
+  // カタカナ (U+30A1 - U+30F6) をひらがな (U+3041 - U+3096) へ変換
+  return normalized.replace(/[\u30a1-\u30f6]/g, (ch) =>
+    String.fromCharCode(ch.charCodeAt(0) - 0x60)
+  );
+}
+
+/**
+ * タグ文字列を `#タグ名` の形式に正規化する（全角#・全角英数・空白を統一）
  */
 export function normalizeTag(raw: string): string {
-  const trimmed = raw.trim().replace(/^#+/, '').trim();
+  const trimmed = raw.normalize('NFKC').trim().replace(/^#+/, '').trim();
   if (!trimmed) return '';
   return `#${trimmed}`;
 }
@@ -252,7 +294,7 @@ export async function saveFilterSettings(settings: FilterSettings): Promise<Filt
 }
 
 /**
- * 指定された関心タグ（1つまたは複数）に対して、関連タグも含めた展開セットを返す
+ * 指定された関心タグ（1つまたは複数）に対して、関連タグ・同義語・表記揺れも含めた展開セットを返す
  */
 export function expandInterestTags(interestTags: string[]): Set<string> {
   const expanded = new Set<string>();
@@ -260,10 +302,22 @@ export function expandInterestTags(interestTags: string[]): Set<string> {
     const norm = normalizeTag(rawTag);
     if (!norm) continue;
     expanded.add(norm);
-    const preset = INTEREST_TAG_PRESETS.find((p) => p.tag === norm || `#${p.name}` === norm);
+    const key = canonicalTagKey(norm);
+
+    const preset = INTEREST_TAG_PRESETS.find(
+      (p) => canonicalTagKey(p.tag) === key || canonicalTagKey(p.name) === key
+    );
     if (preset) {
       for (const rel of preset.relatedTags) {
         expanded.add(normalizeTag(rel));
+      }
+    }
+
+    for (const group of TAG_SYNONYM_GROUPS) {
+      if (group.some((g) => canonicalTagKey(g) === key)) {
+        for (const syn of group) {
+          expanded.add(normalizeTag(syn));
+        }
       }
     }
   }
@@ -271,23 +325,80 @@ export function expandInterestTags(interestTags: string[]): Set<string> {
 }
 
 /**
- * 投稿のタグ配列（またはメッセージ本文）が指定されたターゲットタグ群にマッチするか判定する
+ * 安心フィルター（タグ偽装・内容不一致対策）：
+ * 投稿のタグだけでなく「本文の感情・シノニム表現」をスキャンして、見たくない内容がすり抜けるのを防ぐ。
+ */
+export function isBlockedBySafetyFilter(
+  post: { message?: string | null; tags?: readonly string[] | null },
+  mutedTags?: readonly string[]
+): boolean {
+  const message = (post.message ?? '').normalize('NFKC');
+  const messageLower = message.toLowerCase();
+
+  // 1. 本文のネガティブ感情判定（タグで「#散歩」などと偽装していてもブロック）
+  if (message && analyzeSentiment(message).isNegative) {
+    return true;
+  }
+
+  // 2. 除外タグ・除外キーワードのチェック（タグ ＋ 本文シノニム）
+  if (mutedTags && mutedTags.length > 0) {
+    const postTagKeys = (post.tags ?? []).map(canonicalTagKey);
+    for (const rawMt of mutedTags) {
+      const mt = normalizeTag(rawMt);
+      if (!mt) continue;
+      const mtKey = canonicalTagKey(mt);
+
+      // タグ自体が除外タグ（表記揺れ含む）と一致
+      if (postTagKeys.includes(mtKey)) return true;
+
+      // 本文に除外ワードが含まれている場合（タグ未設定や偽装対策）
+      const rawWord = mt.replace(/^#+/, '').toLowerCase();
+      if (rawWord && messageLower.includes(rawWord)) return true;
+
+      // 除外トピックのシノニム（例: #愚痴 → 最悪, むかつく / #混雑 → 満員, 行列）が本文に含まれる場合
+      const synonyms = MUTED_TOPIC_SYNONYMS[mt];
+      if (synonyms) {
+        for (const syn of synonyms) {
+          if (messageLower.includes(syn.toLowerCase())) {
+            return true;
+          }
+        }
+      }
+    }
+  }
+
+  return false;
+}
+
+/**
+ * 投稿のタグ配列が指定されたターゲットタグ群にマッチするか判定する
+ * （表記揺れ、同義語展開、および #隠れ家カフェ のような派生複合タグの部分一致にも対応）
  */
 export function matchesTagFilter(
-  postTags: string[] | null | undefined,
-  targetTags: string[],
+  postTags: readonly string[] | null | undefined,
+  targetTags: readonly string[],
   expandRelated = true
 ): boolean {
   if (!targetTags || targetTags.length === 0) return true;
   if (!postTags || postTags.length === 0) return false;
 
   const allowedSet = expandRelated
-    ? expandInterestTags(targetTags)
+    ? expandInterestTags([...targetTags])
     : new Set(targetTags.map(normalizeTag).filter(Boolean));
+
+  const allowedKeys = new Set(Array.from(allowedSet).map(canonicalTagKey).filter(Boolean));
+  // 2文字以上の親カテゴリ単語（例: カフェ, 散歩, グルメ）は複合タグの曖昧包含マッチにも使う
+  const prefixKeys = Array.from(allowedKeys).filter((k) => k.length >= 2);
 
   for (const pt of postTags) {
     const norm = normalizeTag(pt);
-    if (norm && allowedSet.has(norm)) {
+    if (!norm) continue;
+    if (allowedSet.has(norm)) return true;
+
+    const ptKey = canonicalTagKey(norm);
+    if (allowedKeys.has(ptKey)) return true;
+
+    if (prefixKeys.some((pk) => ptKey.includes(pk))) {
       return true;
     }
   }
@@ -341,24 +452,9 @@ export function filterPostsByCriteria<T extends FilterablePost>(
     const message = post.message ?? '';
     const postTags = post.tags && post.tags.length > 0 ? post.tags : ['#日常'];
 
-    // 1. 安心フィルター（ネガティブ判定 ＋ 見たくないタグ/キーワード除外）
-    if (hideNegativePosts) {
-      if (message) {
-        const sentiment = analyzeSentiment(message);
-        if (sentiment.isNegative) {
-          return false;
-        }
-      }
-      if (mutedTags && mutedTags.length > 0) {
-        const normMuted = mutedTags.map(normalizeTag);
-        const normPostTags = postTags.map(normalizeTag);
-        for (const mt of normMuted) {
-          if (!mt) continue;
-          if (normPostTags.includes(mt)) return false;
-          const raw = mt.replace(/^#+/, '');
-          if (raw && message.includes(raw)) return false;
-        }
-      }
+    // 1. 安心フィルター（タグ偽装・内容不一致対策を含むネガティブ判定 ＋ 除外タグ/シノニム検知）
+    if (hideNegativePosts && isBlockedBySafetyFilter({ message, tags: postTags }, mutedTags)) {
+      return false;
     }
 
     // 2. 検索キーワードフィルタリング

@@ -1,6 +1,7 @@
 import React, { ReactNode } from 'react';
 import { Image, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Icons } from '../assets/icons';
+import { isCustomAvatarUri } from '../native/AvatarPicker';
 
 type Props = {
   message: string;
@@ -100,11 +101,14 @@ export const AVATAR_ICON_MAP: Record<string, any> = {
 
 export const getAvatarIconSource = (key?: string | null): any => {
   if (!key) return Icons.mypage;
+  if (isCustomAvatarUri(key)) {
+    return { uri: key };
+  }
   const cleanKey = key.replace('@', '').toLowerCase().trim();
   return AVATAR_ICON_MAP[cleanKey] || Icons.mypage;
 };
 
-/** 下の行に置く、投稿者のアイコン（または頭文字の丸） */
+/** 下の行に置く、投稿者のアイコン（カスタム画像・アイコン・または頭文字の丸） */
 export function WordCardAvatar({
   name,
   icon,
@@ -112,11 +116,14 @@ export function WordCardAvatar({
   name: string;
   icon?: string | null;
 }): React.JSX.Element {
+  const isCustom = isCustomAvatarUri(icon);
   const iconSource = icon ? getAvatarIconSource(icon) : null;
 
   return (
     <View style={styles.avatar}>
-      {iconSource ? (
+      {isCustom && iconSource ? (
+        <Image source={iconSource} style={styles.avatarCustomImage} resizeMode="cover" />
+      ) : iconSource ? (
         <Image source={iconSource} style={styles.avatarIconImage} resizeMode="contain" />
       ) : (
         <Text style={styles.avatarText}>{name.slice(0, 1)}</Text>
@@ -219,6 +226,11 @@ const styles = StyleSheet.create({
     width: 14,
     height: 14,
     tintColor: '#047857',
+  },
+  avatarCustomImage: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
   },
   avatarText: {
     color: '#047857',

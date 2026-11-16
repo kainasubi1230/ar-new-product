@@ -14,6 +14,11 @@ export const LOCATION_ACCURACY = {
    */
   fallbackAfterMs: 20_000,
   fallbackMaxAccuracyM: 65,
+  /** 照合する地図の候補検索に使うGPS誤差の上限（m）。粗い値で遠くの地図を拾わない */
+  relocalizeMaxAccuracyM: 30,
+  /** 屋内などで良いGPSが来ないときのフォールバック上限と待ち時間 */
+  relocalizeFallbackAccuracyM: 45,
+  relocalizeFallbackAfterMs: 8_000,
   /** 平均した位置がこれ以上動いたときだけ現在地を更新する（m）。細かく揺れるたびに取り直さない */
   commitDistanceM: 5,
 } as const;

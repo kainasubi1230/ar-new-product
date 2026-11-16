@@ -13,17 +13,18 @@ export const DISTANCE_TIERS = {
   messageM: 100,
   maxM: 300,
   /**
-   * 照合する地図の候補を探す範囲は、GPS の誤差に合わせて広げる：max(preciseM, 誤差 + この値)、上限 relocalizeSearchMaxM。
-   * 照合は景色で確かめるので、GPS は候補を絞るだけでいい
+   * 照合する地図の候補を探す範囲は、GPS の誤差に合わせて絞る：max(15m, 誤差 + 10m)、上限 relocalizeSearchMaxM(40m)。
+   * 遠すぎる別の建物や通りの地図を拾わないようにする
    */
-  relocalizeSearchMarginM: 20,
-  relocalizeSearchMaxM: 100,
+  relocalizeSearchMinM: 15,
+  relocalizeSearchMarginM: 10,
+  relocalizeSearchMaxM: 40,
 } as const;
 
 /** 照合する地図の候補を探す範囲（m） */
 export const relocalizeSearchRadiusFor = (gpsAccuracyM: number | undefined): number =>
   Math.min(
-    Math.max(DISTANCE_TIERS.preciseM, (gpsAccuracyM ?? 0) + DISTANCE_TIERS.relocalizeSearchMarginM),
+    Math.max(DISTANCE_TIERS.relocalizeSearchMinM, (gpsAccuracyM ?? 0) + DISTANCE_TIERS.relocalizeSearchMarginM),
     DISTANCE_TIERS.relocalizeSearchMaxM
   );
 

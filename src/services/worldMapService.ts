@@ -89,29 +89,41 @@ export const updatePostWorldMapPostIds = async (postId: string, anchorPostIds: s
 };
 
 /**
- * 照合に使う地図を選ぶ。近くの投稿をいちばん多く含む地図にし、同じ数なら新しいほう。
+ * 照合に使う地図を選ぶ。
+ * 現在地からの距離バンド（15m刻み）が近いものを最優先し、同じ圏内の地図同士では
+ * 近くの投稿をいちばん多く含む地図（同じ数なら新しいほう）を選ぶ。
  * 今のセッションで自分が置いた投稿（excludeIds）の地図は選ばない（読み直すと出ているカードが一度消える）
  */
+const DISTANCE_BAND_M = 15;
+
 export const chooseWorldMapPost = (
   posts: NearbyWorldMapPost[],
   excludeIds: ReadonlySet<string>
 ): { post: NearbyWorldMapPost; nearbyCount: number } | null => {
   const nearbyIds = new Set(posts.map((post) => String(post.id)));
-  let best: { post: NearbyWorldMapPost; nearbyCount: number } | null = null;
+  let best: { post: NearbyWorldMapPost; nearbyCount: number; band: number } | null = null;
   for (const post of posts) {
     if (excludeIds.has(String(post.id))) continue;
     // 一覧が無い古い地図は、少なくとも自分自身のアンカーは入っている
     const anchorIds = post.worldmap_post_ids ?? [String(post.id)];
     const nearbyCount = anchorIds.filter((id) => nearbyIds.has(id)).length;
-    if (
-      !best ||
-      nearbyCount > best.nearbyCount ||
-      (nearbyCount === best.nearbyCount && post.created_at > best.post.created_at)
-    ) {
-      best = { post, nearbyCount };
+    const band = Math.floor(Math.max(0, post.distanceM) / DISTANCE_BAND_M);
+
+    const isCloserBand = !best || band < best.band;
+    const isSameBandBetter =
+      best != null &&
+      band === best.band &&
+      (nearbyCount > best.nearbyCount ||
+        (nearbyCount === best.nearbyCount && post.created_at > best.post.created_at) ||
+        (nearbyCount === best.nearbyCount &&
+          post.created_at === best.post.created_at &&
+          post.distanceM < best.post.distanceM));
+
+    if (isCloserBand || isSameBandBetter) {
+      best = { post, nearbyCount, band };
     }
   }
-  return best;
+  return best ? { post: best.post, nearbyCount: best.nearbyCount } : null;
 };
 
 // 照合に欠かせない列と、無くても照合はできる（あとから足した）列
