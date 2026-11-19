@@ -17,7 +17,6 @@ import { DiscoveryMapScreen } from './src/components/DiscoveryMapScreen';
 import { MyPageScreen } from './src/components/MyPageScreen';
 import { NotificationScreen } from './src/components/NotificationScreen';
 import { PostModal } from './src/components/PostModal';
-import { TagManageModal } from './src/components/TagManageModal';
 import {
   UniversalARView,
   type ARDebugInfoEvent,
@@ -31,33 +30,31 @@ import {
 import { ScreenHeader } from './src/components/ScreenHeader';
 import { Icons } from './src/assets/icons';
 import { insertPostWithCurrentLocation } from './src/services/postService';
-import { signOut } from './src/services/authService';
+import { deleteMyAccount, signOut } from './src/services/authService';
+import { avatarHandleFor } from './src/config/avatarColors';
 import type { LocationCoords } from './src/services/postService';
 import { findNearbyPosts, type NearbyPost } from './src/services/nearbyPostService';
 import {
+  DISTANCE_TIERS,
   geoTagLevelFor,
   geoTagProminenceFor,
   positionUncertaintyFor,
   relocalizeSearchRadiusFor,
 } from './src/config/distanceTiers';
 import { PresenceSheet } from './src/components/PresenceSheet';
+import { BottomNav, type Tab } from './src/components/BottomNav';
+import { TermsConsentModal } from './src/components/TermsConsentModal';
+import { TERMS_VERSION } from './src/config/legal';
+import { blockUser, fetchMyModeration, reportPost } from './src/services/moderationService';
+import { openPostMenu } from './src/utils/postMenu';
+import { usePocketNotice } from './src/hooks/usePocketNotice';
 import { CalmToast, type ToastKind, type ToastMessage } from './src/components/CalmToast';
 import { SparkleBurst, type Sparkle } from './src/components/SparkleBurst';
-import { findMatchedInterestTag, isVisibleUnderFilters, matchesInterestTags } from './src/utils/interestTags';
+import { isVisibleUnderFilters, matchesInterestTags } from './src/utils/interestTags';
 import { checkPostSafety } from './src/services/safetyFilter';
-import { updatePreferences, usePreferences } from './src/services/preferencesStore';
+import { usePreferences } from './src/services/preferencesStore';
 import { collectPost } from './src/services/readService';
 import { reverseGeocode } from './src/services/geocoder';
-import {
-  isPocketNoticeSupported,
-  onNotificationOpened,
-  onPocketLocation,
-  requestNotificationPermission,
-  startPocketNotice,
-  stopPocketNotice,
-  updatePocketTargets,
-} from './src/services/pocketNotificationService';
-import { POCKET_NOTICE } from './src/config/pocketNotice';
 import { GpsAverager } from './src/utils/gpsAverager';
 import { LOCATION_ACCURACY } from './src/config/locationAccuracy';
 import { SHOW_AR_DEBUG } from './src/config/debug';
@@ -75,7 +72,6 @@ import {
 } from './src/services/worldMapService';
 import { supabase } from './src/lib/supabase';
 
-type TabType = 'home' | 'radar' | 'notifications' | 'mypage';
 
 // ARWorldMap による「置いた場所の再現」は iOS (ARKit) のみ
 const isWorldMapSupported = Platform.OS === 'ios';
@@ -95,11 +91,13 @@ type TrackedCoords = LocationCoords & {
   isApproximate: boolean;
 };
 
+// 探索画面で選んだ「探している言葉」を覚えておく時間（遠くから歩いて向かう分も見込む）
+const FOCUS_EXPIRE_MS = 30 * 60 * 1000;
+
 export default function App(): React.JSX.Element {
   // ホームはAR機能そのもの
-  const [activeTab, setActiveTab] = useState<TabType>('home');
+  const [activeTab, setActiveTab] = useState<Tab>('home');
   const [isPostModalVisible, setIsPostModalVisible] = useState<boolean>(false);
-  const [isTagModalVisible, setIsTagModalVisible] = useState<boolean>(false);
 
   // Auth User
   const [user, setUser] = useState<User | null>(null);
@@ -109,8 +107,6 @@ export default function App(): React.JSX.Element {
   // AR Card Data
   const [currentMessage, setCurrentMessage] = useState<string>('ここの席、午後の光が最高。');
   const [currentAuthor] = useState<string>('sora');
-  const [currentHandle] = useState<string>('@sora');
-  const [selectedTag, setSelectedTag] = useState<string>('#カフェ');
   // これから置くカードのタグ（投稿画面で選んだもの）
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
   const [placeTrigger, setPlaceTrigger] = useState<number>(0);
@@ -142,15 +138,30 @@ export default function App(): React.JSX.Element {
   // 関心タグとポケット通知の設定（マイページ・タグ管理で変える。端末に保存）
   const {
     interestTags,
-    setInterestTags,
     pocketNoticeEnabled,
     onlyInterestTags,
     hideNegativePosts,
     mutedTags,
-    userAvatarIcon,
+    avatarColor,
   } = usePreferences();
   // 表示の設定（関心タグのみ表示・安心フィルター）で、AR・地図に出すか。自分の投稿はいつも出す
-  const isPostVisible = (post: { message?: string | null; tags?: readonly string[] | null; user_id?: string | null }) =>
+  // 通報した言葉と、ブロックした人（その人のアプリでは AR・地図・通知に出さない）
+  const [blockedUserIds, setBlockedUserIds] = useState<string[]>([]);
+  const [reportedPostIds, setReportedPostIds] = useState<string[]>([]);
+  const moderationKey = `${blockedUserIds.join('|')}/${reportedPostIds.join('|')}`;
+  // 照合で出したカードの投稿者（長押しのメニューと、ブロックしたときにもう出ているカードを消すのに使う）
+  const cardOwnersRef = React.useRef<Map<string, { userId: string | null; author: string }>>(new Map());
+  // 言葉を置く前の、利用規約への同意
+  const [isTermsVisible, setIsTermsVisible] = useState(false);
+
+  const isPostVisible = (post: {
+    id?: string | number;
+    message?: string | null;
+    tags?: readonly string[] | null;
+    user_id?: string | null;
+  }) =>
+    !(post.id != null && reportedPostIds.includes(String(post.id))) &&
+    !(post.user_id != null && blockedUserIds.includes(post.user_id)) &&
     isVisibleUnderFilters(post, {
       interestTags,
       onlyInterestTags,
@@ -158,6 +169,13 @@ export default function App(): React.JSX.Element {
       mutedTags,
       isOwn: user != null && post.user_id === user.id,
     });
+  // 探索画面に渡す版（設定が変わったときだけ作り直す。地図のピンを毎回計算し直さない）
+  const isPostVisibleForMap = React.useCallback(
+    (post: NearbyPost) => isPostVisible(post),
+    // isPostVisible が使う値だけを見る
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [interestTags, onlyInterestTags, hideNegativePosts, mutedTags, user?.id, moderationKey]
+  );
   // 位置情報が「おおよそ」でしか許可されていないと、方角タグが大きくずれる
   const [isFullAccuracy, setIsFullAccuracy] = useState<boolean>(true);
   // デバッグ表示。ふだんは出さず、ホームの見出しを長押しすると切り替わる（開発ビルドのときだけ）
@@ -172,6 +190,11 @@ export default function App(): React.JSX.Element {
   const nearbyPostsRef = React.useRef<Map<string, NearbyPost>>(new Map());
   // 「カードをタップすると、言葉を拾えます」は 1 回の起動で 1 回だけ
   const hasShownCollectHintRef = React.useRef(false);
+  // 探索画面のピンで選んだ「探している言葉」。照合ではその言葉が入った地図を最優先にする。
+  // 見つかった・景色が見つからなかった・別のピンを選んだ・FOCUS_EXPIRE_MS たったら忘れる
+  const focusRef = React.useRef<{ postId: string; setAt: number } | null>(null);
+  // ホームに戻ったときに出すお知らせ（探索画面からホームに移るときに決める）
+  const pendingHomeNoticeRef = React.useRef<{ message: string; symbol: string; subtitle?: string } | null>(null);
   // 言葉を拾ったときに弾けるキラキラ（タップした画面上の位置）
   const [sparkles, setSparkles] = useState<Sparkle[]>([]);
   // 近くの投稿（近い順）。探索（レーダー）画面に出す
@@ -194,6 +217,20 @@ export default function App(): React.JSX.Element {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((_event, session) => {
       setUser(session?.user ?? null);
+      // 前のバージョンでログイン情報に入れてしまった写真のアイコン（巨大な data: URI）を短い目印に置き換える。
+      // 残っているとトークンが巨大になり、投稿が「ログインしていない人」として保存されて地図の保存も失敗する
+      const avatarIcon = session?.user?.user_metadata?.avatar_icon;
+      if (typeof avatarIcon === 'string' && avatarIcon.length > 200) {
+        // onAuthStateChange の中で auth を待つと固まることがあるので、外に出してから呼ぶ
+        setTimeout(() => {
+          supabase.auth
+            .updateUser({ data: { avatar_icon: 'custom' } })
+            .then(({ error }) => {
+              if (error) console.warn('ログイン情報のアイコンを軽くできませんでした:', error.message);
+              else console.log('ログイン情報のアイコンを軽くしました');
+            });
+        }, 0);
+      }
       setAccessToken(session?.access_token ?? null);
     });
 
@@ -201,6 +238,16 @@ export default function App(): React.JSX.Element {
       subscription.unsubscribe();
     };
   }, []);
+
+  // 探索画面から来たときのお知らせ（作り直された AR ビューに渡す）
+  useEffect(() => {
+    if (activeTab !== 'home' || !pendingHomeNoticeRef.current) return;
+    const { message, symbol, subtitle } = pendingHomeNoticeRef.current;
+    pendingHomeNoticeRef.current = null;
+    showToast(message, 'info', { symbol, subtitle });
+    // showToast は activeTab で出し先を決めるので、activeTab の変化だけを見る
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab]);
 
   // ホーム（カメラ）を開いている間は現在地を追いかけ、30m以内に地図付きの投稿があればその地図を読み込む
   const isMappingInProgress = worldMapPhase === 'mapping' || worldMapPhase === 'uploading';
@@ -328,80 +375,40 @@ export default function App(): React.JSX.Element {
     };
   }, [isLocationActive]);
 
-  // ポケット通知：オンの間、関心タグに合うメッセージ（自分の投稿以外）をネイティブに渡して見張ってもらう。
-  // 位置の見張りと通知はネイティブ（LocaPocket）が行うので、アプリをポケットに入れても届く
-  const interestTagsKey = interestTags.join('|');
+  // ポケット通知（関心タグに合う言葉の近くに来たら通知）。通知をタップしたらホームを開く
+  usePocketNotice({
+    enabled: pocketNoticeEnabled,
+    interestTags,
+    userId: user?.id ?? null,
+    hiddenUserIds: blockedUserIds,
+    hiddenPostIds: reportedPostIds,
+    onOpened: () => setActiveTab('home'),
+  });
+
+  // ログインしたら、自分がブロックした人と通報した言葉を読み込む（ログアウトしたら空に）
   useEffect(() => {
-    if (!isPocketNoticeSupported || !pocketNoticeEnabled || interestTags.length === 0) {
-      stopPocketNotice();
+    if (!user) {
+      setBlockedUserIds([]);
+      setReportedPostIds([]);
       return;
     }
-    let cancelled = false;
-    let origin: LocationCoords | null = null;
+    fetchMyModeration()
+      .then(({ blockedUserIds: blocked, reportedPostIds: reported }) => {
+        setBlockedUserIds(blocked);
+        setReportedPostIds(reported);
+      })
+      .catch((err) => console.warn(err));
+  }, [user?.id]);
 
-    const refreshTargets = async (coords: LocationCoords) => {
-      origin = coords;
-      try {
-        const posts = await findNearbyPosts(coords, {
-          radiusM: POCKET_NOTICE.targetRadiusM,
-          limit: POCKET_NOTICE.targetLimit,
-        });
-        if (cancelled) return;
-        const targets = posts
-          .filter((post) => !user || post.user_id !== user.id)
-          .filter((post) => matchesInterestTags(post.tags, interestTags))
-          .map((post) => {
-            // 関連タグで合った投稿（#街歩き → 関心タグ #散歩）も、合った関心タグの名前で知らせる
-            const tag = findMatchedInterestTag(post.tags, interestTags);
-            return {
-              postId: String(post.id),
-              latitude: post.latitude,
-              longitude: post.longitude,
-              // Calm：本文は出さず、「このあたりにある」ことだけ伝える
-              title: tag ? `近くに ${tag} の言葉があります` : '近くに関心のある言葉があります',
-              body: 'このあたりに置かれています。ARでそっとのぞいてみてください',
-            };
-          });
-        updatePocketTargets(targets);
-      } catch (err) {
-        console.warn('ポケット通知の対象の取得に失敗しました:', err);
-      }
-    };
-
-    // 位置はネイティブから届く（最初の 1 回と、50m 動くごと）。refetchDistanceM 動いたら対象を取り直す
-    let latest: LocationCoords | null = null;
-    const subscription = onPocketLocation((location) => {
-      latest = location;
-      if (
-        !origin ||
-        distanceInMeters(origin.latitude, origin.longitude, location.latitude, location.longitude) >=
-          POCKET_NOTICE.refetchDistanceM
-      ) {
-        refreshTargets(location);
-      }
+  // もう AR に出ているカードのうち、通報した言葉とブロックした人の言葉（ネイティブが光ごと消す）
+  const hiddenPostIds = React.useMemo(() => {
+    const ids = new Set(reportedPostIds);
+    cardOwnersRef.current.forEach((owner, postId) => {
+      if (owner.userId && blockedUserIds.includes(owner.userId)) ids.add(postId);
     });
-    // 動いていなくても定期的に取り直す（同じ場所にいるまま、あとから置かれたメッセージにも気づく）
-    const refreshTimer = setInterval(() => {
-      if (latest) refreshTargets(latest);
-    }, POCKET_NOTICE.refreshIntervalMs);
-    requestNotificationPermission().then((granted) => {
-      if (!cancelled && granted) startPocketNotice([]);
-    });
-    return () => {
-      cancelled = true;
-      clearInterval(refreshTimer);
-      subscription?.remove();
-      stopPocketNotice();
-    };
-    // 関心タグの中身は interestTagsKey で見る
+    return [...ids];
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pocketNoticeEnabled, interestTagsKey, user?.id]);
-
-  // ポケット通知をタップしてアプリを開いたら、ホームのカメラを出す
-  useEffect(() => {
-    const subscription = onNotificationOpened(() => setActiveTab('home'));
-    return () => subscription?.remove();
-  }, []);
+  }, [moderationKey]);
 
   // 照合（地図の読み込み）を止めている理由。空なら照合を探しに行く。デバッグ表示にもそのまま出す
   const relocalizeBlockReasons = [
@@ -426,11 +433,38 @@ export default function App(): React.JSX.Element {
     (async () => {
       try {
         const posts = await findNearbyWorldMapPosts(relocalizeCoords, radiusM);
+        if (cancelled) return;
+        const mapPostIdsOf = (post: (typeof posts)[number]) => post.worldmap_post_ids ?? [String(post.id)];
+
+        // 探している言葉（探索画面のピンで選んだもの）があれば、その言葉が入った地図だけから選ぶ
+        if (focusRef.current && Date.now() - focusRef.current.setAt > FOCUS_EXPIRE_MS) {
+          focusRef.current = null;
+        }
+        const focusId = focusRef.current?.postId ?? null;
+        const focusMaps = focusId ? posts.filter((post) => mapPostIdsOf(post).includes(focusId)) : [];
+        if (focusId && focusMaps.length === 0) {
+          const focusPost = nearbyPostsRef.current.get(focusId);
+          if (focusPost && focusPost.distanceM <= radiusM) {
+            // すぐ近くにいるのに、その言葉が入った地図が無い（景色を記録していない投稿）。光の気配で場所を示すだけ
+            focusRef.current = null;
+            showToast('この言葉は景色の記録がありません', 'info', {
+              symbol: 'sparkles',
+              subtitle: '光の気配で場所を示しています',
+            });
+          }
+          // まだ遠いときは、ふだん通りに探して、近づくのを待つ
+        }
+        const isFocusSearch = focusMaps.length > 0;
+
         // 近くの投稿をいちばん多く含む地図を選ぶ（同じ数なら新しいほう）。今のセッションで自分が置いた投稿の地図は選ばない
-        const chosen = chooseWorldMapPost(posts, ownPostIdsRef.current);
+        const chosen = chooseWorldMapPost(isFocusSearch ? focusMaps : posts, ownPostIdsRef.current);
         const mapPost = chosen?.post;
-        // いま読み込んでいる地図と同じなら読み直さない（読み直すと出ているカードが消える）
-        const isAlreadyLoaded = mapPost != null && relocalizeTargetRef.current?.postId === String(mapPost.id);
+        // いま読み込んでいる地図と同じなら読み直さない（読み直すと出ているカードが消える）。
+        // 探している言葉が、いま読み込んでいる地図に入っているときも読み直さない
+        const loadedId = relocalizeTargetRef.current?.postId;
+        const isAlreadyLoaded =
+          mapPost != null &&
+          (loadedId === String(mapPost.id) || (isFocusSearch && focusMaps.some((post) => String(post.id) === loadedId)));
         if (SHOW_AR_DEBUG && !cancelled) {
           setRelocalizeSearchDebug({
             radiusM,
@@ -444,7 +478,7 @@ export default function App(): React.JSX.Element {
                   ? '候補が全部「自分が今置いた投稿」で除外'
                   : isAlreadyLoaded
                     ? `読み込み済みの地図（近くの投稿${chosen?.nearbyCount}件入り）`
-                    : `照合を開始（近くの投稿${chosen?.nearbyCount}件入りの地図）`,
+                    : `照合を開始（近くの投稿${chosen?.nearbyCount}件入りの地図${isFocusSearch ? '・探している言葉入り' : ''}）`,
           });
         }
         if (cancelled || !mapPost || isAlreadyLoaded) return;
@@ -456,14 +490,25 @@ export default function App(): React.JSX.Element {
         setRelocalizeTarget({
           postId: String(mapPost.id),
           worldMapPath: mapPost.worldmap_path,
-          // その地図で出せる投稿の写真を、今いる場所から近い順に（1 つの地図に何部屋分も入っていることがある）
-          snapshots: posts
-            .filter((post) => (mapPost.worldmap_post_ids ?? [String(mapPost.id)]).includes(String(post.id)))
-            .filter((post) => post.snapshot_path)
-            .sort((a, b) => a.distanceM - b.distanceM)
-            .map((post) => ({ postId: String(post.id), path: post.snapshot_path as string })),
+          // その地図で出せる投稿の写真を、今いる場所から近い順に（1 つの地図に何部屋分も入っていることがある）。
+          // 探している言葉があれば、その言葉を置いたときの写真だけ（どこに向ければいいか迷わない）
+          snapshots: (() => {
+            const all = posts
+              .filter((post) => mapPostIdsOf(mapPost).includes(String(post.id)))
+              .filter((post) => post.snapshot_path)
+              .sort((a, b) => a.distanceM - b.distanceM)
+              .map((post) => ({ postId: String(post.id), path: post.snapshot_path as string }));
+            const focusPath =
+              isFocusSearch && focusId
+                ? (posts.find((post) => String(post.id) === focusId)?.snapshot_path ??
+                  nearbyPostsRef.current.get(focusId)?.snapshot_path)
+                : null;
+            return focusId && focusPath ? [{ postId: focusId, path: focusPath }] : all;
+          })(),
           // 表示の設定で隠す投稿はカードにしない（地図にアンカーがあっても、内容を知らない投稿は出ない）
-          cards: posts.filter(isPostVisible).map((post) => ({
+          cards: posts.filter(isPostVisible).map((post) => {
+            cardOwnersRef.current.set(String(post.id), { userId: post.user_id, author: post.author ?? 'guest' });
+            return {
             postId: String(post.id),
             cardTitle: post.author ?? 'guest',
             cardDescription: post.message ?? '',
@@ -471,7 +516,8 @@ export default function App(): React.JSX.Element {
             cardColor: '#10B981',
             cardTags: post.tags ?? [],
             cardReadCount: post.read_count ?? 0,
-          })),
+            };
+          }),
           supabase: supabaseConfig,
         });
       } catch (err: any) {
@@ -533,7 +579,7 @@ export default function App(): React.JSX.Element {
     };
     // isPostVisible は interestTags・表示の設定・user で変わる
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isLocationActive, currentCoords, interestTags, onlyInterestTags, hideNegativePosts, user?.id]);
+  }, [isLocationActive, currentCoords, interestTags, onlyInterestTags, hideNegativePosts, user?.id, moderationKey]);
 
   const handleWorldMapStatus = async (event: WorldMapStatusEvent) => {
     // 依頼は受け取ってもらえたので消す。残すと、作り直された AR ビューが古い依頼をもう一度処理してしまう
@@ -567,10 +613,25 @@ export default function App(): React.JSX.Element {
       // 照合で見つかっただけ（壁の向こうの部屋の分も一度に届く）。知らせるのは画面に現れたとき（seen）
       setRelocalizationPhase(null);
     } else if (event.phase === 'seen') {
+      // 探していた言葉が現れた
+      if (focusRef.current?.postId === event.postId) {
+        focusRef.current = null;
+        const own = isOwnPost(event.postId);
+        const author = relocalizeTargetRef.current?.cards.find((c) => c.postId === event.postId)?.cardTitle;
+        if (!own) hasShownCollectHintRef.current = true;
+        showToast(own ? 'あなたの言葉が見つかりました' : `${author ?? ''}さんの言葉が見つかりました`, 'success', {
+          symbol: 'sparkles',
+          subtitle: own ? undefined : 'タップすると、言葉を拾えます',
+        });
+        return;
+      }
       // 他の人のカードが初めて画面に現れたら、タップで拾えることを 1 回だけ伝える
       if (!hasShownCollectHintRef.current && !isOwnPost(event.postId)) {
         hasShownCollectHintRef.current = true;
-        showToast('カードをタップすると、言葉を拾えます', 'info', { symbol: 'hand.tap' });
+        showToast('カードをタップすると、言葉を拾えます', 'info', {
+          symbol: 'hand.tap',
+          subtitle: '長押しで、通報やブロックもできます',
+        });
       }
     } else if (event.phase === 'relocalizedWithoutCard') {
       setRelocalizationPhase(null);
@@ -590,6 +651,7 @@ export default function App(): React.JSX.Element {
     } else if (event.phase === 'timeout') {
       // relocalizeTarget は残す（同じ場所で何度も照合し直さないため。別の場所に移動すれば探し直す）
       setRelocalizationPhase(null);
+      focusRef.current = null;
       showToast('景色が見つかりませんでした', 'info', {
         symbol: 'eye.slash',
         subtitle: 'いつもの表示に戻しました',
@@ -643,12 +705,94 @@ export default function App(): React.JSX.Element {
       });
   };
 
+  // 探索画面の「この言葉をARで探す」：その言葉を「探している言葉」にしてホームを開く。
+  // ホームに戻ると照合の候補を探し直すので、そこでその言葉の入った地図が選ばれる
+  const handleOpenARFromMap = (post: NearbyPost | null) => {
+    if (post) {
+      const postId = String(post.id);
+      focusRef.current = { postId, setAt: Date.now() };
+      const isFar = post.distanceM > DISTANCE_TIERS.relocalizeSearchMaxM;
+      pendingHomeNoticeRef.current = isFar
+        ? {
+            message: '近づくと、この言葉を探します',
+            symbol: 'location.north.line',
+            subtitle: `${post.author ?? 'guest'}さんの言葉まで ${
+              post.distanceM >= 1000 ? `${(post.distanceM / 1000).toFixed(1)}km` : `${Math.round(post.distanceM)}m`
+            }`,
+          }
+        : { message: 'この言葉を探します', symbol: 'viewfinder', subtitle: '置いたときの景色にカメラを向けてください' };
+    }
+    setActiveTab('home');
+  };
+
   const handleOpenPostCreation = () => {
     if (!user) {
       showToast('言葉を置くにはログインが必要です', 'info', { symbol: 'person.crop.circle' });
       setActiveTab('mypage');
       return;
     }
+    // 初めて置くとき（と、規約を改定したとき）は、先に利用規約への同意をもらう
+    if (user.user_metadata?.terms_accepted !== TERMS_VERSION) {
+      setIsTermsVisible(true);
+      return;
+    }
+    startPostCreation();
+  };
+
+  // 利用規約に同意したら、ログイン情報に記録して（短い値だけ）、そのまま投稿画面を開く
+  const handleAgreeTerms = () => {
+    setIsTermsVisible(false);
+    supabase.auth.updateUser({ data: { terms_accepted: TERMS_VERSION } }).then(({ error }) => {
+      if (error) console.warn('利用規約への同意を記録できませんでした:', error.message);
+    });
+    startPostCreation();
+  };
+
+  // 他の人の言葉のメニュー（通報・ブロック）。AR のカードの長押しと、探索画面のカードの「…」から
+  const handleOpenPostMenu = (postId: string, authorUserId: string | null, authorName: string) => {
+    if (!user) {
+      showToast('通報・ブロックにはログインが必要です', 'info', { symbol: 'person.crop.circle' });
+      return;
+    }
+    if (authorUserId === user.id || ownPostIdsRef.current.has(postId)) return;
+    openPostMenu({
+      authorName,
+      onReport: (reason) => {
+        reportPost(postId, reason)
+          .then(() => {
+            setReportedPostIds((prev) => (prev.includes(postId) ? prev : [...prev, postId]));
+            showToast('通報しました', 'success', {
+              symbol: 'flag',
+              subtitle: '運営が確認します。この言葉はもう表示されません',
+            });
+          })
+          .catch((err) => {
+            console.warn(err);
+            showToast('通報できませんでした', 'error');
+          });
+      },
+      onBlock: () => {
+        if (!authorUserId) {
+          showToast('この言葉の投稿者はブロックできません', 'info');
+          return;
+        }
+        blockUser(authorUserId)
+          .then(() => {
+            setBlockedUserIds((prev) => (prev.includes(authorUserId) ? prev : [...prev, authorUserId]));
+            showToast('ブロックしました', 'success', {
+              symbol: 'hand.raised',
+              subtitle: `${authorName}さんの言葉はもう表示されません`,
+            });
+          })
+          .catch((err) => {
+            console.warn(err);
+            showToast('ブロックできませんでした', 'error');
+          });
+      },
+    });
+  };
+
+  const startPostCreation = () => {
     setIsRelocalizeSuppressed(true);
     suppressedAtRef.current = currentCoords;
     // 地図の読み込み・再位置合わせの途中なら中止する（終わってからセッションをやり直すと、置いたカードが消える）
@@ -708,7 +852,6 @@ export default function App(): React.JSX.Element {
     setCurrentMessage(data.message);
     // 選んだタグをそのまま使う（空なら空のまま保存し、カードにもタグを出さない）
     setSelectedTags(tags);
-    if (tags[0]) setSelectedTag(tags[0]);
     // 投稿内容をセットして、リアルタイムプレビュー＆配置決定モードへ
     setIsPlacementMode(true);
   };
@@ -745,7 +888,7 @@ export default function App(): React.JSX.Element {
             cardTitle={currentAuthor}
             cardDescription={currentMessage}
             cardColor="#10B981"
-            cardIcon={userAvatarIcon || currentHandle}
+            cardIcon={avatarHandleFor(avatarColor)}
             cardTags={selectedTags}
             placeTrigger={placeTrigger}
             isPreviewActive={isPlacementMode}
@@ -754,6 +897,12 @@ export default function App(): React.JSX.Element {
             onCardTapped={(event) =>
               handleCardTapped(event.nativeEvent.postId, event.nativeEvent.x, event.nativeEvent.y)
             }
+            onCardLongPressed={(event) => {
+              const postId = event.nativeEvent.postId;
+              const owner = cardOwnersRef.current.get(postId);
+              handleOpenPostMenu(postId, owner?.userId ?? null, owner?.author ?? 'guest');
+            }}
+            hiddenPostIds={hiddenPostIds}
             onPresenceTapped={(event) => {
               const post = nearbyPostsRef.current.get(event.nativeEvent.postId);
               if (!post) return;
@@ -786,7 +935,8 @@ export default function App(): React.JSX.Element {
               }
               const authorName =
                 user?.user_metadata?.username || user?.email?.split('@')[0] || currentAuthor;
-              const authorHandle = userAvatarIcon || (user?.email ? `@${user.email.split('@')[0]}` : currentHandle);
+              // アイコンは名前の頭文字の丸。選んだ色を handle に入れて、他の人のカードでも同じ色で出す
+              const authorHandle = avatarHandleFor(avatarColor);
 
               showToast('言葉を置いています…', 'info', { symbol: 'arrow.up.circle' });
               try {
@@ -920,7 +1070,12 @@ export default function App(): React.JSX.Element {
             posts={nearbyPosts}
             coords={currentCoords}
             interestTags={interestTags}
-            onOpenAR={() => setActiveTab('home')}
+            onOpenAR={handleOpenARFromMap}
+            isPostVisible={isPostVisibleForMap}
+            isOwnPost={(post) => user != null && post.user_id === user.id}
+            onOpenPostMenu={(post) =>
+              handleOpenPostMenu(String(post.id), post.user_id, post.author ?? 'guest')
+            }
           />
         )}
 
@@ -937,116 +1092,41 @@ export default function App(): React.JSX.Element {
         {activeTab === 'mypage' && (
           <MyPageScreen
             onOpenARLens={() => setActiveTab('home')}
-            onOpenTagManage={() => setIsTagModalVisible(true)}
             user={user}
             onSignOut={async () => {
               await signOut();
               showToast('ログアウトしました');
             }}
+            onNotice={(message, options) => showToast(message, 'success', options)}
+            onDeleteAccount={async () => {
+              await deleteMyAccount();
+              showToast('アカウントを削除しました');
+            }}
           />
         )}
       </View>
 
-      {/* Global Bottom Navigation Bar */}
-      <View style={styles.bottomNav}>
-        <TouchableOpacity
-          style={styles.navItem}
-          onPress={() => setActiveTab('home')}
-          activeOpacity={0.7}
-        >
-          <Image
-            source={Icons.home}
-            style={[styles.navIcon, activeTab === 'home' && styles.navIconActive]}
-            resizeMode="contain"
-          />
-          <Text style={[styles.navLabel, activeTab === 'home' && styles.navLabelActive]}>
-            ホーム
-          </Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          style={styles.navItem}
-          onPress={() => setActiveTab('radar')}
-          activeOpacity={0.7}
-        >
-          <Image
-            source={Icons.search}
-            style={[styles.navIcon, activeTab === 'radar' && styles.navIconActive]}
-            resizeMode="contain"
-          />
-          <Text style={[styles.navLabel, activeTab === 'radar' && styles.navLabelActive]}>
-            探索
-          </Text>
-        </TouchableOpacity>
-
-        {/* Center Plus Button (Emerald Green circle) */}
-        <TouchableOpacity
-          style={styles.centerPlusButton}
-          onPress={() => {
-            setActiveTab('home');
-            handleOpenPostCreation();
-          }}
-          activeOpacity={0.85}
-        >
-          <View style={styles.plusBarH} />
-          <View style={styles.plusBarV} />
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          style={styles.navItem}
-          onPress={() => setActiveTab('notifications')}
-          activeOpacity={0.7}
-        >
-          <Image
-            source={Icons.notice}
-            style={[styles.navIcon, activeTab === 'notifications' && styles.navIconActive]}
-            resizeMode="contain"
-          />
-          <Text style={[styles.navLabel, activeTab === 'notifications' && styles.navLabelActive]}>
-            通知
-          </Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          style={styles.navItem}
-          onPress={() => setActiveTab('mypage')}
-          activeOpacity={0.7}
-        >
-          <Image
-            source={Icons.mypage}
-            style={[styles.navIcon, activeTab === 'mypage' && styles.navIconActive]}
-            resizeMode="contain"
-          />
-          <Text style={[styles.navLabel, activeTab === 'mypage' && styles.navLabelActive]}>
-            マイページ
-          </Text>
-        </TouchableOpacity>
-      </View>
+      <BottomNav
+        activeTab={activeTab}
+        onSelect={setActiveTab}
+        onPressPost={() => {
+          setActiveTab('home');
+          handleOpenPostCreation();
+        }}
+      />
 
       {/* Post Modal (AI suggestions, message input) */}
+      <TermsConsentModal
+        visible={isTermsVisible}
+        onAgree={handleAgreeTerms}
+        onCancel={() => setIsTermsVisible(false)}
+      />
+
       <PostModal
         visible={isPostModalVisible}
         onClose={() => setIsPostModalVisible(false)}
         onSubmit={handlePostSubmit}
         preferredTags={interestTags}
-      />
-
-      {/* Tag Management Modal (Tag filter / Calm settings) */}
-      <TagManageModal
-        visible={isTagModalVisible}
-        onClose={() => setIsTagModalVisible(false)}
-        initialTags={interestTags}
-        initialSettings={{ onlyInterestTags, hideNegativePosts, isPocketNoticeOn: pocketNoticeEnabled }}
-        onSave={(tags, settings) => {
-          setInterestTags(tags);
-          if (settings) {
-            updatePreferences({
-              onlyInterestTags: settings.onlyInterestTags,
-              hideNegativePosts: settings.hideNegativePosts,
-              pocketNoticeEnabled: settings.isPocketNoticeOn,
-            });
-          }
-        }}
       />
     </SafeAreaView>
   );
@@ -1177,78 +1257,5 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '700',
     letterSpacing: 0.3,
-  },
-
-  // Global Bottom Navigation Bar
-  bottomNav: {
-    flexDirection: 'row',
-    backgroundColor: '#FFFFFF',
-    borderTopWidth: 1,
-    borderColor: '#E2E8F0',
-    paddingTop: 10,
-    paddingBottom: Platform.OS === 'ios' ? 24 : 12,
-    paddingHorizontal: 16,
-    justifyContent: 'space-around',
-    alignItems: 'center',
-    zIndex: 30,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: -2 },
-    shadowOpacity: 0.05,
-    shadowRadius: 6,
-    elevation: 8,
-  },
-  navItem: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 6,
-    minWidth: 56,
-  },
-  navIcon: {
-    width: 26,
-    height: 26,
-    tintColor: '#94A3B8',
-  },
-  navIconActive: {
-    tintColor: '#10B981',
-  },
-  navLabel: {
-    color: '#94A3B8',
-    fontSize: 11,
-    marginTop: 4,
-    fontWeight: '600',
-  },
-  navLabelActive: {
-    color: '#059669',
-    fontWeight: '700',
-  },
-  centerPlusButton: {
-    width: 68,
-    height: 68,
-    borderRadius: 34,
-    backgroundColor: '#10B981',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginTop: -24,
-    shadowColor: '#10B981',
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.45,
-    shadowRadius: 12,
-    elevation: 10,
-    borderWidth: 4,
-    borderColor: '#FFFFFF',
-  },
-  plusBarH: {
-    position: 'absolute',
-    width: 22,
-    height: 3.5,
-    backgroundColor: '#FFFFFF',
-    borderRadius: 2,
-  },
-  plusBarV: {
-    position: 'absolute',
-    width: 3.5,
-    height: 22,
-    backgroundColor: '#FFFFFF',
-    borderRadius: 2,
   },
 });

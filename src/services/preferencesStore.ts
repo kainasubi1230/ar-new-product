@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { DEFAULT_AVATAR_COLOR } from '../config/avatarColors';
 
 /**
  * 関心タグとポケット通知のオン・オフ。端末の中（AsyncStorage）に保存し、
@@ -16,8 +17,8 @@ export type Preferences = {
   hideNegativePosts: boolean;
   /** 安心フィルターで除外するタグ一覧（「#」付き） */
   mutedTags: string[];
-  /** ユーザーのアバターアイコン識別子（例: 'mypage', 'cafe', 'walking', 'book', 'art', 'herb' など） */
-  userAvatarIcon: string;
+  /** アイコン（名前の頭文字の丸）の色（#RRGGBB、`src/config/avatarColors.ts` の AVATAR_COLORS から選ぶ） */
+  avatarColor: string;
   /** 開発用の情報（通知画面のポケット通知の状態など）を出すか。開発ビルドのときだけマイページの設定で切り替えられる */
   showDevInfo: boolean;
 };
@@ -31,7 +32,7 @@ const DEFAULT_PREFERENCES: Preferences = {
   onlyInterestTags: false,
   hideNegativePosts: true,
   mutedTags: ['#愚痴', '#混雑', '#騒音', '#危険'],
-  userAvatarIcon: 'mypage',
+  avatarColor: DEFAULT_AVATAR_COLOR,
   showDevInfo: false,
 };
 
@@ -52,6 +53,14 @@ const load = (() => {
         if (saved) {
           const parsed = JSON.parse(saved) as Partial<Preferences>;
           current = { ...DEFAULT_PREFERENCES, ...parsed };
+          // 前のバージョンのアイコン（絵・写真の userAvatarIcon）は使わなくなったので捨てる（写真は十数万文字ある）
+          if ('userAvatarIcon' in current) {
+            delete (current as Partial<Preferences> & { userAvatarIcon?: string }).userAvatarIcon;
+            AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(current)).catch(() => {});
+          }
+          if (!/^#[0-9A-Fa-f]{6}$/.test(current.avatarColor)) {
+            current.avatarColor = DEFAULT_AVATAR_COLOR;
+          }
         }
       })
       .catch(() => {})
@@ -115,6 +124,6 @@ export const usePreferences = () => {
           : [...current.mutedTags, normalized],
       });
     },
-    setUserAvatarIcon: (userAvatarIcon: string) => updatePreferences({ userAvatarIcon }),
+    setAvatarColor: (avatarColor: string) => updatePreferences({ avatarColor }),
   };
 };

@@ -13,6 +13,8 @@ RCT_EXPORT_VIEW_PROPERTY(onPresenceTapped, RCTDirectEventBlock)
 RCT_EXPORT_VIEW_PROPERTY(supabaseAccessToken, NSString)
 RCT_EXPORT_VIEW_PROPERTY(notice, NSDictionary)
 RCT_EXPORT_VIEW_PROPERTY(onCardTapped, RCTDirectEventBlock)
+RCT_EXPORT_VIEW_PROPERTY(onCardLongPressed, RCTDirectEventBlock)
+RCT_EXPORT_VIEW_PROPERTY(hiddenPostIds, NSArray)
 RCT_EXPORT_VIEW_PROPERTY(onCardPlaced, RCTDirectEventBlock)
 RCT_EXPORT_VIEW_PROPERTY(selectedModelUrl, NSString)
 RCT_EXPORT_VIEW_PROPERTY(onModelPlaced, RCTDirectEventBlock)
@@ -46,8 +48,4 @@ RCT_EXTERN_METHOD(resetNotified)
 
 @interface RCT_EXTERN_MODULE(LocaGeocoder, NSObject)
 RCT_EXTERN_METHOD(reverseGeocode:(double)latitude longitude:(double)longitude resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject)
-@end
-
-@interface RCT_EXTERN_MODULE(LocaAvatarPicker, NSObject)
-RCT_EXTERN_METHOD(pickAvatarImage:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject)
 @end

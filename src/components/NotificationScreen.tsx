@@ -3,11 +3,8 @@ import { Alert, AppState, Image, ScrollView, StyleSheet, Text, TouchableOpacity,
 import { ScreenHeader } from './ScreenHeader';
 import { NotificationCard } from './NotificationCard';
 import { Icons } from '../assets/icons';
-import { SHOW_AR_DEBUG } from '../config/debug';
-import { PocketDebugPanel } from './PocketDebugPanel';
-import { usePreferences } from '../services/preferencesStore';
 import { interestTagIcon } from '../utils/tagIcon';
-import type { NotificationItem } from '../data/notifications';
+import type { NotificationItem } from './NotificationCard';
 import {
   clearPocketHistory,
   getUnseenPocketHistory,
@@ -54,7 +51,6 @@ const iconOf = (entry: PocketHistoryEntry) => {
 /** 通知画面：届いたポケット通知の履歴（端末に保存されている） */
 export function NotificationScreen({ pocketNoticeEnabled, interestTags, onOpenAR }: Props): React.JSX.Element {
   const [history, setHistory] = useState<PocketHistoryEntry[]>([]);
-  const { showDevInfo } = usePreferences();
 
   // 画面に出した通知のうち、いちばん新しい時刻。画面を離れたらここまでを「見た」ことにする
   const latestShownAtRef = useRef(0);
@@ -139,7 +135,6 @@ export function NotificationScreen({ pocketNoticeEnabled, interestTags, onOpenAR
           </View>
         </View>
 
-        {SHOW_AR_DEBUG && showDevInfo && isPocketNoticeSupported && <PocketDebugPanel />}
 
         {history.length === 0 ? (
           <Text style={styles.emptyText}>新しい通知はありません</Text>

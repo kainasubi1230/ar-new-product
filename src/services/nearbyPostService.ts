@@ -61,3 +61,49 @@ export const findNearbyPosts = async (
     .sort((a, b) => a.distanceM - b.distanceM)
     .slice(0, limit);
 };
+
+/** 地図に映っている範囲（緯度経度の中心と幅） */
+export type MapRegion = {
+  latitude: number;
+  longitude: number;
+  latitudeDelta: number;
+  longitudeDelta: number;
+};
+
+/** 探索画面の地図で、一度に出すピンの上限（多すぎると重い） */
+export const MAP_REGION_LIMIT = 150;
+
+/**
+ * 地図に映っている範囲の投稿を、新しい順に limit 件返す（探索画面のピン用。距離の制限なし）。
+ * 距離と方角は from（今の位置。分からなければ範囲の中心）から測る
+ */
+export const findPostsInRegion = async (
+  region: MapRegion,
+  from: { latitude: number; longitude: number } | null,
+  limit: number = MAP_REGION_LIMIT
+): Promise<NearbyPost[]> => {
+  const halfLat = region.latitudeDelta / 2;
+  const halfLng = region.longitudeDelta / 2;
+  const { data, error } = await supabase
+    .from('posts')
+    .select('id, message, author, handle, tags, user_id, accuracy_m, snapshot_path, lat, lng')
+    .gte('lat', region.latitude - halfLat)
+    .lte('lat', region.latitude + halfLat)
+    .gte('lng', region.longitude - halfLng)
+    .lte('lng', region.longitude + halfLng)
+    .order('created_at', { ascending: false })
+    .limit(limit);
+
+  if (error) {
+    throw new Error(`地図の範囲の投稿の取得に失敗しました: ${error.message}`);
+  }
+
+  const origin = from ?? region;
+  return (data ?? []).map(({ lat, lng, ...post }) => ({
+    ...post,
+    latitude: lat,
+    longitude: lng,
+    distanceM: distanceInMeters(origin.latitude, origin.longitude, lat, lng),
+    bearingDeg: bearingDegrees(origin.latitude, origin.longitude, lat, lng),
+  }));
+};

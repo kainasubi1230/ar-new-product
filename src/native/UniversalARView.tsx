@@ -185,6 +185,10 @@ export type UniversalARViewProps = {
   notice?: ARNotice | null;
   /** 照合で出したカード（見えているもの）がタップされた。他の人の言葉なら拾う（iOSのみ） */
   onCardTapped?: (event: NativeSyntheticEvent<{ postId: string; x: number; y: number }>) => void;
+  /** 照合で出したカードが長押しされた。通報・ブロックのメニューを出す（iOSのみ） */
+  onCardLongPressed?: (event: NativeSyntheticEvent<{ postId: string }>) => void;
+  /** 出さない投稿（通報した言葉・ブロックした人の言葉）。もう出ているカードも消す（iOSのみ） */
+  hiddenPostIds?: string[];
   onCardPlaced?: (event: NativeSyntheticEvent<CardPlacedEvent>) => void;
   onModelPlaced?: (event: NativeSyntheticEvent<any>) => void;
   worldMapSaveRequest?: WorldMapSaveRequest | null;

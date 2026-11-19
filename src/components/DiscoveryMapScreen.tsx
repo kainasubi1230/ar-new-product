@@ -1,8 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import MapView, { Circle, Marker } from 'react-native-maps';
+import MapView, { Circle, Marker, type Region } from 'react-native-maps';
 import { ScreenHeader } from './ScreenHeader';
-import type { NearbyPost } from '../services/nearbyPostService';
+import { findPostsInRegion, MAP_REGION_LIMIT, type NearbyPost } from '../services/nearbyPostService';
 import type { LocationCoords } from '../services/postService';
 import { DISTANCE_TIERS, geoTagLevelFor } from '../config/distanceTiers';
 import { useHeading } from '../hooks/useHeading';
@@ -15,9 +15,20 @@ type Props = {
   coords: LocationCoords | null;
   /** 関心タグ。合う投稿のピンを少し目立たせる */
   interestTags: string[];
-  /** AR（ホームのカメラ）で見る */
-  onOpenAR: () => void;
+  /** AR（ホームのカメラ）で、選んだ言葉を探す（post は探す言葉。無ければふだん通り） */
+  onOpenAR: (post: NearbyPost | null) => void;
+  /** 表示の設定（関心タグのみ・安心フィルター）で出してよい投稿か。地図の範囲で取った投稿にもかける */
+  isPostVisible: (post: NearbyPost) => boolean;
+  /** 他の人の言葉のメニュー（通報・ブロック）を出す。自分の言葉では出さない */
+  onOpenPostMenu: (post: NearbyPost) => void;
+  /** 自分の投稿か（「…」を出さない） */
+  isOwnPost: (post: NearbyPost) => boolean;
 };
+
+// これより広い範囲（緯度の幅、度）を映しているときは取りに行かない（日本全体などを映すと重い・意味が薄い）
+const MAX_FETCH_SPAN_DEG = 0.6;
+// 地図を動かし終えてから取りに行くまでの待ち（動かしている途中で何度も取らない）
+const REGION_FETCH_DELAY_MS = 400;
 
 // 最初に映す範囲：方角タグの最大範囲（maxM）が画面に収まるくらい
 const INITIAL_SPAN_DEG = (DISTANCE_TIERS.maxM * 2.4) / 111320;
@@ -49,10 +60,64 @@ const tagLine = (tags: string[] | null) =>
 /**
  * 探索ページ：地図に、近くのメッセージのピンを出す（iOS は Apple のマップ。API キー・料金なし）
  */
-export function DiscoveryMapScreen({ posts, coords, interestTags, onOpenAR }: Props): React.JSX.Element {
+export function DiscoveryMapScreen({
+  posts: nearbyPosts,
+  coords,
+  interestTags,
+  onOpenAR,
+  isPostVisible,
+  onOpenPostMenu,
+  isOwnPost,
+}: Props): React.JSX.Element {
   const mapRef = useRef<MapView>(null);
   // 下のカードの方向（「右前方」など）と矢印のために、スマホの向きを使う
   const { heading } = useHeading(true);
+
+  // 地図に映っている範囲の投稿（近くの投稿に限らず、地図を動かした先の分も出す）
+  const [regionPosts, setRegionPosts] = useState<NearbyPost[]>([]);
+  const [isZoomedOutTooFar, setIsZoomedOutTooFar] = useState(false);
+  const [isRegionFull, setIsRegionFull] = useState(false);
+  const regionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const regionRequestRef = useRef(0);
+  const coordsRef = useRef(coords);
+  coordsRef.current = coords;
+
+  const loadRegion = (region: Region) => {
+    if (regionTimerRef.current) clearTimeout(regionTimerRef.current);
+    if (region.latitudeDelta > MAX_FETCH_SPAN_DEG) {
+      setIsZoomedOutTooFar(true);
+      return;
+    }
+    setIsZoomedOutTooFar(false);
+    regionTimerRef.current = setTimeout(() => {
+      const requestId = ++regionRequestRef.current;
+      findPostsInRegion(region, coordsRef.current)
+        .then((found) => {
+          // 古い問い合わせの結果が、あとから届いて上書きしないように
+          if (requestId !== regionRequestRef.current) return;
+          setRegionPosts(found);
+          setIsRegionFull(found.length >= MAP_REGION_LIMIT);
+        })
+        .catch((err) => console.warn(err));
+    }, REGION_FETCH_DELAY_MS);
+  };
+
+  useEffect(
+    () => () => {
+      if (regionTimerRef.current) clearTimeout(regionTimerRef.current);
+    },
+    []
+  );
+
+  // 近くの投稿（現在地からの正確な距離つき）と、地図の範囲の投稿を合わせて、近い順に。表示の設定で隠すものは出さない
+  const posts = useMemo(() => {
+    const byId = new Map<string, NearbyPost>();
+    for (const post of regionPosts) {
+      if (isPostVisible(post)) byId.set(String(post.id), post);
+    }
+    for (const post of nearbyPosts) byId.set(String(post.id), post);
+    return [...byId.values()].sort((a, b) => a.distanceM - b.distanceM);
+  }, [regionPosts, nearbyPosts, isPostVisible]);
 
   // 選んだ投稿（最初は一番近いもの）。一覧から消えたら一番近いものに戻す
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -107,6 +172,7 @@ export function DiscoveryMapScreen({ posts, coords, interestTags, onOpenAR }: Pr
           showsCompass
           showsPointsOfInterests={false}
           pitchEnabled={false}
+          onRegionChangeComplete={loadRegion}
           initialRegion={
             coords
               ? {
@@ -164,11 +230,13 @@ export function DiscoveryMapScreen({ posts, coords, interestTags, onOpenAR }: Pr
         {/* 件数 */}
         <View style={styles.statusPill} pointerEvents="none">
           <Text style={styles.statusText}>
-            {!coords
-              ? '現在地を調べています…'
-              : posts.length > 0
-                ? `${DISTANCE_TIERS.maxM}m以内に ${posts.length} 件のメッセージ`
-                : `${DISTANCE_TIERS.maxM}m以内にメッセージはまだありません`}
+            {isZoomedOutTooFar
+              ? '近づけると、メッセージが表示されます'
+              : !coords && posts.length === 0
+                ? '現在地を調べています…'
+                : posts.length > 0
+                  ? `この範囲に ${posts.length}${isRegionFull ? '+' : ''} 件のメッセージ`
+                  : 'この範囲にメッセージはまだありません'}
           </Text>
         </View>
 
@@ -198,6 +266,18 @@ export function DiscoveryMapScreen({ posts, coords, interestTags, onOpenAR }: Pr
                 </Text>
                 <Text style={styles.cardAuthor}>{selected.author ?? 'guest'}さんのメッセージ</Text>
               </View>
+              {!isOwnPost(selected) && (
+                <TouchableOpacity
+                  style={styles.menuButton}
+                  onPress={() => onOpenPostMenu(selected)}
+                  hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                  activeOpacity={0.6}
+                >
+                  <View style={styles.menuDot} />
+                  <View style={styles.menuDot} />
+                  <View style={styles.menuDot} />
+                </TouchableOpacity>
+              )}
             </View>
 
             {/* 本文は AR と同じルール：messageM 以内のときだけ。すぐ近くでは「このあたり」とだけ伝える */}
@@ -212,8 +292,12 @@ export function DiscoveryMapScreen({ posts, coords, interestTags, onOpenAR }: Pr
             )}
             {tagLine(selected.tags) !== '' && <Text style={styles.cardTags}>{tagLine(selected.tags)}</Text>}
 
-            <TouchableOpacity style={styles.arButton} activeOpacity={0.85} onPress={onOpenAR}>
-              <Text style={styles.arButtonText}>ARで見る</Text>
+            <TouchableOpacity
+              style={styles.arButton}
+              activeOpacity={0.85}
+              onPress={() => onOpenAR(selected)}
+            >
+              <Text style={styles.arButtonText}>この言葉をARで探す</Text>
             </TouchableOpacity>
           </View>
         ) : (
@@ -395,5 +479,20 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 15,
     fontWeight: '700',
+  },
+  // 通報・ブロックのメニュー（…）
+  menuButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    paddingHorizontal: 6,
+    paddingVertical: 8,
+    marginLeft: 8,
+  },
+  menuDot: {
+    width: 4,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: '#94A3B8',
   },
 });

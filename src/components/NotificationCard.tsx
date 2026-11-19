@@ -1,6 +1,14 @@
 import React from 'react';
 import { Image, ImageSourcePropType, StyleSheet, Text, TouchableOpacity, View, ViewStyle } from 'react-native';
-import { NotificationItem } from '../data/notifications';
+
+/** 通知画面の 1 件 */
+export type NotificationItem = {
+  id: string;
+  title: string;
+  body: string;
+  time: string;
+  tag: string;
+};
 
 type Props = {
   item: NotificationItem;

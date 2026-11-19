@@ -1,9 +1,5 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { analyzeSentiment } from './tagSuggestionService';
 import { checkPostSafety } from './safetyFilter';
-
-const STORAGE_KEY_INTEREST_TAGS = '@loca:interest_tags_v1';
-const STORAGE_KEY_FILTER_SETTINGS = '@loca:filter_settings_v1';
 
 export interface InterestTagPreset {
   id: string;
@@ -12,17 +8,6 @@ export interface InterestTagPreset {
   desc: string;
   defaultEnabled: boolean;
   relatedTags: string[]; // 同カテゴリの関連タグ（フィルタリング時に一致とみなす）
-}
-
-export interface FilterSettings {
-  /** 関心タグのみをAR空間・レーダーに表示するか */
-  onlyInterestTags: boolean;
-  /** 安心フィルター（ネガティブ投稿や見たくないタグを非表示にするか） */
-  hideNegativePosts: boolean;
-  /** ポケット通知（関心タグ一致時の通知）をONにするか */
-  isPocketNoticeOn: boolean;
-  /** 安心フィルターで除外するタグ一覧（「#」付き） */
-  mutedTags?: string[];
 }
 
 export const DEFAULT_MUTED_TAG_PRESETS = [
@@ -34,13 +19,6 @@ export const DEFAULT_MUTED_TAG_PRESETS = [
   '#クレーム',
   '#トラブル',
 ];
-
-export const DEFAULT_FILTER_SETTINGS: FilterSettings = {
-  onlyInterestTags: false,
-  hideNegativePosts: true,
-  isPocketNoticeOn: true,
-  mutedTags: ['#愚痴', '#混雑', '#騒音', '#危険'],
-};
 
 export const INTEREST_TAG_PRESETS: InterestTagPreset[] = [
   {
@@ -139,28 +117,6 @@ export const INTEREST_TAG_PRESETS: InterestTagPreset[] = [
   },
 ];
 
-export const ALL_SUGGESTED_TAGS: string[] = [
-  '#カフェ',
-  '#グルメ',
-  '#散歩',
-  '#日常',
-  '#本',
-  '#自然',
-  '#アート',
-  '#歴史',
-  '#写真',
-  '#絶景',
-  '#思い出',
-  '#隠れ家',
-  '#ランチ',
-  '#スイーツ',
-  '#サウナ',
-  '#街歩き',
-];
-
-/**
- * 安心フィルターのタグ偽装対策：タグだけでなく本文の表現からも除外対象を検知するための関連語辞書
- */
 export const MUTED_TOPIC_SYNONYMS: Record<string, string[]> = {
   '#愚痴': ['愚痴', 'ぐち', '最悪', 'むかつく', 'イライラ', '嫌い', 'だるい', 'しんどい', 'つらい', 'うざい', '最低', 'ありえない'],
   '#混雑': ['混雑', '混んで', '満員', '行列', 'ぎゅうぎゅう', '人混み', '待ち時間', '激混み', '入れない', '満席'],
@@ -207,91 +163,6 @@ export function normalizeTag(raw: string): string {
   const trimmed = raw.normalize('NFKC').trim().replace(/^#+/, '').trim();
   if (!trimmed) return '';
   return `#${trimmed}`;
-}
-
-/**
- * デフォルトの関心タグ配列（#付き）を返す
- */
-export function getDefaultInterestTags(): string[] {
-  return INTEREST_TAG_PRESETS.filter((p) => p.defaultEnabled).map((p) => p.tag);
-}
-
-/**
- * 保存済みの関心タグ一覧を取得する
- */
-export async function loadInterestTags(): Promise<string[]> {
-  try {
-    const raw = await AsyncStorage.getItem(STORAGE_KEY_INTEREST_TAGS);
-    if (!raw) return getDefaultInterestTags();
-    const parsed = JSON.parse(raw);
-    if (Array.isArray(parsed)) {
-      const normalized = parsed
-        .map((t) => (typeof t === 'string' ? normalizeTag(t) : ''))
-        .filter((t) => t.length > 1);
-      return Array.from(new Set(normalized));
-    }
-  } catch (e) {
-    console.warn('[interestTagService] Failed to load interest tags:', e);
-  }
-  return getDefaultInterestTags();
-}
-
-/**
- * 関心タグ一覧を保存する
- */
-export async function saveInterestTags(tags: string[]): Promise<string[]> {
-  const normalized = Array.from(
-    new Set(tags.map((t) => normalizeTag(t)).filter((t) => t.length > 1))
-  );
-  try {
-    await AsyncStorage.setItem(STORAGE_KEY_INTEREST_TAGS, JSON.stringify(normalized));
-  } catch (e) {
-    console.warn('[interestTagService] Failed to save interest tags:', e);
-  }
-  return normalized;
-}
-
-/**
- * フィルター設定を読み込む
- */
-export async function loadFilterSettings(): Promise<FilterSettings> {
-  try {
-    const raw = await AsyncStorage.getItem(STORAGE_KEY_FILTER_SETTINGS);
-    if (!raw) return { ...DEFAULT_FILTER_SETTINGS };
-    const parsed = JSON.parse(raw);
-    return {
-      onlyInterestTags:
-        typeof parsed?.onlyInterestTags === 'boolean'
-          ? parsed.onlyInterestTags
-          : DEFAULT_FILTER_SETTINGS.onlyInterestTags,
-      hideNegativePosts:
-        typeof parsed?.hideNegativePosts === 'boolean'
-          ? parsed.hideNegativePosts
-          : DEFAULT_FILTER_SETTINGS.hideNegativePosts,
-      isPocketNoticeOn:
-        typeof parsed?.isPocketNoticeOn === 'boolean'
-          ? parsed.isPocketNoticeOn
-          : DEFAULT_FILTER_SETTINGS.isPocketNoticeOn,
-      mutedTags: Array.isArray(parsed?.mutedTags)
-        ? parsed.mutedTags.map(normalizeTag).filter(Boolean)
-        : DEFAULT_FILTER_SETTINGS.mutedTags,
-    };
-  } catch (e) {
-    console.warn('[interestTagService] Failed to load filter settings:', e);
-    return { ...DEFAULT_FILTER_SETTINGS };
-  }
-}
-
-/**
- * フィルター設定を保存する
- */
-export async function saveFilterSettings(settings: FilterSettings): Promise<FilterSettings> {
-  try {
-    await AsyncStorage.setItem(STORAGE_KEY_FILTER_SETTINGS, JSON.stringify(settings));
-  } catch (e) {
-    console.warn('[interestTagService] Failed to save filter settings:', e);
-  }
-  return settings;
 }
 
 /**
@@ -410,86 +281,3 @@ export function matchesTagFilter(
   }
   return false;
 }
-
-export interface FilterablePost {
-  message?: string | null;
-  tags?: string[] | null;
-}
-
-export interface PostFilterOptions {
-  /**
-   * 選択中の単一タグフィルタ:
-   * - null または 'ALL': すべて（ただし onlyInterestTags が true なら関心タグで絞る）
-   * - '__INTEREST__': 関心タグに一致するもののみ
-   * - '#カフェ' 等の具体タグ: そのタグ（および関連タグ）に一致するもののみ
-   */
-  activeFilterTag?: string | null;
-  /** ユーザーが設定している関心タグ一覧 */
-  interestTags?: string[];
-  /** 関心タグのみ表示モードがONか */
-  onlyInterestTags?: boolean;
-  /** ネガティブ投稿を非表示にするか */
-  hideNegativePosts?: boolean;
-  /** 安心フィルターで除外するタグ一覧 */
-  mutedTags?: string[];
-  /** 検索キーワード（任意） */
-  searchQuery?: string;
-}
-
-/**
- * 投稿リストをタグ・関心タグ・ネガティブ感情フィルター・検索キーワードで絞り込む
- */
-export function filterPostsByCriteria<T extends FilterablePost>(
-  posts: T[],
-  options: PostFilterOptions
-): T[] {
-  const {
-    activeFilterTag = null,
-    interestTags = [],
-    onlyInterestTags = false,
-    hideNegativePosts = true,
-    mutedTags = [],
-    searchQuery = '',
-  } = options;
-
-  const trimmedQuery = searchQuery.trim().toLowerCase();
-
-  return posts.filter((post) => {
-    const message = post.message ?? '';
-    const postTags = post.tags && post.tags.length > 0 ? post.tags : ['#日常'];
-
-    // 1. 安心フィルター（タグ偽装・内容不一致対策を含むネガティブ判定 ＋ 除外タグ/シノニム検知）
-    if (hideNegativePosts && isBlockedBySafetyFilter({ message, tags: postTags }, mutedTags)) {
-      return false;
-    }
-
-    // 2. 検索キーワードフィルタリング
-    if (trimmedQuery) {
-      const inMessage = message.toLowerCase().includes(trimmedQuery);
-      const inTags = postTags.some((t) => t.toLowerCase().includes(trimmedQuery));
-      if (!inMessage && !inTags) {
-        return false;
-      }
-    }
-
-    // 3. タグ・関心タグフィルタリング
-    if (activeFilterTag && activeFilterTag !== 'ALL') {
-      if (activeFilterTag === '__INTEREST__') {
-        if (interestTags.length > 0 && !matchesTagFilter(postTags, interestTags, true)) {
-          return false;
-        }
-      } else {
-        if (!matchesTagFilter(postTags, [activeFilterTag], true)) {
-          return false;
-        }
-      }
-    } else if (onlyInterestTags && interestTags.length > 0) {
-      if (!matchesTagFilter(postTags, interestTags, true)) {
-        return false;
-      }
-    }
-
-    return true;
-  });
-}
-

@@ -1,7 +1,7 @@
 import React, { ReactNode } from 'react';
 import { Image, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Icons } from '../assets/icons';
-import { isCustomAvatarUri } from '../native/AvatarPicker';
+import { avatarColorOf } from '../config/avatarColors';
 
 type Props = {
   message: string;
@@ -10,14 +10,16 @@ type Props = {
   /** 下の行の左側（日付・読まれた人数・投稿者など） */
   footer: ReactNode;
   onDelete: () => void;
+  /** 削除の通信中（カードを薄くし、「削除」を「削除中…」にして押せなくする） */
+  isDeleting?: boolean;
 };
 
 /**
  * マイページの「残した言葉」「拾った言葉」のカード。本文をいちばん目立たせ、タグ、下の行（日付など・削除）の順に並べる
  */
-export function WordCard({ message, tags, footer, onDelete }: Props): React.JSX.Element {
+export function WordCard({ message, tags, footer, onDelete, isDeleting = false }: Props): React.JSX.Element {
   return (
-    <View style={styles.card}>
+    <View style={[styles.card, styles.cardSpacing, isDeleting && styles.cardDeleting]}>
       <Text style={styles.message}>{message}</Text>
 
       {tags.length > 0 && (
@@ -34,8 +36,13 @@ export function WordCard({ message, tags, footer, onDelete }: Props): React.JSX.
 
       <View style={styles.footerRow}>
         <View style={styles.footerLeft}>{footer}</View>
-        <TouchableOpacity onPress={onDelete} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }} activeOpacity={0.6}>
-          <Text style={styles.deleteText}>削除</Text>
+        <TouchableOpacity
+          onPress={onDelete}
+          disabled={isDeleting}
+          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+          activeOpacity={0.6}
+        >
+          <Text style={styles.deleteText}>{isDeleting ? '削除中…' : '削除'}</Text>
         </TouchableOpacity>
       </View>
     </View>
@@ -101,14 +108,11 @@ export const AVATAR_ICON_MAP: Record<string, any> = {
 
 export const getAvatarIconSource = (key?: string | null): any => {
   if (!key) return Icons.mypage;
-  if (isCustomAvatarUri(key)) {
-    return { uri: key };
-  }
   const cleanKey = key.replace('@', '').toLowerCase().trim();
   return AVATAR_ICON_MAP[cleanKey] || Icons.mypage;
 };
 
-/** 下の行に置く、投稿者のアイコン（カスタム画像・アイコン・または頭文字の丸） */
+/** 下の行に置く、投稿者のアイコン（選んだ色の丸に名前の頭文字。古い投稿は絵のアイコン） */
 export function WordCardAvatar({
   name,
   icon,
@@ -116,14 +120,19 @@ export function WordCardAvatar({
   name: string;
   icon?: string | null;
 }): React.JSX.Element {
-  const isCustom = isCustomAvatarUri(icon);
+  const color = avatarColorOf(icon);
+  if (color) {
+    return (
+      <View style={[styles.avatar, { backgroundColor: color }]}>
+        <Text style={[styles.avatarText, styles.avatarTextOnColor]}>{name.slice(0, 1)}</Text>
+      </View>
+    );
+  }
   const iconSource = icon ? getAvatarIconSource(icon) : null;
 
   return (
     <View style={styles.avatar}>
-      {isCustom && iconSource ? (
-        <Image source={iconSource} style={styles.avatarCustomImage} resizeMode="cover" />
-      ) : iconSource ? (
+      {iconSource ? (
         <Image source={iconSource} style={styles.avatarIconImage} resizeMode="contain" />
       ) : (
         <Text style={styles.avatarText}>{name.slice(0, 1)}</Text>
@@ -227,15 +236,20 @@ const styles = StyleSheet.create({
     height: 14,
     tintColor: '#047857',
   },
-  avatarCustomImage: {
-    width: 22,
-    height: 22,
-    borderRadius: 11,
-  },
   avatarText: {
     color: '#047857',
     fontSize: 11,
     fontWeight: '800',
+  },
+  avatarTextOnColor: {
+    color: '#FFFFFF',
+  },
+  // 一覧でのカードどうしの間（削除で畳むときに一緒に畳まれるよう、カードの側に持たせる）
+  cardSpacing: {
+    marginBottom: 12,
+  },
+  cardDeleting: {
+    opacity: 0.5,
   },
   deleteText: {
     color: '#94A3B8',

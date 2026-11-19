@@ -156,6 +156,15 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
   }
   // { postId, x, y } 照合で出した他の人のカードがタップされた（言葉を拾う）。x, y はタップした画面上の位置
   @objc var onCardTapped: RCTDirectEventBlock?
+  // { postId } 照合で出したカードが長押しされた（JS が通報・ブロックのメニューを出す）
+  @objc var onCardLongPressed: RCTDirectEventBlock?
+  // 出さない投稿（通報した言葉・ブロックした人の言葉）。もう出ているカードも、光ごと消す
+  @objc var hiddenPostIds: NSArray? {
+    didSet {
+      hiddenPosts = Set((hiddenPostIds ?? []).compactMap { Self.stringValue($0) })
+    }
+  }
+  private var hiddenPosts: Set<String> = []
   @objc var onCardPlaced: RCTDirectEventBlock?
   @objc var onModelPlaced: RCTDirectEventBlock?
   @objc var onWorldMapStatus: RCTDirectEventBlock?
@@ -328,11 +337,17 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
     var isSettled = false
     var lastAnchorPosition: SIMD3<Float>?
     var stableSince: Date?
+    // 初めて画面の中で現れたか（見つけた演出は 1 回だけ。それまでは画面に入るのを待つ）
+    var hasMaterialized = false
+    // 現れる途中の大きさ・位置の変化を終えたか（終えたら毎フレーム書き換えない＝タップのふくらみを邪魔しない）
+    var isTransformAtRest = false
   }
   // アンカーの位置がこの距離（m）以内の揺れに収まっていれば「落ち着いた」とみなす
   private static let anchorSettleTolerance: Float = 0.015
   // その状態がこの時間続いたらカードを出す
   private static let anchorSettleDuration: TimeInterval = 0.5
+  // 見つけたカードが浮かび上がってくる距離（m）
+  private static let revealRiseDistance: Float = 0.05
   private var revealCards: [RevealCard] = []
   private static let revealGlowSize: Float = 0.6
   // 隠れている間の光の濃さ（別の部屋にメッセージがあることのヒント。くっきりは見せない）
@@ -435,6 +450,32 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
     }
     return material
   }()
+
+  // 置いた・見つけたときに広がる光の輪（中が抜けた輪の絵）
+  private lazy var haloMaterial: UnlitMaterial = {
+    var material = UnlitMaterial()
+    material.blending = .transparent(opacity: .init(scale: 1.0))
+    if let cgImage = Self.haloRingImage(),
+       let texture = try? TextureResource.generate(from: cgImage, options: .init(semantic: .color)) {
+      material.color = .init(tint: .white, texture: .init(texture))
+    }
+    return material
+  }()
+
+  // 置いた・見つけたときの演出（カードの動き・光の輪・光の粒）。毎フレーム進める
+  private struct Effect {
+    let entity: Entity
+    let start: Date
+    let delay: TimeInterval
+    let duration: TimeInterval
+    // 終わったらエンティティを消すか（光の輪・粒は消す。カードは残す）
+    let removesWhenDone: Bool
+    // 進み具合（0〜1）を受け取って見た目を変える
+    let update: (Entity, Float) -> Void
+  }
+  private var effects: [Effect] = []
+  private lazy var softHaptic = UIImpactFeedbackGenerator(style: .soft)
+  private var lastHapticAt = Date.distantPast
 
   // 地図の記録・照合中の案内（ARCoachingOverlayView と同じ雰囲気の自前 UI）
   private let guideHUD = ARGuideHUDView()
@@ -579,6 +620,7 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
       self?.emitDebugInfoIfNeeded()
       self?.cycleRelocalizationSnapshot()
       self?.updateCardReveal()
+      self?.updateEffects()
     }
   }
 
@@ -816,6 +858,19 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
   private func setupTapGesture() {
     let tap = UITapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
     arView.addGestureRecognizer(tap)
+    // カードの長押しで、通報・ブロックのメニュー
+    let longPress = UILongPressGestureRecognizer(target: self, action: #selector(handleLongPress(_:)))
+    longPress.minimumPressDuration = 0.5
+    arView.addGestureRecognizer(longPress)
+  }
+
+  @objc
+  private func handleLongPress(_ recognizer: UILongPressGestureRecognizer) {
+    guard recognizer.state == .began, !isPreviewActive else { return }
+    let location = recognizer.location(in: arView)
+    guard let card = revealedCard(at: location) else { return }
+    pulse(card.card)
+    onCardLongPressed?(["postId": card.postId])
   }
 
   func placeCardAtTarget() {
@@ -869,7 +924,137 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
   // 照合で出したカードのうち、隠れずに見えているもの（タップで拾える）
   private func revealedCard(at location: CGPoint) -> RevealCard? {
     guard let hit = arView.entity(at: location) else { return nil }
-    return revealCards.first { $0.reveal >= 0.5 && $0.card === hit }
+    return revealCards.first { $0.reveal >= 0.5 && $0.card === hit && !hiddenPosts.contains($0.postId) }
+  }
+
+  // MARK: - 置いた・見つけたときの演出（Calm：音は出さず、光と小さな振動だけ）
+
+  private func runEffect(
+    _ entity: Entity,
+    delay: TimeInterval = 0,
+    duration: TimeInterval,
+    removesWhenDone: Bool = true,
+    update: @escaping (Entity, Float) -> Void
+  ) {
+    effects.append(Effect(
+      entity: entity, start: Date(), delay: delay, duration: duration, removesWhenDone: removesWhenDone, update: update))
+  }
+
+  private func updateEffects() {
+    guard !effects.isEmpty else { return }
+    let now = Date()
+    effects.removeAll { effect in
+      // カードごと消えた（セッションのやり直しなど）ときは、演出も終わり
+      guard effect.entity.parent != nil else { return true }
+      let elapsed = now.timeIntervalSince(effect.start) - effect.delay
+      if elapsed < 0 {
+        if effect.removesWhenDone { effect.entity.isEnabled = false }
+        return false
+      }
+      effect.entity.isEnabled = true
+      let progress = Float(min(elapsed / effect.duration, 1))
+      effect.update(effect.entity, progress)
+      guard progress >= 1 else { return false }
+      if effect.removesWhenDone { effect.entity.removeFromParent() }
+      return true
+    }
+  }
+
+  private static func easeOutCubic(_ t: Float) -> Float { 1 - pow(1 - t, 3) }
+
+  private func playHaptic(intensity: CGFloat) {
+    let now = Date()
+    // いくつも続けて見つかったときに震えっぱなしにならないよう、間をあける
+    guard now.timeIntervalSince(lastHapticAt) > 0.6 else { return }
+    lastHapticAt = now
+    softHaptic.impactOccurred(intensity: intensity)
+  }
+
+  // カードの後ろから、光の輪がふわっと広がって消える
+  private func spawnHalo(in holder: Entity, delay: TimeInterval, from startSize: Float, to endSize: Float, duration: TimeInterval) {
+    let halo = ModelEntity(mesh: presenceMesh, materials: [haloMaterial])
+    // カードの面と同じ向き（カードの少し後ろ）。カードからはみ出した輪だけが見える
+    halo.position = SIMD3<Float>(0, 0, -0.004)
+    halo.scale = SIMD3<Float>(repeating: startSize)
+    halo.isEnabled = false
+    holder.addChild(halo)
+    runEffect(halo, delay: delay, duration: duration) { entity, p in
+      let k = Self.easeOutCubic(p)
+      entity.scale = SIMD3<Float>(repeating: startSize + (endSize - startSize) * k)
+      Self.setOpacity(0.9 * (1 - k), of: entity)
+    }
+  }
+
+  // カードのまわりから、小さな光の粒がゆっくり立ちのぼって消える
+  private func spawnSparkles(in holder: Entity, count: Int, delay: TimeInterval) {
+    for i in 0..<count {
+      let sparkle = ModelEntity(mesh: presenceMesh, materials: [presenceMaterial])
+      // カードのふち（幅 0.38 × 高さ 0.24）あたりに散らす
+      let angle = Float(i) / Float(count) * 2 * .pi + Float.random(in: -0.3...0.3)
+      let start = SIMD3<Float>(cos(angle) * 0.2, sin(angle) * 0.13, 0.01)
+      let drift = SIMD3<Float>(cos(angle) * 0.03, Float.random(in: 0.08...0.14), 0.02)
+      let size = Float.random(in: 0.022...0.04)
+      sparkle.position = start
+      sparkle.scale = .zero
+      sparkle.isEnabled = false
+      holder.addChild(sparkle)
+      runEffect(sparkle, delay: delay + Double.random(in: 0...0.25), duration: Double.random(in: 1.0...1.5)) { entity, p in
+        entity.position = start + drift * Self.easeOutCubic(p)
+        // ふくらんでから、しぼんで消える（透明度を変えられない iOS でも消えるように大きさで）
+        let swell = sin(p * .pi)
+        entity.scale = SIMD3<Float>(repeating: size * swell)
+        Self.setOpacity(swell, of: entity)
+      }
+    }
+  }
+
+  // 置いたとき：半透明のプレビューのまま少し上から、紙をそっと置くように降りて実体になる。着いた瞬間に光の輪と粒
+  private func playPlacementEffect(card: ModelEntity, holder: Entity) {
+    let lift: Float = 0.03
+    let landing: TimeInterval = 0.45
+    card.position = SIMD3<Float>(0, lift, 0)
+    card.scale = SIMD3<Float>(repeating: 0.97)
+    Self.setOpacity(0.6, of: card)
+    runEffect(card, duration: landing, removesWhenDone: false) { entity, p in
+      let k = Self.easeOutCubic(p)
+      entity.position = SIMD3<Float>(0, lift * (1 - k), 0)
+      entity.scale = SIMD3<Float>(repeating: 0.97 + 0.03 * k)
+      Self.setOpacity(0.6 + 0.4 * k, of: entity)
+    }
+    spawnHalo(in: holder, delay: landing * 0.85, from: 0.3, to: 0.75, duration: 0.9)
+    spawnSparkles(in: holder, count: 5, delay: landing * 0.85)
+    DispatchQueue.main.asyncAfter(deadline: .now() + landing * 0.85) { [weak self] in
+      self?.playHaptic(intensity: 0.8)
+    }
+  }
+
+  // 見つけたとき：光が集まってカードになる（カードの動きは updateCardReveal）。ゆっくり広がる輪と、立ちのぼる粒
+  private func playDiscoveryEffect(holder: Entity) {
+    spawnHalo(in: holder, delay: 0.1, from: 0.2, to: 0.9, duration: 1.4)
+    spawnSparkles(in: holder, count: 8, delay: 0.15)
+    playHaptic(intensity: 0.5)
+  }
+
+  private static func haloRingImage() -> CGImage? {
+    let size = CGSize(width: 256, height: 256)
+    let image = UIGraphicsImageRenderer(size: size).image { context in
+      let ring = UIColor(red: 0.62, green: 0.95, blue: 0.8, alpha: 0.95)
+      let colors = [
+        ring.withAlphaComponent(0).cgColor,
+        ring.withAlphaComponent(0).cgColor,
+        ring.cgColor,
+        UIColor(red: 0.94, green: 1, blue: 0.97, alpha: 1).cgColor,
+        ring.withAlphaComponent(0).cgColor,
+      ] as CFArray
+      guard let gradient = CGGradient(
+        colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: colors, locations: [0, 0.6, 0.8, 0.86, 1]
+      ) else { return }
+      let center = CGPoint(x: size.width / 2, y: size.height / 2)
+      context.cgContext.drawRadialGradient(
+        gradient, startCenter: center, startRadius: 0, endCenter: center, endRadius: size.width / 2, options: []
+      )
+    }
+    return image.cgImage
   }
 
   // タップしたカードを、軽くふくらませて戻す（拾った手応え）。
@@ -985,13 +1170,9 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
       color: currentCardColor,
       tags: currentCardTags
     )
-    // 瞬間移動感をなくし、その場に吸い付くように実体化させるスムーズなイージング
-    cardEntity.scale = SIMD3<Float>(repeating: 0.92)
     anchorEntity.addChild(cardEntity)
     arView.scene.addAnchor(anchorEntity)
-    var targetTransform = cardEntity.transform
-    targetTransform.scale = .one
-    cardEntity.move(to: targetTransform, relativeTo: cardEntity.parent, duration: 0.18, timingFunction: .easeOut)
+    playPlacementEffect(card: cardEntity, holder: anchorEntity)
 
     pendingCardAnchors[anchorId] = (arAnchor, anchorEntity)
     placedCardEntities.append(anchorEntity)
@@ -1159,44 +1340,45 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
       let authorDisplay = name.isEmpty ? "sora" : name
       let avatarRect = CGRect(x: 52, y: 372, width: 50, height: 50)
       let avatarPath = UIBezierPath(ovalIn: avatarRect)
-      UIColor(red: 52/255.0, green: 211/255.0, blue: 153/255.0, alpha: 0.35).setFill()
+      // アイコンは「名前の頭文字」を、投稿者が選んだ色の丸に白い字で（handle が `color:#RRGGBB`）。
+      // 古い投稿（絵のアイコンのキーなど）は今まで通りの淡い緑の丸
+      let chosenAvatarColor: UIColor? = handle.hasPrefix("color:#")
+        ? parseHexColor(String(handle.dropFirst("color:".count)))
+        : nil
+      (chosenAvatarColor ?? UIColor(red: 52/255.0, green: 211/255.0, blue: 153/255.0, alpha: 0.35)).setFill()
       avatarPath.fill()
 
-      let iconColor = UIColor(red: 5/255.0, green: 150/255.0, blue: 105/255.0, alpha: 1.0)
+      let iconColor = chosenAvatarColor != nil
+        ? UIColor.white
+        : UIColor(red: 5/255.0, green: 150/255.0, blue: 105/255.0, alpha: 1.0)
+      // 色の丸のときは、絵ではなく頭文字を描く
       var drewIcon = false
-      let cleanIconName = handle.replacingOccurrences(of: "@", with: "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-      let sfMap: [String: String] = [
-        "walking": "figure.walk",
-        "cafe": "cup.and.saucer.fill",
-        "book": "book.closed.fill",
-        "art": "paintpalette.fill",
-        "gourmet": "fork.knife",
-        "herb": "leaf.fill",
-        "history": "clock.arrow.circlepath",
-        "view": "binoculars.fill",
-        "footprints": "shoe.2.fill",
-        "mypage": "person.fill",
-        "person": "person.fill"
-      ]
+      if chosenAvatarColor == nil {
+        let cleanIconName = handle.replacingOccurrences(of: "@", with: "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let sfMap: [String: String] = [
+          "walking": "figure.walk",
+          "cafe": "cup.and.saucer.fill",
+          "book": "book.closed.fill",
+          "art": "paintpalette.fill",
+          "gourmet": "fork.knife",
+          "herb": "leaf.fill",
+          "history": "clock.arrow.circlepath",
+          "view": "binoculars.fill",
+          "footprints": "shoe.2.fill",
+          "mypage": "person.fill",
+          "person": "person.fill"
+        ]
 
-      if handle.hasPrefix("data:image/"),
-         let commaRange = handle.range(of: ","),
-         let imageData = Data(base64Encoded: String(handle[commaRange.upperBound...])),
-         let customImg = UIImage(data: imageData) {
-        cgContext.saveGState()
-        avatarPath.addClip()
-        customImg.draw(in: avatarRect)
-        cgContext.restoreGState()
-        drewIcon = true
-      } else if cleanIconName == "footprints", let footImg = UIImage(named: "Footprints")?.withTintColor(iconColor, renderingMode: .alwaysOriginal) {
-        let pad: CGFloat = 8
-        footImg.draw(in: avatarRect.insetBy(dx: pad, dy: pad))
-        drewIcon = true
-      } else if let sfName = sfMap[cleanIconName] ?? (UIImage(systemName: cleanIconName) != nil ? cleanIconName : nil),
-                let sfImg = UIImage(systemName: sfName)?.withTintColor(iconColor, renderingMode: .alwaysOriginal) {
-        let pad: CGFloat = 8
-        sfImg.draw(in: avatarRect.insetBy(dx: pad, dy: pad))
-        drewIcon = true
+        if cleanIconName == "footprints", let footImg = UIImage(named: "Footprints")?.withTintColor(iconColor, renderingMode: .alwaysOriginal) {
+          let pad: CGFloat = 8
+          footImg.draw(in: avatarRect.insetBy(dx: pad, dy: pad))
+          drewIcon = true
+        } else if let sfName = sfMap[cleanIconName] ?? (UIImage(systemName: cleanIconName) != nil ? cleanIconName : nil),
+                  let sfImg = UIImage(systemName: sfName)?.withTintColor(iconColor, renderingMode: .alwaysOriginal) {
+          let pad: CGFloat = 8
+          sfImg.draw(in: avatarRect.insetBy(dx: pad, dy: pad))
+          drewIcon = true
+        }
       }
 
       if !drewIcon {
@@ -2496,6 +2678,14 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
     for index in revealCards.indices {
       var item = revealCards[index]
 
+      // 通報した言葉・ブロックした人の言葉は、カードも光も出さない
+      if hiddenPosts.contains(item.postId) {
+        item.card.isEnabled = false
+        item.glow.isEnabled = false
+        revealCards[index] = item
+        continue
+      }
+
       // ARAnchor の最新座標へ滑らかに追従させ、照合直後の位置補正による瞬間移動・跳ねを抑止
       if let liveAnchor = frame.anchors.first(where: { $0.identifier == item.anchorIdentifier }) {
         let targetPos = SIMD3<Float>(
@@ -2557,14 +2747,36 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
         }
       }
 
-      // アンカー位置が安定（isSettled）するまでは光のみ表示し、安定後にカードを滑らかにフェードインさせる
-      let target: Float = (item.isSettled && !item.isOccluded) ? 1 : 0
+      // アンカー位置が安定（isSettled）するまでは光のみ表示し、安定後にカードを滑らかにフェードインさせる。
+      // 初めて現れるときは、画面に映るまで待つ（見ていない所で出てしまうと「見つけた」瞬間が無くなる）
+      var canShow = item.isSettled && !item.isOccluded
+      if canShow && !item.hasMaterialized {
+        if isInView(item.card.position(relativeTo: nil), frame: frame) {
+          item.hasMaterialized = true
+          playDiscoveryEffect(holder: item.holder)
+        } else {
+          canShow = false
+        }
+      }
+      let target: Float = canShow ? 1 : 0
       item.reveal += (target - item.reveal) * follow
+
+      // 光が集まって言葉になるように：カードは少し下・少し小さい所から浮かび上がり、光は縮んでいく
+      let eased = 1 - pow(1 - item.reveal, 3)
+      if item.reveal < 0.99 {
+        item.card.position = SIMD3<Float>(0, -Self.revealRiseDistance * (1 - eased), 0)
+        item.card.scale = SIMD3<Float>(repeating: 0.86 + 0.14 * eased)
+        item.isTransformAtRest = false
+      } else if !item.isTransformAtRest {
+        item.card.transform = .identity
+        item.isTransformAtRest = true
+      }
 
       // 隠れているカードの光も、すぐそばを通ると画面を覆うので、近づくほど薄くする
       let glowDistance = simd_distance(item.glow.position(relativeTo: nil), cameraPosition)
       let glowFade = Self.glowNearFade(glowDistance)
-      item.glow.scale = SIMD3<Float>(repeating: min(Self.revealGlowSize, glowDistance * Self.glowMaxApparentSize))
+      item.glow.scale = SIMD3<Float>(
+        repeating: min(Self.revealGlowSize, glowDistance * Self.glowMaxApparentSize) * (1 - 0.6 * eased))
 
       if #available(iOS 18.0, *) {
         Self.setOpacity(item.reveal, of: item.card)

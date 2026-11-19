@@ -1,6 +1,5 @@
 import {
   canonicalTagKey,
-  expandInterestTags,
   isBlockedBySafetyFilter,
   matchesTagFilter,
   normalizeTag,

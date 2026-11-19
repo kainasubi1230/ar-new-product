@@ -1,4 +1,3 @@
-import { supabase } from '../lib/supabase';
 import { checkTextSafety } from './safetyFilter';
 
 export type Dimension = 'food' | 'spot' | 'weather' | 'activity' | 'culture' | 'time' | 'general';
@@ -408,7 +407,7 @@ export async function suggestTagsAndSentiment(
 ): Promise<{
   tags: string[];
   sentiment: SentimentResult;
-  source: 'edge' | 'local';
+  source: 'local';
 }> {
   const trimmed = message.trim();
   const localSentiment = analyzeSentiment(trimmed);
@@ -422,52 +421,9 @@ export async function suggestTagsAndSentiment(
     };
   }
 
-  try {
-    const { data, error } = await supabase.functions.invoke('suggest-tags', {
-      body: { message: trimmed, preferredTags },
-    });
-
-    if (!error && data?.tags && Array.isArray(data.tags) && data.tags.length > 0) {
-      // エッジ関数の結果とローカル抽出をマージして3〜5個に整える
-      const merged = Array.from(
-        new Set([
-          ...data.tags.map((t: string) => (t.startsWith('#') ? t.trim() : `#${t.trim()}`)),
-          ...localTags,
-        ])
-      ).slice(0, 5);
-
-      // Edge関数の結果が返っても、ローカルの厳格なネガティブ・安心フィルター判定を上書きさせない
-      const edgeSentiment: SentimentResult | undefined = data.sentiment;
-      const mergedSentiment: SentimentResult =
-        !edgeSentiment || localSentiment.isNegative || localSentiment.negativeScore > edgeSentiment.negativeScore
-          ? localSentiment
-          : {
-              ...edgeSentiment,
-              negativeScore: Math.max(edgeSentiment.negativeScore, localSentiment.negativeScore),
-              isNegative: edgeSentiment.isNegative || localSentiment.isNegative,
-            };
-
-      return {
-        tags: merged,
-        sentiment: mergedSentiment,
-        source: 'edge',
-      };
-    }
-  } catch (err) {
-    console.log('[suggestTags] Falling back to local algorithm:', err);
-  }
-
   return {
     tags: localTags,
     sentiment: localSentiment,
     source: 'local',
   };
-}
-
-/**
- * 互換性のためのタグ取得関数
- */
-export async function suggestTags(message: string, preferredTags?: string[]): Promise<string[]> {
-  const res = await suggestTagsAndSentiment(message, preferredTags);
-  return res.tags;
 }

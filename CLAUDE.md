@@ -27,6 +27,10 @@ npm run typecheck    # tsc --noEmit（唯一の静的チェック）
 ### 状態管理は App.tsx に集約
 `App.tsx` がアプリ全体の状態（タブ切り替え・ログインユーザー・投稿中カードの内容・配置モード・トースト）をすべて持っている。ナビゲーションライブラリは使っていない。`activeTab`（`home | radar | notifications | mypage`）で画面を切り替え、各画面は `src/components/` の props 駆動コンポーネント。ホームタブ＝AR カメラ。他タブ表示中は AR コンテナを `display: 'none'` にしているが、新アーキテクチャ（Fabric）ではこの間にネイティブの AR ビューが破棄され、ホームに戻ると作り直される（セッション・置いたカードはリセット）。そのため、ネイティブへの一度きりの命令を表す prop（`worldMapSaveRequest` など）は、処理されたら JS 側で `null` に戻すこと。
 
+### ファイルの分け方
+- 画面の下のタブは `src/components/BottomNav.tsx`（タブの型 `Tab` もここ）。ポケット通知の見張りは `src/hooks/usePocketNotice.ts`（App.tsx から呼ぶだけ）。
+- マイページは `MyPageScreen.tsx`（プロフィール・残した言葉・拾った言葉・設定メニュー）と `src/components/mypage/` に分けてある：`AuthForm`（未ログインのとき）、`InterestSettingsTab`（「関心タグ」タブ。3 枚のカードと下に開く引き出し、ジャンルの一覧 `INITIAL_TAGS`）、`AvatarColorModal`（アイコンの色）、`styles.ts`（マイページ共通のスタイル）。
+
 ### 投稿フロー（JS ↔ ネイティブを行き来する）
 1. AR ビューをタップ → ネイティブから `onScreenTapped` → 未ログインならマイページへ誘導、ログイン済みなら `PostModal` を開く
 2. 投稿内容を送信 → `isPlacementMode=true`（ネイティブ側の `isPreviewActive`）でプレビュー表示
@@ -43,6 +47,7 @@ npm run typecheck    # tsc --noEmit（唯一の静的チェック）
   - カードを置いた瞬間に ARView のスナップショット（方角タグは隠し、置いたカードは写す）を撮り、投稿 ID が決まったら `worldmaps/snapshots/<postId>.jpg` に上げる。`onWorldMapStatus(snapshotSaved)` を受けた JS が `posts.snapshot_path` に記録する（このイベントは `worldMapPhase` を変えない）。
   - 照合中は `relocalizeTarget.snapshots`（その地図に入っている投稿の写真を、今いる場所から近い順に）を半透明で画面いっぱいに重ね、「この景色に合わせてください」と案内する（`relocalizationGuide`）。1 つの地図に何部屋分も入っていることがあり GPS では部屋を区別できないので、複数あれば 4 秒ごとに切り替える（`cycleRelocalizationSnapshot`）。写真の無い投稿はアイコンと文字だけ。スマホを振らせるアニメーションは使わない。DB の列は `supabase/migrations/20261026000000_snapshots.sql`。
 - 照合で出したカードは、1 つの地図で家じゅうのカードが一度に出るので、カメラとの間に壁や物があれば薄れて、その正確な位置にごく薄い光だけが残る（`RevealCard` / `updateCardReveal`）。0.25 秒ごとに `isOccluded` でカメラからカードへの間を調べる。手がかりは 3 つ：①今のフレームの特徴点（`rawFeaturePoints`）がカードへの細い円すいの中、カードより手前に 3 個以上ある（全機種。LiDAR の無い iPhone の主な手がかり、`featurePointsBetween`）、②ARKit の平面（`existingPlaneGeometry`）に当たる、③LiDAR 機では部屋のメッシュ（`sceneUnderstanding` の `.collision`）に当たる。いずれもカードの手前 0.3m より近いものだけ数える。特徴点はちらつくので `occlusionScore`（0〜4）が 3 以上で隠し 1 以下で見せる。画面外のカードは判定せず前の状態のまま。LiDAR が無いと、模様の無い白い壁の向こうは見えてしまうことがある。自分がその場で置いたカードは対象外（常に見える）。
+- 置いた・見つけたときの演出（`playPlacementEffect` / `playDiscoveryEffect`、Calm なので音は無し）：置いたカードは半透明のプレビューのまま 3cm 上から 0.45 秒でそっと降りて実体になり、着いた瞬間にカードの後ろから光の輪（`spawnHalo`）が広がり、光の粒（`spawnSparkles`）が立ちのぼり、軽く振動する。照合で見つけたカードは、初めて画面に映るまで出さずに待ち（`hasMaterialized`）、映ったら光が縮みながらカードが 5cm 下・少し小さい所から浮かび上がる（`revealRiseDistance`）。輪と粒は `updateEffects` が毎フレーム進め、終わったら消す。振動は続けて鳴らないよう 0.6 秒あける。
 - 進捗は `onWorldMapStatus` / `onRelocalizationStatus` で JS に通知される。DB 側の設定は `supabase/migrations/` にある。
 
 ### 方角タグ（セカイカメラ風、iOS のみ）
@@ -64,7 +69,7 @@ npm run typecheck    # tsc --noEmit（唯一の静的チェック）
 
 ### ネイティブ AR ビュー（ブリッジ）
 `src/native/UniversalARView.tsx` は `requireNativeComponent` の薄いラッパー。**登録名がプラットフォームごとに違う**：iOS は `ARView`、Android は `ARViewManager`。
-- iOS：`ios/SpatialInventory/ARViewManager.swift` + `ARViewWrapper.swift`（ARKit/RealityKit）、props は `ARViewManagerBridge.m` で `RCT_EXPORT_VIEW_PROPERTY` を使ってエクスポート。`ios/` 直下にも同名ファイルがあるが Xcode プロジェクトからは参照されていない。編集するのは `ios/SpatialInventory/` 配下のもの。
+- iOS：`ios/SpatialInventory/ARViewManager.swift` + `ARViewWrapper.swift`（ARKit/RealityKit）、props は `ARViewManagerBridge.m` で `RCT_EXPORT_VIEW_PROPERTY` を使ってエクスポート。（以前 `ios/` 直下にあった同名の古いファイルは消した）
 - Android：`android/app/src/main/java/com/spatialinventory/ar/`（SceneView/ARCore）。`ARPackage` は `MainApplication.kt`（パッケージ名は `com.spatialinventorytemplate`）で登録している。
 
 prop やイベントを追加・変更するときは、TS の型定義・iOS の bridge `.m` + Swift・Android の `@ReactProp`／`receiveEvent` の **3 箇所すべて** を揃えること。
@@ -78,26 +83,36 @@ prop やイベントを追加・変更するときは、TS の型定義・iOS �
 
 ### 探索画面（地図）
 - `DiscoveryMapScreen` は `react-native-maps`（iOS は Apple のマップ＝MapKit。API キー・料金なし）で、App.tsx の `nearbyPosts`（方角タグと同じ `findNearbyPosts` の結果、近い順。メッセージ＝カードの `latitude / longitude` つき）をピンで出す。現在地の追跡と近くの投稿の取得は、ホームと探索を開いている間（`isLocationActive`）動く。
+- ピンは近くの投稿だけでなく、地図に映っている範囲の投稿も出す（`onRegionChangeComplete` から 0.4 秒待って `nearbyPostService.findPostsInRegion`。新しい順に最大 `MAP_REGION_LIMIT` 150 件、距離の制限なし）。緯度の幅 0.6° より広く映しているときは取らず「近づけると、メッセージが表示されます」。範囲で取った投稿にも表示の設定（App.tsx の `isPostVisibleForMap`）をかけ、近くの投稿（`nearbyPosts`）と合わせて近い順に並べる。
 - ピンの見た目と、下のカードで本文を見せるかは `geoTagLevelFor` の段階で AR とそろえる（presence：淡いピン＋位置の誤差 `accuracy_m` の輪で「このあたり」・本文なし、message：本文あり、summary：小さく薄いピン・本文なし）。
+- 下のカードの「この言葉をARで探す」は、その投稿を「探している言葉」（App.tsx の `focusRef`）にしてホームを開く（`handleOpenARFromMap`）。ホームの照合では、その投稿が入った地図（自分の地図か `worldmap_post_ids` に入っている地図）だけから選び、案内の写真もその投稿の 1 枚にする。現れたら（`seen`）「○○さんの言葉が見つかりました」と出して忘れる。景色が見つからなかった（`timeout`）・30 分たった（`FOCUS_EXPIRE_MS`）・別のピンを選んだときも忘れる。照合の範囲（`relocalizeSearchMaxM`）より遠いピンは「近づくと、この言葉を探します」と出し、近づくまではふだん通りに照合する。すぐ近くなのにその言葉の入った地図が無い（景色を記録していない投稿）ときは「この言葉は景色の記録がありません」と出して忘れる。
 - 下のカードの「右前方 80m」と矢印は、スマホの向き `useHeading`（`src/hooks/useHeading.ts`）を使う。AR ビューは他のタブで破棄されるので、方位だけを送るネイティブの `LocaHeading`（`RCTEventEmitter`、`CLLocationManager` の heading）を ARViewWrapper.swift の末尾に置き、`ARViewManagerBridge.m` で公開している（新しい Swift ファイルを足すと Xcode のプロジェクト設定の編集が要るため）。
 
 ### 関心タグとポケット通知
 - 関心タグとポケット通知のオン・オフは `src/services/preferencesStore.ts`（AsyncStorage の `loca:preferences`）に保存し、`usePreferences` で共有する。設定する場所はマイページの「関心タグ」タブ（とタグ管理モーダル。どちらも同じ値を読み書き）。関心タグに合う投稿は、AR の方角タグ（`highlighted`）と地図のピン（`pinHeadInterest`）で少し目立たせる。
 - 関心タグに合うかは `src/utils/interestTags.ts` の `matchesInterestTags` で判定し、関連タグ（`src/services/interestTagService.ts` の `INTEREST_TAG_PRESETS`。#散歩 なら #街歩き・#おでかけ など）にも合えば合うとみなす。
-- 表示の設定（`preferencesStore` の `onlyInterestTags`：関心タグの言葉だけ表示、初期値オフ／`hideNegativePosts`：安心フィルター、強いネガティブ表現（`analyzeSentiment` の `isNegative`）を隠す、初期値オン）は、App.tsx の `isPostVisible`（`isVisibleUnderFilters`）で、方角タグ・地図のピン・照合で出すカードにかける。自分の投稿はいつも出す。設定する場所はマイページの「関心タグ」タブとタグ管理モーダル（`TagManageModal`、自分でタグを作れる。最大 8 個）。
+- 表示の設定（`preferencesStore` の `onlyInterestTags`：関心タグの言葉だけ表示、初期値オフ／`hideNegativePosts`：安心フィルター、強いネガティブ表現（`analyzeSentiment` の `isNegative`）を隠す、初期値オン）は、App.tsx の `isPostVisible`（`isVisibleUnderFilters`）で、方角タグ・地図のピン・照合で出すカードにかける。自分の投稿はいつも出す。設定する場所はマイページの「関心タグ」タブだけ（カードをオンにすると下に開く引き出しで、ジャンル・自分で作ったタグ・見たくないジャンルを選ぶ）。タグの提案（`tagSuggestionService`）は端末の中のルールだけで行う（Edge Function は使っていない）。
 - 投稿画面（`PostModal`）は関心タグを `preferredTags` で受け取り、タグの提案で優先し、候補に出ていない関心タグを「あなたの関心タグから追加」に出す。本文が強いネガティブ表現なら、安心フィルターの人には表示されないと穏やかに伝える。
 - ポケット通知は、関心タグに合うメッセージ（自分の投稿以外）から `POCKET_NOTICE.radiusM`（20m）以内に入ったらローカル通知を出す（本文は出さない）。位置の見張り・判定・通知・履歴はネイティブの `LocaPocket`（ARViewWrapper.swift の末尾、`ARViewManagerBridge.m` で公開）が行い、アプリを開いてからポケットに入れた状態（画面ロック・別アプリ）でも届く（`allowsBackgroundLocationUpdates`。Info.plist の `UIBackgroundModes: location`。位置の許可は「使用中のみ」のまま）。アプリを完全に閉じた状態は対象外。
-- JS（App.tsx）は、ネイティブから届く位置（`pocketLocation`、50m ごと）で `refetchDistanceM` 動くたびに `findNearbyPosts`（`targetRadiusM` 500m）を取り直し、対象を `updatePocketTargets` で渡す。動いていなくても `refreshIntervalMs`（30 秒）ごとに取り直す（同じ場所にいるまま、あとから置かれたメッセージに気づくため）。ネイティブは対象を受け取るたびに、最後の位置ですぐ判定する（`notifyIfNear`）。通知は同じメッセージで 1 日 1 回、通知どうし 3 分あける、GPS 誤差 40m 超では判定しない（`src/config/pocketNotice.ts`）。通知のタップでホームを開く。通知画面は `LocaPocket.getHistory`（UserDefaults、最大 50 件）の履歴のうち、まだ見ていないものだけを出す（`getUnseenPocketHistory`）。画面を離れる・アプリを閉じると、出していた通知までを「見た」ことにして AsyncStorage の `loca:pocketSeenUntil`（UNIX 秒）に記録し、次からは出さない（ネイティブの履歴は消さない）。通知の文言は合った関心タグ（関連タグで合ったときもその関心タグ、`findMatchedInterestTag`）で「近くに #散歩 の言葉があります」とし、通知画面のカードの丸にはそのタグの絵（`src/utils/tagIcon.ts` の `interestTagIcon`、自分で作ったタグはベル）を出す。開発ビルドでマイページの設定から「開発用の情報を表示」をオンにすると（`preferencesStore` の `showDevInfo`、初期値オフ）、通知画面に `PocketDebugPanel`（`LocaPocket.getStatus`：通知の許可・見張りの有無・対象の件数・いちばん近い対象までの距離・GPS の誤差・直近の判定結果）と、通知した記録を消す「リセット」（`resetNotified`）が出る。
+- JS（App.tsx）は、ネイティブから届く位置（`pocketLocation`、50m ごと）で `refetchDistanceM` 動くたびに `findNearbyPosts`（`targetRadiusM` 500m）を取り直し、対象を `updatePocketTargets` で渡す。動いていなくても `refreshIntervalMs`（30 秒）ごとに取り直す（同じ場所にいるまま、あとから置かれたメッセージに気づくため）。ネイティブは対象を受け取るたびに、最後の位置ですぐ判定する（`notifyIfNear`）。通知は同じメッセージで 1 日 1 回、通知どうし 3 分あける、GPS 誤差 40m 超では判定しない（`src/config/pocketNotice.ts`）。通知のタップでホームを開く。通知画面は `LocaPocket.getHistory`（UserDefaults、最大 50 件）の履歴のうち、まだ見ていないものだけを出す（`getUnseenPocketHistory`）。画面を離れる・アプリを閉じると、出していた通知までを「見た」ことにして AsyncStorage の `loca:pocketSeenUntil`（UNIX 秒）に記録し、次からは出さない（ネイティブの履歴は消さない）。通知の文言は合った関心タグ（関連タグで合ったときもその関心タグ、`findMatchedInterestTag`）で「近くに #散歩 の言葉があります」とし、通知画面のカードの丸にはそのタグの絵（`src/utils/tagIcon.ts` の `interestTagIcon`、自分で作ったタグはベル）を出す。`PocketDebugPanel`（`LocaPocket.getStatus`：通知の許可・見張りの有無・対象の件数・いちばん近い対象までの距離・GPS の誤差・直近の判定結果と、通知した記録を消す「リセット」`resetNotified`）は残っているが、今は画面に出していない（マイページの設定から「開発用の情報を表示」を外した。調べるときは NotificationScreen に戻す）。
 
 ### 拾った言葉
 - 照合で出した他の人のカード（隠れずに見えているもの、`revealedCard`）をタップすると、ネイティブが `onCardTapped` を送り、JS（`handleCardTapped`）が `readService.collectPost` で `post_reads`（post_id, user_id, read_at）に記録して「📖 ○○さんの言葉を拾いました」と出す（カードは軽くふくらむ）。もう拾っていれば「この言葉はもう拾っています」（主キー重複 23505）。ログイン中だけ、自分の言葉はタップしても何もしない。
 - 他の人のカードが初めて画面に現れたとき（`onRelocalizationStatus(seen)`）に、「カードをタップすると、言葉を拾えます」を 1 回の起動で 1 回だけ出す。
 - マイページの「拾った言葉」は `fetchCollectedPosts`、「残した言葉」の「◯人が読んだよ」と、AR のカードの右下の「👣 3」は `posts.read_count`（拾われた人数。`post_reads` の追加・削除で DB のトリガーが増減する。`20261026060000_post_read_count.sql`。拾った記録そのものは本人と投稿者しか読めないが、人数は誰でも読める）。テーブルと RLS は `supabase/migrations/20261026040000_post_reads.sql`。拾うときは、そのときの自分の位置（`post_reads.lat / lng`）と場所の名前（`place_name`。ネイティブの `LocaGeocoder`＝iOS 標準の `CLGeocoder` で求める。3 秒で取れなければ null。`src/services/geocoder.ts`）も残し、マイページに「📍 天神で 10/26 に拾った」と出す（列は `20261026070000_post_reads_place.sql`）。拾った言葉はマイページから外せる（`uncollectPost`、自分の記録だけ消せる DELETE ポリシーは `20261026050000_post_reads_delete.sql`）。外しても相手の言葉は消えず、その言葉の「誰かが読んだよ」が 1 減る。
 
+### 通報・ブロック・利用規約への同意（App Store のガイドライン 1.2）
+- テーブルと権限は `supabase/migrations/20261120010000_reports_blocks.sql`：`reports`（post_id, reporter_id, reason。本人だけが読める・足せる）、`blocks`（blocker_id, blocked_id。本人だけが読める・足せる・外せる）。運営はダッシュボードで `reports` を見て、規約に反する投稿を消す。
+- 他の人の言葉のメニュー（`src/utils/postMenu.ts` の `openPostMenu`：「この言葉を通報する」→ 理由（`REPORT_REASONS`）／「○○さんをブロック」→ 確認）は、AR の照合で出したカードの長押し（ネイティブの `onCardLongPressed`）と、探索画面の下のカードの「…」から出す。ログインが必要。自分の言葉には出さない。
+- App.tsx はログインすると `fetchMyModeration` で自分がブロックした人（`blockedUserIds`）と通報した言葉（`reportedPostIds`）を読み、`isPostVisible` で方角タグ・地図のピン・照合で出すカード・ポケット通知（`usePocketNotice` の `hiddenUserIds` / `hiddenPostIds`）から外す。もう AR に出ているカードは `hiddenPostIds` prop でネイティブが光ごと消す（照合で出したカードの投稿者は `cardOwnersRef` に覚えておく）。
+- 言葉を置く前に、利用規約への同意（`TermsConsentModal`）を求める。同意はログイン情報の `user_metadata.terms_accepted` に `TERMS_VERSION`（`src/config/legal.ts`）を入れて記録し、版を上げるともう一度求める。`TERMS_URL` / `PRIVACY_URL` が空のあいだは「すべて読む」のリンクを出さない。
+
 ### その他
 - 画面のお知らせは `showToast(message, kind, { symbol, subtitle })`。ホーム（AR）では `notice` prop でネイティブの案内画面（`ARGuideHUDView`、「近くのメッセージを読み込み中」と同じ見た目：少し暗くして中央に SF Symbols のアイコンと一言）に 2.5 秒出す。記録中・照合中の案内（`persistentGuide`）を出している最中なら、お知らせのあとにその案内へ戻る。ホーム以外（AR ビューが無い）では画面下の小さな帯 `CalmToast`。文言は短く穏やかにし、絵文字や失敗の詳しい理由は出さない（理由は console に出す）。`notice` は一度きりの命令なので 3 秒後に JS で `null` に戻す。
 - デバッグ表示：`src/config/debug.ts` の `SHOW_AR_DEBUG`（`__DEV__`）が true のビルドで、ホームの見出し「ホーム」を長押しすると AR 画面の左下に `ARDebugOverlay` が出る（もう一度長押しで消える。ふだんは出さない）。ネイティブは `debugEnabled` のときだけ 0.5 秒ごとに `onDebugInfo`（trackingState・worldMappingStatus・照合フェーズ・読み込んだ地図と中の post: アンカー・didAdd と normal 到達の時刻）を送る。照合を止めている理由は App.tsx の `relocalizeBlockReasons` で、照合を始めるかの判定にも同じ一覧を使う（表示と判定がずれないように）。
+- マイページの右上の設定は「ログアウト」と「アカウントを削除」。削除は確認のうえ `authService.deleteMyAccount`：自分の投稿を `deleteMyPost` でひとつずつ消し（ファイルも）、サーバーの `delete_my_account()`（`supabase/migrations/20261120000000_delete_account.sql`、security definer。残った投稿と `auth.users` を消す。拾った記録は cascade で消える）を呼び、端末のログイン情報を消す。
 - マイページの「自分の投稿」は `posts.user_id = auth.uid()` で取る。削除は `postService.deleteMyPost`：Storage の `<id>.worldmap` と `snapshots/<id>.jpg` を先に消してから投稿を消す（Storage の削除ポリシーは「投稿の持ち主か」で判定するため、順番が逆だと消せない）。ポリシーは `supabase/migrations/20261026010000_post_delete.sql`。
 - 投稿画面のタグは本文から提案された先頭 2 個を自動で選ぶ。ユーザーがタグを触るまでは本文が変わるたびに選び直す（初期の本文の ☀️ から #いい天気 が残らないように）。
 - AR カード・配置プレビュー・方角タグに描くタグは `posts.tags` を使う。配置中のカードは `cardTags` prop、照合で出すカードは `RelocalizeCard.cardTags`、方角タグは `GeoTag.cardTags` で渡す。空ならタグの行を描かない（`ARViewWrapper.tagLine`）。
+- アイコンは「名前の頭文字」を、選んだ色の丸に白い字で出す（写真・絵は使わない）。色は `src/config/avatarColors.ts` の `AVATAR_COLORS`（8 色）からマイページで選び、`preferencesStore` の `avatarColor` に置く（ログイン情報にも `avatar_color` として短い値だけ入れる）。投稿の `handle` には `color:#RRGGBB`（`avatarHandleFor`）を入れ、言葉カード（`WordCardAvatar`）と AR のカード（`ARViewWrapper.createCardImage`）がその色で描く。古い投稿の絵のキーはそのまま絵で出す。写真を選ぶ機能は消した。**画像のデータ（data: URI）をログイン情報（`user_metadata`）や `posts.handle` に入れてはいけない**：ログイン情報はトークンに入って通信のたびに送られるので、巨大になると投稿が `user_id` 空（未ログイン扱い）で保存され、地図・写真のアップロードと `worldmap_path` の書き込みが弾かれる（「この場所を覚えられませんでした」）。前のバージョンで入ってしまった巨大な `avatar_icon` は、App.tsx の `onAuthStateChange` で `'custom'` に置き換える。
 - `src/assets/icons/index.ts` が PNG アイコンをまとめて `Icons` としてエクスポートしている。
