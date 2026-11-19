@@ -1,5 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { analyzeSentiment } from './tagSuggestionService';
+import { checkPostSafety } from './safetyFilter';
 
 const STORAGE_KEY_INTEREST_TAGS = '@loca:interest_tags_v1';
 const STORAGE_KEY_FILTER_SETTINGS = '@loca:filter_settings_v1';
@@ -335,7 +336,12 @@ export function isBlockedBySafetyFilter(
   const message = (post.message ?? '').normalize('NFKC');
   const messageLower = message.toLowerCase();
 
-  // 1. 本文のネガティブ感情判定（タグで「#散歩」などと偽装していてもブロック）
+  // 1. 厳格な安心フィルター（暴言・誹謗中傷・下ネタ・攻撃的表現・ネガティブ語を本文＆タグ両方でスキャン）
+  if (checkPostSafety(post).blocked) {
+    return true;
+  }
+
+  // 2. 本文のネガティブ感情判定（タグで「#散歩」などと偽装していてもブロック）
   if (message && analyzeSentiment(message).isNegative) {
     return true;
   }

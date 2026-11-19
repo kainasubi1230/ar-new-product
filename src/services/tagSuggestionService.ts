@@ -1,4 +1,5 @@
 import { supabase } from '../lib/supabase';
+import { checkTextSafety } from './safetyFilter';
 
 export type Dimension = 'food' | 'spot' | 'weather' | 'activity' | 'culture' | 'time' | 'general';
 
@@ -138,33 +139,112 @@ function extractKatakanaKeywords(text: string): { tag: string; dimension: Dimens
 }
 
 // -------------------------------------------------------------
-// 感情分析エンジン（ポジティブ度／ネガティブ度のスコアリング）
+// 感情分析エンジン（ポジティブ度／ネガティブ度のスコアリング・語彙拡充版）
 // -------------------------------------------------------------
 const POSITIVE_PATTERNS: { pattern: RegExp; weight: number }[] = [
-  { pattern: /最高|大満足|超楽しい|神|至福|感動|素晴らしい|圧巻/i, weight: 1.0 },
-  { pattern: /嬉しい|うれしい|楽しい|たのしい|幸せ|しあわせ|ハッピー|わくわく/i, weight: 0.8 },
-  { pattern: /美味しい|おいしい|美味|うま|絶品|ごちそう/i, weight: 0.8 },
-  { pattern: /ありがとう|感謝|助かった|よかった|良かった|いいね|好き|お気に入り|おすすめ/i, weight: 0.7 },
-  { pattern: /リラックス|癒やし|癒し|落ち着く|ととのった|ほっこり|心地いい|気持ちいい/i, weight: 0.7 },
-  { pattern: /前向き|頑張る|がんばる|やる気|楽しみ|期待|捗る/i, weight: 0.6 },
-  { pattern: /綺麗|きれい|青空|快晴|いい天気|絶景|美しい|素敵/i, weight: 0.6 },
-  { pattern: /✨|🎉|💖|❤️|🥰|😆|😍|👍|☀️/, weight: 0.5 },
+  // 最上級・感動・絶賛
+  {
+    pattern:
+      /最高|さいこう|サイコー|大満足|超楽しい|神回|神対応|至福|感動|素晴らしい|すばらしい|圧巻|天才|完璧|かんぺき|尊い|とうとい|エモい|えもい|優勝|感無量|胸熱|鳥肌|大成功|大勝利|奇跡|幸運|ラッキー|ツイてる|ついてる|絶好調|文句なし|満点|過去一/gi,
+    weight: 0.9,
+  },
+  // 喜び・楽しさ・幸福
+  {
+    pattern:
+      /嬉しい|うれしい|楽しい|たのしい|幸せ|しあわせ|ハッピー|はっぴー|わくわく|ワクワク|ドキドキ|どきどき|ウキウキ|うきうき|ルンルン|るんるん|笑顔|えがお|ニコニコ|にこにこ|爆笑|笑った|面白い|おもしろい|充実|満喫|爽快|そうかい|清々しい|すがすがしい|晴れやか|明るい|ポジティブ|陽気|テンション上がる|気分がいい|気分が良い|ご機嫌/gi,
+    weight: 0.75,
+  },
+  // グルメ・美味しさ
+  {
+    pattern:
+      /美味しい|おいしい|美味い|うまい|ウマい|美味|絶品|ごちそう|とろける|ほっぺが落ち|サクサク|もちもち|ジューシー|香り高い|リピ確|リピート|また食べたい|大当たり|名店|激うま|うますぎ|おいしすぎ|たまらん|たまらない/gi,
+    weight: 0.75,
+  },
+  // 感謝・好意・称賛・応援
+  {
+    pattern:
+      /ありがとう|感謝|かんしゃ|助かった|たすかった|よかった|良かった|いいね|好き|すき|大好き|だいすき|愛してる|お気に入り|おすすめ|オススメ|推し|推せる|優しい|やさしい|親切|温かい|あたたかい|暖かい|頼もしい|心強い|素敵|すてき|かわいい|可愛い|カワイイ|かっこいい|カッコいい|おしゃれ|オシャレ|お洒落|憧れ|尊敬|リスペクト|おめでとう|祝福|応援|すごい|凄い|さすが|流石|えらい|偉い/gi,
+    weight: 0.65,
+  },
+  // 癒やし・リラックス・安心・心地よさ
+  {
+    pattern:
+      /リラックス|癒やし|癒し|いやし|落ち着く|おちつく|ととのった|ととのう|ほっこり|心地いい|ここちいい|心地よい|気持ちいい|きもちいい|快適|かいてき|安心|あんしん|ほっとする|ホッとする|穏やか|おだやか|平和|へいわ|のんびり|ゆったり|まったり|贅沢|ぜいたく|ご褒美|ごほうび|リフレッシュ|スッキリ|すっきり|爽やか|さわやか|ぽかぽか|ぬくもり|居心地|安らぐ|やすらぐ|くつろぐ/gi,
+    weight: 0.65,
+  },
+  // 前向き・達成感・希望・良い思い出
+  {
+    pattern:
+      /前向き|頑張る|がんばる|頑張った|がんばった|やる気|楽しみ|たのしみ|期待|捗る|はかどる|順調|達成感|やりきった|成長|発見|ひらめき|希望|きぼう|いい日|良い日|いい一日|良い一日|また来たい|思い出|宝物|記念日|充実感|ワクワクする|わくわくする|いい感じ|良い感じ|ばっちり|バッチリ/gi,
+    weight: 0.55,
+  },
+  // 景色・自然・美しさ
+  {
+    pattern:
+      /綺麗|きれい|キレイ|青空|快晴|いい天気|良い天気|絶景|美しい|うつくしい|映える|映え|幻想的|神秘的|ロマンチック|キラキラ|きらきら|輝く|かがやく|満開|木漏れ日|そよ風|晴れ渡る|見晴らしがいい/gi,
+    weight: 0.55,
+  },
+  // 英語ポジティブ
+  {
+    pattern:
+      /\b(good|great|awesome|amazing|wonderful|love|lovely|happy|nice|best|fun|delicious|yummy|cool|cute|beautiful|thanks|thank you|relax|relaxing|chill|cozy|perfect|lucky|enjoy|excited|glad|peaceful|smile)\b/gi,
+    weight: 0.6,
+  },
+  // ポジティブ絵文字
+  { pattern: /✨|🎉|💖|❤️|💕|🥰|😆|😍|😊|😄|😁|🥳|🤩|👍|👏|🙌|☀️|🌈|🌸|🍀|💐|💫/g, weight: 0.4 },
 ];
 
 const NEGATIVE_PATTERNS: { pattern: RegExp; weight: number }[] = [
   // 強い誹謗中傷・危険語・暴言
-  { pattern: /死ね|殺す|消えろ|クソ|ゴミ|カス|きもい|キモい|うざい|ウザい|最悪|最低|害悪/i, weight: 1.0 },
-  // 強い怒り・不快感
-  { pattern: /ムカつく|むかつく|腹立つ|イライラ|許せない|迷惑|邪魔|キレそう/i, weight: 0.9 },
+  {
+    pattern:
+      /死ね|氏ね|殺す|ころす|消えろ|きえろ|失せろ|黙れ|くたばれ|クソ|くそ|糞|ゴミ|ごみくず|カス|クズ|くず|きもい|キモい|きしょい|キショい|うざい|ウザい|最悪|さいあく|最低|さいてい|害悪|老害|バカ|馬鹿|アホ|阿呆|ブス|ブサイク|デブ|ハゲ|キチガイ|ガイジ|無能|役立たず|ポンコツ|ざまあ|ざまぁ/gi,
+    weight: 1.0,
+  },
+  // 強い怒り・攻撃・不快感
+  {
+    pattern:
+      /ムカつく|むかつく|腹立つ|はらたつ|腹が立つ|イライラ|いらいら|イラつく|ムカムカ|むかむか|許せない|ゆるせない|許さない|迷惑|めいわく|邪魔|じゃま|目障り|キレそう|ブチギレ|激怒|ふざけるな|ふざけんな|なめるな|なめんな|うるさい|うるせえ|うっせえ|うっとうしい|鬱陶しい|胸糞|吐き気|不快|不愉快|うんざり|ありえない|信じられない|クレーム|苦情|態度悪い|接客最悪|ぼったくり/gi,
+    weight: 0.9,
+  },
   // 強い苦痛・絶望・精神的疲弊
-  { pattern: /辛い|つらい|苦しい|死にたい|消えたい|絶望|限界|しんどい|病む|鬱/i, weight: 0.9 },
-  // 拒絶・強い否定
-  { pattern: /行きたくない|やりたくない|見たくない|大嫌い|嫌だ|いやだ|もう無理/i, weight: 0.8 },
-  // 悲しみ・不満・落胆
-  { pattern: /悲しい|泣きたい|ショック|失敗|落ち込む|だるい|つまらない|面白くない/i, weight: 0.7 },
-  // 不安・後悔
-  { pattern: /不安|怖い|後悔|疲れた|ヘトヘト/i, weight: 0.5 },
-  { pattern: /😡|👿|💀|😭|💔|👎/, weight: 0.5 },
+  {
+    pattern:
+      /辛い|つらい|苦しい|くるしい|死にたい|しにたい|消えたい|きえたい|自殺|自傷|リスカ|絶望|ぜつぼう|限界|げんかい|しんどい|病む|病んでる|病みそう|鬱|うつ病|憂鬱|ゆううつ|もう無理|もうだめ|もうダメ|人生終わり|詰んだ|心が折れた|メンタル崩壊|発狂|地獄|生きづらい/gi,
+    weight: 0.9,
+  },
+  // 拒絶・強い否定・嫌悪
+  {
+    pattern:
+      /行きたくない|いきたくない|やりたくない|見たくない|みたくない|会いたくない|働きたくない|大嫌い|だいきらい|嫌い|きらい|嫌だ|いやだ|嫌すぎる|もう嫌|もういや|二度と行かない|二度と来ない|憎い|恨む|呪う|最悪だ|終わってる|オワコン|まずい|不味い|汚い|きたない|臭い|くさい/gi,
+    weight: 0.8,
+  },
+  // 悲しみ・落胆・後悔・孤独
+  {
+    pattern:
+      /悲しい|かなしい|寂しい|さみしい|さびしい|孤独|泣きたい|なきたい|泣いた|涙が出る|ショック|失敗|しっぱい|落ち込む|おちこむ|凹む|へこむ|がっかり|ガッカリ|失望|後悔|こうかい|惨め|みじめ|虚しい|むなしい|切ない|せつない|つらすぎ|悲しすぎ|ダメだった|だめだった|うまくいかない|上手くいかない|報われない/gi,
+    weight: 0.7,
+  },
+  // 疲労・だるさ・退屈・体調不良
+  {
+    pattern:
+      /だるい|ダルい|つまらない|つまんない|面白くない|おもんない|退屈|たいくつ|しょうもない|くだらない|疲れた|つかれた|疲れすぎ|ヘトヘト|へへと|クタクタ|くたくた|ボロボロ|ぼろぼろ|眠すぎる|寝不足|頭痛い|体調悪い|具合悪い|風邪ひいた|気持ち悪い|吐きそう|しんどすぎ|めんどくさい|面倒くさい|めんどい|億劫/gi,
+    weight: 0.6,
+  },
+  // 不安・焦り・モヤモヤ・ストレス
+  {
+    pattern:
+      /不安|ふあん|怖い|こわい|恐ろしい|心配|しんぱい|焦る|あせる|焦り|緊張|モヤモヤ|もやもや|ストレス|プレッシャー|気が重い|気まずい|微妙|びみょう|ハズレ|はずれ|残念|ざんねん|もったいない|混みすぎ|激混み|満員|待ちすぎ|雨うざ|暑すぎ|寒すぎ|ジメジメ|最悪の天気|イマイチ|いまいち|物足りない|損した/gi,
+    weight: 0.5,
+  },
+  // 英語ネガティブ
+  {
+    pattern:
+      /\b(bad|worst|hate|hated|sad|angry|mad|tired|exhausted|boring|bored|terrible|horrible|awful|suck|sucks|annoying|annoyed|pain|painful|lonely|depressed|anxious|scared|fail|failed|failure|disappointed|stress|stressed|sick|gross|disgusting|stupid|idiot|fuck|shit|bitch|trash|garbage)\b/gi,
+    weight: 0.65,
+  },
+  // ネガティブ絵文字
+  { pattern: /😡|🤬|👿|💀|😭|😢|😥|😓|😰|😨|😱|💔|👎|💩|🤮|🤢|😞|😔|😟|😕|😫|😩|😤|💢/g, weight: 0.45 },
 ];
 
 /**
@@ -175,20 +255,37 @@ export function analyzeSentiment(text: string): SentimentResult {
     return { score: 0, positiveScore: 0, negativeScore: 0, isNegative: false };
   }
 
+  const normalized = text.normalize('NFKC');
+
   let posRaw = 0;
   for (const p of POSITIVE_PATTERNS) {
-    if (p.pattern.test(text)) posRaw += p.weight;
+    const matches = normalized.match(p.pattern);
+    if (matches && matches.length > 0) {
+      // 1語目は満額、2語目以降は少しずつ加算して複数語ある感情を強く反映する
+      posRaw += p.weight + (matches.length - 1) * (p.weight * 0.35);
+    }
   }
 
   let negRaw = 0;
   for (const n of NEGATIVE_PATTERNS) {
-    if (n.pattern.test(text)) negRaw += n.weight;
+    const matches = normalized.match(n.pattern);
+    if (matches && matches.length > 0) {
+      negRaw += n.weight + (matches.length - 1) * (n.weight * 0.35);
+    }
+  }
+
+  const safety = checkTextSafety(text);
+  if (safety.blocked) {
+    negRaw = Math.max(negRaw, 1.0);
   }
 
   const positiveScore = Math.min(1.0, Number(posRaw.toFixed(2)));
   const negativeScore = Math.min(1.0, Number(negRaw.toFixed(2)));
-  const score = Math.max(-1.0, Math.min(1.0, Number((positiveScore - negativeScore).toFixed(2))));
-  const isNegative = negativeScore >= 0.6 && negativeScore > positiveScore;
+  const score = safety.blocked
+    ? -1.0
+    : Math.max(-1.0, Math.min(1.0, Number((positiveScore - negativeScore).toFixed(2))));
+  // 安心フィルターに該当した場合はポジティブ語が混ざっていても必ずネガティブ扱い（すり抜け防止）
+  const isNegative = safety.blocked || (negativeScore >= 0.6 && negativeScore > positiveScore);
 
   return {
     score,
@@ -339,9 +436,20 @@ export async function suggestTagsAndSentiment(
         ])
       ).slice(0, 5);
 
+      // Edge関数の結果が返っても、ローカルの厳格なネガティブ・安心フィルター判定を上書きさせない
+      const edgeSentiment: SentimentResult | undefined = data.sentiment;
+      const mergedSentiment: SentimentResult =
+        !edgeSentiment || localSentiment.isNegative || localSentiment.negativeScore > edgeSentiment.negativeScore
+          ? localSentiment
+          : {
+            ...edgeSentiment,
+            negativeScore: Math.max(edgeSentiment.negativeScore, localSentiment.negativeScore),
+            isNegative: edgeSentiment.isNegative || localSentiment.isNegative,
+          };
+
       return {
         tags: merged,
-        sentiment: data.sentiment ?? localSentiment,
+        sentiment: mergedSentiment,
         source: 'edge',
       };
     }

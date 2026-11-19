@@ -13,6 +13,7 @@ import {
   View,
 } from 'react-native';
 import { suggestTagsAndSentiment, SentimentResult } from '../services/tagSuggestionService';
+import { checkPostSafety } from '../services/safetyFilter';
 import { getCurrentLocation } from '../services/postService';
 import { reverseGeocode } from '../services/geocoder';
 import { Icons } from '../assets/icons';
@@ -174,11 +175,11 @@ export function PostModal({ visible, onClose, onSubmit, preferredTags = [] }: Pr
               />
             </View>
 
-            {/* 強いネガティブな表現があるとき（安心フィルターをオンにしている人には表示されない） */}
-            {sentiment?.isNegative && (
+            {/* 安心フィルターに該当する言葉が含まれているとき（リアルタイム検知） */}
+            {(checkPostSafety({ message, tags: selectedTags }).blocked || sentiment?.isNegative) && (
               <View style={styles.negativeNoticeBox}>
                 <Text style={styles.negativeNoticeText}>
-                  強い言葉が含まれているようです。安心フィルターをオンにしている人には表示されません。
+                  安心フィルターに該当する言葉が含まれているため、このままでは投稿できません。
                 </Text>
               </View>
             )}

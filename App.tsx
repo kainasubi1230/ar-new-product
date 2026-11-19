@@ -44,6 +44,7 @@ import { PresenceSheet } from './src/components/PresenceSheet';
 import { CalmToast, type ToastKind, type ToastMessage } from './src/components/CalmToast';
 import { SparkleBurst, type Sparkle } from './src/components/SparkleBurst';
 import { findMatchedInterestTag, isVisibleUnderFilters, matchesInterestTags } from './src/utils/interestTags';
+import { checkPostSafety } from './src/services/safetyFilter';
 import { updatePreferences, usePreferences } from './src/services/preferencesStore';
 import { collectPost } from './src/services/readService';
 import { reverseGeocode } from './src/services/geocoder';
@@ -506,21 +507,24 @@ export default function App(): React.JSX.Element {
         nearbyPostsRef.current = new Map(posts.map((post) => [String(post.id), post]));
         // 探索（レーダー）画面にも同じ一覧を出す
         setNearbyPosts(posts);
+        // AR空間には遠くの方角タグ（message / summary）を出さず、近くの気配（presence）だけを渡す
         setGeoTags(
-          posts.map((post) => ({
-            postId: String(post.id),
-            cardTitle: post.author ?? 'guest',
-            cardDescription: post.message ?? '',
-            cardIcon: post.handle ?? '',
-            cardColor: '#10B981',
-            cardTags: post.tags ?? [],
-            level: geoTagLevelFor(post.distanceM),
-            prominence: geoTagProminenceFor(post.distanceM),
-            uncertaintyM: positionUncertaintyFor(post.accuracy_m, currentCoords.accuracy),
-            highlighted: matchesInterestTags(post.tags, interestTags),
-            distanceM: post.distanceM,
-            bearingDeg: post.bearingDeg,
-          }))
+          posts
+            .filter((post) => geoTagLevelFor(post.distanceM) === 'presence')
+            .map((post) => ({
+              postId: String(post.id),
+              cardTitle: post.author ?? 'guest',
+              cardDescription: post.message ?? '',
+              cardIcon: post.handle ?? '',
+              cardColor: '#10B981',
+              cardTags: post.tags ?? [],
+              level: geoTagLevelFor(post.distanceM),
+              prominence: geoTagProminenceFor(post.distanceM),
+              uncertaintyM: positionUncertaintyFor(post.accuracy_m, currentCoords.accuracy),
+              highlighted: matchesInterestTags(post.tags, interestTags),
+              distanceM: post.distanceM,
+              bearingDeg: post.bearingDeg,
+            }))
         );
       })
       .catch((err) => console.warn('近くの投稿の取得に失敗しました:', err));
@@ -686,10 +690,23 @@ export default function App(): React.JSX.Element {
   };
 
   const handlePostSubmit = (data: { message: string; tags: string[]; category: string }) => {
+    const tags = data.tags ?? [];
+    // 投稿時に安心フィルターで単語をスキャンし、該当したらその場で投稿キャンセル＆テロップ表示
+    const safety = checkPostSafety({ message: data.message, tags });
+    if (safety.blocked) {
+      setIsPostModalVisible(false);
+      setIsPlacementMode(false);
+      setIsRelocalizeSuppressed(false);
+      showToast('安心フィルターにより投稿できません', 'error', {
+        symbol: 'exclamationmark.shield.fill',
+        subtitle: 'やさしい言葉に書き換えてお試しください',
+      });
+      return;
+    }
+
     setIsPostModalVisible(false);
     setCurrentMessage(data.message);
     // 選んだタグをそのまま使う（空なら空のまま保存し、カードにもタグを出さない）
-    const tags = data.tags ?? [];
     setSelectedTags(tags);
     if (tags[0]) setSelectedTag(tags[0]);
     // 投稿内容をセットして、リアルタイムプレビュー＆配置決定モードへ
@@ -758,6 +775,15 @@ export default function App(): React.JSX.Element {
                   ? { offsetEastM, offsetNorthM, offsetUpM, headingDeg }
                   : null;
               const messageToSave = cardDescription || currentMessage;
+              // 念のため配置確定時にも安心フィルターを再チェック
+              if (checkPostSafety({ message: messageToSave, tags: selectedTags }).blocked) {
+                setIsRelocalizeSuppressed(false);
+                showToast('安心フィルターにより投稿できません', 'error', {
+                  symbol: 'exclamationmark.shield.fill',
+                  subtitle: 'やさしい言葉に書き換えてお試しください',
+                });
+                return;
+              }
               const authorName =
                 user?.user_metadata?.username || user?.email?.split('@')[0] || currentAuthor;
               const authorHandle = userAvatarIcon || (user?.email ? `@${user.email.split('@')[0]}` : currentHandle);
