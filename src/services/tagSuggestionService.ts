@@ -442,10 +442,10 @@ export async function suggestTagsAndSentiment(
         !edgeSentiment || localSentiment.isNegative || localSentiment.negativeScore > edgeSentiment.negativeScore
           ? localSentiment
           : {
-            ...edgeSentiment,
-            negativeScore: Math.max(edgeSentiment.negativeScore, localSentiment.negativeScore),
-            isNegative: edgeSentiment.isNegative || localSentiment.isNegative,
-          };
+              ...edgeSentiment,
+              negativeScore: Math.max(edgeSentiment.negativeScore, localSentiment.negativeScore),
+              isNegative: edgeSentiment.isNegative || localSentiment.isNegative,
+            };
 
       return {
         tags: merged,

@@ -8,14 +8,14 @@ export interface SafetyCheckResult {
   blocked: boolean;
   matchedWord?: string;
   category?:
-  | 'abuse'
-  | 'violence'
-  | 'anger'
-  | 'self_harm'
-  | 'sexual'
-  | 'illegal_spam'
-  | 'negative'
-  | 'emoji';
+    | 'abuse'
+    | 'violence'
+    | 'anger'
+    | 'self_harm'
+    | 'sexual'
+    | 'illegal_spam'
+    | 'negative'
+    | 'emoji';
 }
 
 /** NFKC正規化＋小文字化 */
