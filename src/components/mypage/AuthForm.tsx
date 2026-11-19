@@ -1,0 +1,189 @@
+import React, { useState } from 'react';
+import {
+  ActivityIndicator,
+  Alert,
+  Image,
+  KeyboardAvoidingView,
+  Platform,
+  ScrollView,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
+} from 'react-native';
+import { Icons } from '../../assets/icons';
+import { ScreenHeader } from '../ScreenHeader';
+import { signInWithEmail, signUpWithEmail } from '../../services/authService';
+import { styles } from './styles';
+
+/** 未ログインのときのマイページ：ログイン・新規登録 */
+export function AuthForm(): React.JSX.Element {
+  // 未ログイン時の認証フォーム用ステート
+  const [authMode, setAuthMode] = useState<'signin' | 'signup'>('signin');
+  const [authEmail, setAuthEmail] = useState('');
+  const [authPassword, setAuthPassword] = useState('');
+  const [authUsername, setAuthUsername] = useState('');
+  const [authLoading, setAuthLoading] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
+
+  const handleAuthSubmit = async () => {
+    if (!authEmail.trim() || !authPassword) {
+      setAuthError('メールアドレスとパスワードを入力してください');
+      return;
+    }
+    if (authPassword.length < 6) {
+      setAuthError('パスワードは6文字以上で入力してください');
+      return;
+    }
+    setAuthLoading(true);
+    setAuthError(null);
+    try {
+      if (authMode === 'signup') {
+        const result = await signUpWithEmail(authEmail, authPassword, authUsername);
+        if (result.session) {
+          Alert.alert('登録完了', 'アカウントを登録し、ログインしました！');
+        } else {
+          Alert.alert(
+            '確認メールを送信しました',
+            'ご入力いただいたメールアドレスに確認用リンクを送信しました。メール内のリンクを開いて登録を完了してください。'
+          );
+        }
+      } else {
+        await signInWithEmail(authEmail, authPassword);
+      }
+    } catch (err: any) {
+      let msg = err?.message || 'エラーが発生しました';
+      if (msg.includes('Invalid login credentials')) {
+        msg = 'メールアドレスまたはパスワードが正しくありません';
+      } else if (msg.includes('User already registered')) {
+        msg = 'このメールアドレスは既に登録されています。ログインをお試しください';
+      } else if (msg.includes('Password should be at least')) {
+        msg = 'パスワードは6文字以上で入力してください';
+      }
+      setAuthError(msg);
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+    return (
+      <View style={styles.container}>
+        <ScreenHeader title="マイページ" showTitleLogo={true} />
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          style={{ flex: 1 }}
+        >
+          <ScrollView
+            contentContainerStyle={styles.fullAuthContainer}
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
+          >
+            <View style={styles.authHero}>
+              <View style={styles.authHeroIconCircle}>
+                <Image source={Icons.mypage} style={styles.authHeroIcon} resizeMode="contain" />
+              </View>
+              <Text style={styles.authHeroTitle}>
+                {authMode === 'signin' ? 'マイページへログイン' : '新規アカウント作成'}
+              </Text>
+              <Text style={styles.authHeroSubtitle}>
+                ログインすると、街に残した言葉や出会った記憶を保存・同期できます
+              </Text>
+            </View>
+
+            {/* Tab Switcher */}
+            <View style={styles.authTabSwitch}>
+              <TouchableOpacity
+                style={[styles.authTabBtn, authMode === 'signin' && styles.authTabBtnActive]}
+                onPress={() => {
+                  setAuthMode('signin');
+                  setAuthError(null);
+                }}
+                activeOpacity={0.8}
+              >
+                <Text style={[styles.authTabText, authMode === 'signin' && styles.authTabTextActive]}>
+                  ログイン
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.authTabBtn, authMode === 'signup' && styles.authTabBtnActive]}
+                onPress={() => {
+                  setAuthMode('signup');
+                  setAuthError(null);
+                }}
+                activeOpacity={0.8}
+              >
+                <Text style={[styles.authTabText, authMode === 'signup' && styles.authTabTextActive]}>
+                  新規登録
+                </Text>
+              </TouchableOpacity>
+            </View>
+
+            {/* Form */}
+            <View style={styles.authForm}>
+              {authMode === 'signup' && (
+                <View style={styles.authField}>
+                  <Text style={styles.authFieldLabel}>ユーザーネーム（任意）</Text>
+                  <TextInput
+                    style={styles.authInput}
+                    placeholder="例: sora"
+                    placeholderTextColor="#94A3B8"
+                    value={authUsername}
+                    onChangeText={setAuthUsername}
+                    autoCapitalize="none"
+                  />
+                </View>
+              )}
+
+              <View style={styles.authField}>
+                <Text style={styles.authFieldLabel}>メールアドレス</Text>
+                <TextInput
+                  style={styles.authInput}
+                  placeholder="example@email.com"
+                  placeholderTextColor="#94A3B8"
+                  value={authEmail}
+                  onChangeText={setAuthEmail}
+                  keyboardType="email-address"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                />
+              </View>
+
+              <View style={styles.authField}>
+                <Text style={styles.authFieldLabel}>パスワード（6文字以上）</Text>
+                <TextInput
+                  style={styles.authInput}
+                  placeholder="••••••••"
+                  placeholderTextColor="#94A3B8"
+                  value={authPassword}
+                  onChangeText={setAuthPassword}
+                  secureTextEntry
+                  autoCapitalize="none"
+                />
+              </View>
+
+              {authError && (
+                <View style={styles.authErrorCard}>
+                  <Text style={styles.authErrorText}>⚠️ {authError}</Text>
+                </View>
+              )}
+
+              <TouchableOpacity
+                style={[styles.authSubmitBtn, authLoading && styles.authSubmitBtnDisabled]}
+                onPress={handleAuthSubmit}
+                disabled={authLoading}
+                activeOpacity={0.85}
+              >
+                {authLoading ? (
+                  <ActivityIndicator color="#FFFFFF" size="small" />
+                ) : (
+                  <Text style={styles.authSubmitBtnText}>
+                    {authMode === 'signin' ? 'ログインする' : '登録してはじめる'}
+                  </Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </ScrollView>
+        </KeyboardAvoidingView>
+      </View>
+    );
+}
