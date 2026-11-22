@@ -14,6 +14,7 @@ import {
 import { Icons } from '../../assets/icons';
 import { ScreenHeader } from '../ScreenHeader';
 import { signInWithEmail, signUpWithEmail } from '../../services/authService';
+import { NICKNAME_MAX_LENGTH, checkNickname } from '../../services/safetyFilter';
 import { styles } from './styles';
 
 /** 未ログインのときのマイページ：ログイン・新規登録 */
@@ -34,6 +35,14 @@ export function AuthForm(): React.JSX.Element {
     if (authPassword.length < 6) {
       setAuthError('パスワードは6文字以上で入力してください');
       return;
+    }
+    if (authMode === 'signup') {
+      // ニックネームは言葉と一緒にみんなに見えるので、投稿と同じフィルターをかける
+      const nicknameError = checkNickname(authUsername);
+      if (nicknameError) {
+        setAuthError(nicknameError);
+        return;
+      }
     }
     setAuthLoading(true);
     setAuthError(null);
@@ -59,6 +68,8 @@ export function AuthForm(): React.JSX.Element {
         msg = 'このメールアドレスは既に登録されています。ログインをお試しください';
       } else if (msg.includes('Password should be at least')) {
         msg = 'パスワードは6文字以上で入力してください';
+      } else if (msg.toLowerCase().includes('rate limit')) {
+        msg = '短い時間に何度も試したため、少し待ってからもう一度お試しください';
       }
       setAuthError(msg);
     } finally {
@@ -122,7 +133,7 @@ export function AuthForm(): React.JSX.Element {
             <View style={styles.authForm}>
               {authMode === 'signup' && (
                 <View style={styles.authField}>
-                  <Text style={styles.authFieldLabel}>ユーザーネーム（任意）</Text>
+                  <Text style={styles.authFieldLabel}>ニックネーム</Text>
                   <TextInput
                     style={styles.authInput}
                     placeholder="例: sora"
@@ -130,6 +141,7 @@ export function AuthForm(): React.JSX.Element {
                     value={authUsername}
                     onChangeText={setAuthUsername}
                     autoCapitalize="none"
+                    maxLength={NICKNAME_MAX_LENGTH}
                   />
                 </View>
               )}
@@ -163,7 +175,7 @@ export function AuthForm(): React.JSX.Element {
 
               {authError && (
                 <View style={styles.authErrorCard}>
-                  <Text style={styles.authErrorText}>⚠️ {authError}</Text>
+                  <Text style={styles.authErrorText}>{authError}</Text>
                 </View>
               )}
 

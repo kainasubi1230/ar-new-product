@@ -51,3 +51,25 @@ export const unblockUser = async (userId: string) => {
     throw new Error(`ブロックの解除に失敗しました: ${error.message}`);
   }
 };
+
+/**
+ * ブロックした人の名前（その人の最新の投稿の名前。プロフィールの表は無いので）。
+ * 投稿が残っていない人は入らない
+ */
+export const fetchUserNames = async (userIds: string[]): Promise<Record<string, string>> => {
+  if (userIds.length === 0) return {};
+  const { data, error } = await supabase
+    .from('posts')
+    .select('user_id, author, created_at')
+    .in('user_id', userIds)
+    .order('created_at', { ascending: false });
+  if (error) {
+    throw new Error(`名前の取得に失敗しました: ${error.message}`);
+  }
+  const names: Record<string, string> = {};
+  for (const row of data ?? []) {
+    const id = String(row.user_id);
+    if (!(id in names) && row.author) names[id] = row.author;
+  }
+  return names;
+};

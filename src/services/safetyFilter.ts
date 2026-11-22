@@ -317,3 +317,30 @@ export function checkPostSafety(post: {
   return { blocked: false };
 }
 
+
+/** ニックネームの最大文字数 */
+export const NICKNAME_MAX_LENGTH = 20;
+
+// 運営や公式を名乗る名前（なりすまし防止）
+const RESERVED_NAME_PATTERN = /運営|公式|管理者|official|admin|support|loca/i;
+
+/**
+ * ニックネームを確かめる。問題があれば、そのまま画面に出せる理由を返す（問題なければ null）
+ * 投稿と同じ安心フィルターに加えて、長さと「運営・公式」を名乗る名前を防ぐ
+ */
+export function checkNickname(raw: string): string | null {
+  const name = raw.trim();
+  if (name.length === 0) {
+    return 'ニックネームを入力してください';
+  }
+  if (name.length > NICKNAME_MAX_LENGTH) {
+    return `ニックネームは${NICKNAME_MAX_LENGTH}文字以内で入力してください`;
+  }
+  if (RESERVED_NAME_PATTERN.test(normalizeText(name))) {
+    return '運営や公式と間違われる名前は使えません';
+  }
+  if (checkTextSafety(name).blocked) {
+    return 'このニックネームは使えません。別の名前にしてください';
+  }
+  return null;
+}

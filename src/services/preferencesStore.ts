@@ -21,13 +21,15 @@ export type Preferences = {
   avatarColor: string;
   /** 開発用の情報（通知画面のポケット通知の状態など）を出すか。開発ビルドのときだけマイページの設定で切り替えられる */
   showDevInfo: boolean;
+  /** この設定を使っているアカウント（auth の user id）。別のアカウントでログインしたら初期値に戻す */
+  ownerUserId?: string;
 };
 
 const STORAGE_KEY = 'loca:preferences';
 
 // 初めて使うときの関心タグ（マイページの「関心タグ」タブで最初からオンのもの）
 const DEFAULT_PREFERENCES: Preferences = {
-  interestTags: ['#散歩', '#カフェ', '#日常', '#本'],
+  interestTags: ['#散歩', '#日常'],
   pocketNoticeEnabled: true,
   onlyInterestTags: false,
   hideNegativePosts: true,
@@ -126,4 +128,21 @@ export const usePreferences = () => {
     },
     setAvatarColor: (avatarColor: string) => updatePreferences({ avatarColor }),
   };
+};
+
+/**
+ * ログインしているアカウントに合わせる。設定は端末に保存しているので、
+ * 別のアカウントでログイン（新しく作った場合も）したら、前の人の関心タグや除外タグを持ち越さず初期値に戻す。
+ * まだ持ち主が決まっていない設定（前のバージョンから使っている人）は、そのまま今のアカウントのものにする
+ */
+export const adoptPreferencesForUser = async (userId: string) => {
+  await load();
+  if (current.ownerUserId === userId) return;
+  if (current.ownerUserId === undefined) {
+    updatePreferences({ ownerUserId: userId });
+    return;
+  }
+  current = { ...DEFAULT_PREFERENCES, ownerUserId: userId };
+  listeners.forEach((listener) => listener(current));
+  AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(current)).catch(() => {});
 };

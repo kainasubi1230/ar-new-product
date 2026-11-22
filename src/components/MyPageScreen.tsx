@@ -18,6 +18,7 @@ import { ExpandDown } from './ExpandDown';
 import { styles } from './mypage/styles';
 import { AuthForm } from './mypage/AuthForm';
 import { AvatarColorModal } from './mypage/AvatarColorModal';
+import { BlockedUsersModal } from './mypage/BlockedUsersModal';
 import { InterestSettingsTab } from './mypage/InterestSettingsTab';
 import { deleteMyPost, fillPostPlaceName } from '../services/postService';
 import { usePreferences } from '../services/preferencesStore';
@@ -65,8 +66,14 @@ type Props = {
   onSignOut?: () => void;
   /** アカウントを削除する（確認はマイページで出す） */
   onDeleteAccount?: () => Promise<void>;
+  /** ブロックした人（歯車の「ブロック中の人」に出す） */
+  blockedUserIds?: string[];
+  /** ブロックを外す */
+  onUnblock?: (userId: string) => Promise<void>;
   /** 画面下の小さなお知らせ（削除した、など） */
   onNotice?: (message: string, options?: { symbol?: string; subtitle?: string }) => void;
+  /** 使い方ツアーをもう一度見る（歯車のメニュー） */
+  onReplayTour?: () => void;
 };
 
 // 初期表示用（Supabaseから読み込むため初期値は空）
@@ -87,6 +94,9 @@ export function MyPageScreen({
   onSignOut,
   onDeleteAccount,
   onNotice,
+  blockedUserIds = [],
+  onUnblock,
+  onReplayTour,
 }: Props): React.JSX.Element {
   const [activeTab, setActiveTab] = useState<'placed' | 'collected' | 'tags'>('placed');
 
@@ -99,6 +109,7 @@ export function MyPageScreen({
   const { interestTags, avatarColor, setAvatarColor } = usePreferences();
 
   const [isAvatarModalVisible, setIsAvatarModalVisible] = useState(false);
+  const [isBlockedListVisible, setIsBlockedListVisible] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
 
   // Supabaseから自分の投稿を取得する
@@ -303,12 +314,15 @@ export function MyPageScreen({
     );
   };
 
-  // 右上の設定ボタンのメニュー（ログアウト・アカウントの削除）
+  // 右上の設定ボタンのメニュー（使い方・ブロック中の人・ログアウト・アカウントの削除）
   const openSettingsMenu = () => {
     const canSignOut = user != null && onSignOut != null;
     const canDelete = user != null && onDeleteAccount != null;
+    const openBlockedList = () => setIsBlockedListVisible(true);
     if (Platform.OS === 'ios') {
       const options = [
+        ...(onReplayTour ? ['使い方をもう一度見る'] : []),
+        'ブロック中の人',
         ...(canSignOut ? ['ログアウト'] : []),
         ...(canDelete ? ['アカウントを削除'] : []),
         'キャンセル',
@@ -320,6 +334,8 @@ export function MyPageScreen({
           destructiveButtonIndex: canDelete ? options.indexOf('アカウントを削除') : undefined,
         },
         (index) => {
+          if (options[index] === '使い方をもう一度見る') onReplayTour?.();
+          if (options[index] === 'ブロック中の人') openBlockedList();
           if (options[index] === 'ログアウト') onSignOut?.();
           if (options[index] === 'アカウントを削除') confirmDeleteAccount();
         }
@@ -327,6 +343,8 @@ export function MyPageScreen({
       return;
     }
     Alert.alert('設定', undefined, [
+      ...(onReplayTour ? [{ text: '使い方をもう一度見る', onPress: onReplayTour }] : []),
+      { text: 'ブロック中の人', onPress: openBlockedList },
       ...(canSignOut ? [{ text: 'ログアウト', onPress: onSignOut }] : []),
       ...(canDelete
         ? [{ text: 'アカウントを削除', style: 'destructive' as const, onPress: confirmDeleteAccount }]
@@ -477,7 +495,7 @@ export function MyPageScreen({
                 <View style={styles.emptyStateBox}>
                   <Image source={Icons.footprints} style={styles.emptyFootprintsIcon} resizeMode="contain" />
                   <Text style={styles.emptyStateText}>まだ街に残した言葉がありません</Text>
-                  <Text style={styles.emptyStateSub}>ホーム画面の「＋」ボタンから、今いる場所に言葉を設置できます。</Text>
+                  <Text style={styles.emptyStateSub}>ホームの「＋」ボタンから、好きな場所に言葉を残そう！</Text>
                 </View>
               )}
             </View>
@@ -538,6 +556,14 @@ export function MyPageScreen({
         {activeTab === 'tags' && <InterestSettingsTab />}
       </ScrollView>
 
+      <BlockedUsersModal
+        visible={isBlockedListVisible}
+        onClose={() => setIsBlockedListVisible(false)}
+        blockedUserIds={blockedUserIds}
+        onUnblock={async (userId) => {
+          await onUnblock?.(userId);
+        }}
+      />
       <AvatarColorModal
         visible={isAvatarModalVisible}
         onClose={() => setIsAvatarModalVisible(false)}

@@ -17,9 +17,9 @@ export type InterestTag = {
 
 export const INITIAL_TAGS: InterestTag[] = [
   { id: 't1', name: '散歩', icon: Icons.walking, enabled: true, desc: '街歩きや小道、おすすめの休憩スポット' },
-  { id: 't2', name: 'カフェ', icon: Icons.cafe, enabled: true, desc: '落ち着ける席や美味しい珈琲の記録' },
+  { id: 't2', name: 'カフェ', icon: Icons.cafe, enabled: false, desc: '落ち着ける席や美味しい珈琲の記録' },
   { id: 't3', name: '日常', icon: Icons.everyday, enabled: true, desc: '街で見つけた小さな気づきや独り言' },
-  { id: 't4', name: '本', icon: Icons.book, enabled: true, desc: '本と読書、心に残る一節のしおり' },
+  { id: 't4', name: '本', icon: Icons.book, enabled: false, desc: '本と読書、心に残る一節のしおり' },
   { id: 't5', name: 'グルメ', icon: Icons.gourmet, enabled: false, desc: '路地裏の隠れ家やおすすめの一皿' },
   { id: 't6', name: '歴史', icon: Icons.history, enabled: false, desc: '街の記憶、昔話、碑の由来' },
   { id: 't7', name: 'アート', icon: Icons.art, enabled: false, desc: 'ストリートアートやギャラリーの発見' },

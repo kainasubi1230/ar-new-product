@@ -1,6 +1,7 @@
 import React from 'react';
 import { Image, ImageSourcePropType, Platform, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Icons } from '../assets/icons';
+import { tourTargetRef } from './tour/tourTargets';
 
 export type Tab = 'home' | 'radar' | 'notifications' | 'mypage';
 
@@ -25,7 +26,7 @@ export function BottomNav({ activeTab, onSelect, onPressPost }: Props): React.JS
   const renderItem = ({ tab, icon, label }: (typeof LEFT)[number]) => {
     const isActive = activeTab === tab;
     return (
-      <TouchableOpacity key={tab} style={styles.navItem} onPress={() => onSelect(tab)} activeOpacity={0.7}>
+      <TouchableOpacity key={tab} ref={tourTargetRef(`tab:${tab}`)} style={styles.navItem} onPress={() => onSelect(tab)} activeOpacity={0.7}>
         <Image source={icon} style={[styles.navIcon, isActive && styles.navIconActive]} resizeMode="contain" />
         <Text style={[styles.navLabel, isActive && styles.navLabelActive]}>{label}</Text>
       </TouchableOpacity>
@@ -35,7 +36,7 @@ export function BottomNav({ activeTab, onSelect, onPressPost }: Props): React.JS
   return (
     <View style={styles.bottomNav}>
       {LEFT.map(renderItem)}
-      <TouchableOpacity style={styles.centerPlusButton} onPress={onPressPost} activeOpacity={0.85}>
+      <TouchableOpacity ref={tourTargetRef('post')} style={styles.centerPlusButton} onPress={onPressPost} activeOpacity={0.85}>
         <View style={styles.plusBarH} />
         <View style={styles.plusBarV} />
       </TouchableOpacity>

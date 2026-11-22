@@ -165,6 +165,13 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
     }
   }
   private var hiddenPosts: Set<String> = []
+  // 使い方ツアーの間は、Apple のコーチングと自前の案内・お知らせを隠す（ツアーの吹き出しと重なって、出たり消えたりして見えるため）
+  @objc var hudHidden: Bool = false {
+    didSet {
+      coachingOverlay.isHidden = hudHidden
+      guideHUD.isHidden = hudHidden
+    }
+  }
   @objc var onCardPlaced: RCTDirectEventBlock?
   @objc var onModelPlaced: RCTDirectEventBlock?
   @objc var onWorldMapStatus: RCTDirectEventBlock?
@@ -2546,7 +2553,7 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
     return material
   }
 
-  // 遠い投稿用：本文は出さず、タグと距離だけの小さいタグ（例「#カフェ  📍180m」）
+  // 遠い投稿用：本文は出さず、タグと距離だけの小さいタグ（例「#カフェ  ピン180m」）
   private func createGeoTagSummaryImage(_ tag: GeoTagData, distanceText: String) -> UIImage {
     // メッシュと同じ縦横比にする
     let size = CGSize(width: 640, height: CGFloat(640 * Self.geoTagSummarySize.y / Self.geoTagSummarySize.x))
@@ -2564,17 +2571,16 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
         .font: UIFont.systemFont(ofSize: 34, weight: .bold),
         .foregroundColor: UIColor(red: 71/255.0, green: 85/255.0, blue: 105/255.0, alpha: 1.0),
       ]
-      let pin = "📍\(distanceText)"
-      let pinSize = (pin as NSString).size(withAttributes: distanceAttrs)
+      let pinSize = Self.distanceLabelSize(distanceText, attributes: distanceAttrs)
       let padding: CGFloat = 36
 
       guard let tagLine = Self.tagLine(tag.tags) else {
         // タグが無ければ距離だけを真ん中に
-        pin.draw(at: CGPoint(x: (size.width - pinSize.width) / 2, y: (size.height - pinSize.height) / 2), withAttributes: distanceAttrs)
+        Self.drawDistanceLabel(distanceText, at: CGPoint(x: (size.width - pinSize.width) / 2, y: (size.height - pinSize.height) / 2), attributes: distanceAttrs)
         return
       }
 
-      pin.draw(at: CGPoint(x: size.width - padding - pinSize.width, y: (size.height - pinSize.height) / 2), withAttributes: distanceAttrs)
+      Self.drawDistanceLabel(distanceText, at: CGPoint(x: size.width - padding - pinSize.width, y: (size.height - pinSize.height) / 2), attributes: distanceAttrs)
       let tagAttrs: [NSAttributedString.Key: Any] = [
         .font: UIFont.systemFont(ofSize: 34, weight: .bold),
         .foregroundColor: accent,
@@ -2641,10 +2647,42 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
         .font: UIFont.systemFont(ofSize: 30, weight: .bold),
         .foregroundColor: accent,
       ]
-      let pin = "📍 \(distanceText)"
-      let pinSize = (pin as NSString).size(withAttributes: distanceAttrs)
-      pin.draw(at: CGPoint(x: size.width - 36 - pinSize.width, y: 168), withAttributes: distanceAttrs)
+      let pinSize = Self.distanceLabelSize(distanceText, attributes: distanceAttrs)
+      Self.drawDistanceLabel(distanceText, at: CGPoint(x: size.width - 36 - pinSize.width, y: 168), attributes: distanceAttrs)
     }
+  }
+
+  // 距離の表示（アプリのピンのイラスト＋「180m」）。絵文字は使わず、Images.xcassets の Pin を文字と同じ色で描く
+  private static let distancePinGap: CGFloat = 6
+
+  private static func distancePinSize(for font: UIFont) -> CGSize {
+    guard let pin = UIImage(named: "Pin"), pin.size.height > 0 else { return .zero }
+    let height = font.capHeight * 1.25
+    return CGSize(width: height * pin.size.width / pin.size.height, height: height)
+  }
+
+  private static func distanceLabelSize(_ text: String, attributes: [NSAttributedString.Key: Any]) -> CGSize {
+    let textSize = (text as NSString).size(withAttributes: attributes)
+    guard let font = attributes[.font] as? UIFont else { return textSize }
+    let pinSize = distancePinSize(for: font)
+    guard pinSize.width > 0 else { return textSize }
+    return CGSize(width: pinSize.width + distancePinGap + textSize.width, height: textSize.height)
+  }
+
+  private static func drawDistanceLabel(_ text: String, at origin: CGPoint, attributes: [NSAttributedString.Key: Any]) {
+    var x = origin.x
+    if let font = attributes[.font] as? UIFont,
+       let color = attributes[.foregroundColor] as? UIColor,
+       let pin = UIImage(named: "Pin")?.withTintColor(color, renderingMode: .alwaysOriginal) {
+      let pinSize = distancePinSize(for: font)
+      // 文字の大文字の高さの真ん中に、ピンの真ん中を合わせる
+      let textHeight = (text as NSString).size(withAttributes: attributes).height
+      let baselineY = origin.y + (textHeight - font.lineHeight) / 2 + font.ascender
+      let centerY = baselineY - font.capHeight / 2
+      pin.draw(in: CGRect(x: x, y: centerY - pinSize.height / 2, width: pinSize.width, height: pinSize.height))
+      x += pinSize.width + distancePinGap
+    }
+    (text as NSString).draw(at: CGPoint(x: x, y: origin.y), withAttributes: attributes)
   }
 
   // 照合中、地図に入っている投稿の写真が複数あれば、近い順に 4 秒ごとに切り替えて見せる

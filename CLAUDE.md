@@ -27,6 +27,11 @@ npm run typecheck    # tsc --noEmit（唯一の静的チェック）
 ### 状態管理は App.tsx に集約
 `App.tsx` がアプリ全体の状態（タブ切り替え・ログインユーザー・投稿中カードの内容・配置モード・トースト）をすべて持っている。ナビゲーションライブラリは使っていない。`activeTab`（`home | radar | notifications | mypage`）で画面を切り替え、各画面は `src/components/` の props 駆動コンポーネント。ホームタブ＝AR カメラ。他タブ表示中は AR コンテナを `display: 'none'` にしているが、新アーキテクチャ（Fabric）ではこの間にネイティブの AR ビューが破棄され、ホームに戻ると作り直される（セッション・置いたカードはリセット）。そのため、ネイティブへの一度きりの命令を表す prop（`worldMapSaveRequest` など）は、処理されたら JS 側で `null` に戻すこと。
 
+### 初めて開いたとき
+- `App` は、初めて開いたときだけ `OnboardingScreen`（横にめくる 4 枚。空間メディアであること・景色が主役・安心して出会える・画面の外へ。最後にカメラと位置情報を使う理由）を出し、見終わるまで本体（`MainApp`）を作らない（AR を作るとカメラの許可を求められ、説明の途中でダイアログが出るため）。見終えたかは AsyncStorage の `loca:onboardingDone`。
+- 説明のあとは、本物の画面の上で使い方を案内する `src/components/tour/GuidedTour.tsx`（全 10 段階：ホーム → ＋ → 探索 → 通知 → マイページ → ホーム）。暗い膜の 1 か所を丸く抜いて光らせ、光っているタブを押すと本当にそのタブへ移ってから続きを説明する。光らせる部品には `tourTargetRef('tab:radar')` などを付けておき（`tour/tourTargets.ts`）、段階ごとに `measureInWindow` で位置を測る。段階の切り替えは、吹き出しを消す → 丸を次の場所へすべらせる（位置と大きさは transform、膜の濃さは opacity。すべてネイティブで動かす）→ 吹き出しを出す。ツアーの間は AR の案内（Apple のコーチング・自前の案内・お知らせ）を `hudHidden` で隠し、JS のお知らせ（`showToast`）も出さない。最後まで見るかスキップすると `loca:tourDone`。途中で閉じたら次の起動でもう一度出る。マイページの歯車の「使い方をもう一度見る」からも出せる。
+- 起動画面のロゴは JS の準備ができると一瞬で消えるので、`SplashOverlay` が同じロゴ（`src/assets/splash/`、140pt・中央）を毎回の起動で約 1.4 秒重ねてから、ふわっと消す。ロゴを変えるときは `LaunchLogo.imageset` と `src/assets/splash/` の両方を差し替える。
+
 ### ファイルの分け方
 - 画面の下のタブは `src/components/BottomNav.tsx`（タブの型 `Tab` もここ）。ポケット通知の見張りは `src/hooks/usePocketNotice.ts`（App.tsx から呼ぶだけ）。
 - マイページは `MyPageScreen.tsx`（プロフィール・残した言葉・拾った言葉・設定メニュー）と `src/components/mypage/` に分けてある：`AuthForm`（未ログインのとき）、`InterestSettingsTab`（「関心タグ」タブ。3 枚のカードと下に開く引き出し、ジャンルの一覧 `INITIAL_TAGS`）、`AvatarColorModal`（アイコンの色）、`styles.ts`（マイページ共通のスタイル）。
@@ -89,7 +94,7 @@ prop やイベントを追加・変更するときは、TS の型定義・iOS �
 - 下のカードの「右前方 80m」と矢印は、スマホの向き `useHeading`（`src/hooks/useHeading.ts`）を使う。AR ビューは他のタブで破棄されるので、方位だけを送るネイティブの `LocaHeading`（`RCTEventEmitter`、`CLLocationManager` の heading）を ARViewWrapper.swift の末尾に置き、`ARViewManagerBridge.m` で公開している（新しい Swift ファイルを足すと Xcode のプロジェクト設定の編集が要るため）。
 
 ### 関心タグとポケット通知
-- 関心タグとポケット通知のオン・オフは `src/services/preferencesStore.ts`（AsyncStorage の `loca:preferences`）に保存し、`usePreferences` で共有する。設定する場所はマイページの「関心タグ」タブ（とタグ管理モーダル。どちらも同じ値を読み書き）。関心タグに合う投稿は、AR の方角タグ（`highlighted`）と地図のピン（`pinHeadInterest`）で少し目立たせる。
+- 関心タグとポケット通知のオン・オフは `src/services/preferencesStore.ts`（AsyncStorage の `loca:preferences`）に保存し、`usePreferences` で共有する。設定する場所はマイページの「関心タグ」タブ。端末に保存するので、`ownerUserId` で持ち主のアカウントを覚え、別のアカウントでログイン（新規作成も）したら `adoptPreferencesForUser` で初期値（関心タグは #散歩 と #日常、除外タグは #愚痴 #混雑 #騒音 #危険）に戻す。関心タグに合う投稿は、AR の方角タグ（`highlighted`）と地図のピン（`pinHeadInterest`）で少し目立たせる。
 - 関心タグに合うかは `src/utils/interestTags.ts` の `matchesInterestTags` で判定し、関連タグ（`src/services/interestTagService.ts` の `INTEREST_TAG_PRESETS`。#散歩 なら #街歩き・#おでかけ など）にも合えば合うとみなす。
 - 表示の設定（`preferencesStore` の `onlyInterestTags`：関心タグの言葉だけ表示、初期値オフ／`hideNegativePosts`：安心フィルター、強いネガティブ表現（`analyzeSentiment` の `isNegative`）を隠す、初期値オン）は、App.tsx の `isPostVisible`（`isVisibleUnderFilters`）で、方角タグ・地図のピン・照合で出すカードにかける。自分の投稿はいつも出す。設定する場所はマイページの「関心タグ」タブだけ（カードをオンにすると下に開く引き出しで、ジャンル・自分で作ったタグ・見たくないジャンルを選ぶ）。タグの提案（`tagSuggestionService`）は端末の中のルールだけで行う（Edge Function は使っていない）。
 - 投稿画面（`PostModal`）は関心タグを `preferredTags` で受け取り、タグの提案で優先し、候補に出ていない関心タグを「あなたの関心タグから追加」に出す。本文が強いネガティブ表現なら、安心フィルターの人には表示されないと穏やかに伝える。
@@ -102,9 +107,11 @@ prop やイベントを追加・変更するときは、TS の型定義・iOS �
 - マイページの「拾った言葉」は `fetchCollectedPosts`、「残した言葉」の「◯人が読んだよ」と、AR のカードの右下の「👣 3」は `posts.read_count`（拾われた人数。`post_reads` の追加・削除で DB のトリガーが増減する。`20261026060000_post_read_count.sql`。拾った記録そのものは本人と投稿者しか読めないが、人数は誰でも読める）。テーブルと RLS は `supabase/migrations/20261026040000_post_reads.sql`。拾うときは、そのときの自分の位置（`post_reads.lat / lng`）と場所の名前（`place_name`。ネイティブの `LocaGeocoder`＝iOS 標準の `CLGeocoder` で求める。3 秒で取れなければ null。`src/services/geocoder.ts`）も残し、マイページに「📍 天神で 10/26 に拾った」と出す（列は `20261026070000_post_reads_place.sql`）。拾った言葉はマイページから外せる（`uncollectPost`、自分の記録だけ消せる DELETE ポリシーは `20261026050000_post_reads_delete.sql`）。外しても相手の言葉は消えず、その言葉の「誰かが読んだよ」が 1 減る。
 
 ### 通報・ブロック・利用規約への同意（App Store のガイドライン 1.2）
+- 新規登録のニックネームは必須。`checkNickname`（safetyFilter.ts）で、投稿と同じ安心フィルター・20 文字以内・「運営/公式/admin/Loca」などを名乗る名前を防ぐ。以前はニックネームが空だとメールアドレスの @ の前を名前にしていたが、人に見えてしまうのでやめた。
 - テーブルと権限は `supabase/migrations/20261120010000_reports_blocks.sql`：`reports`（post_id, reporter_id, reason。本人だけが読める・足せる）、`blocks`（blocker_id, blocked_id。本人だけが読める・足せる・外せる）。運営はダッシュボードで `reports` を見て、規約に反する投稿を消す。
 - 他の人の言葉のメニュー（`src/utils/postMenu.ts` の `openPostMenu`：「この言葉を通報する」→ 理由（`REPORT_REASONS`）／「○○さんをブロック」→ 確認）は、AR の照合で出したカードの長押し（ネイティブの `onCardLongPressed`）と、探索画面の下のカードの「…」から出す。ログインが必要。自分の言葉には出さない。
 - App.tsx はログインすると `fetchMyModeration` で自分がブロックした人（`blockedUserIds`）と通報した言葉（`reportedPostIds`）を読み、`isPostVisible` で方角タグ・地図のピン・照合で出すカード・ポケット通知（`usePocketNotice` の `hiddenUserIds` / `hiddenPostIds`）から外す。もう AR に出ているカードは `hiddenPostIds` prop でネイティブが光ごと消す（照合で出したカードの投稿者は `cardOwnersRef` に覚えておく）。
+- ブロックした人は、マイページの歯車の「ブロック中の人」（`mypage/BlockedUsersModal`）で見て外せる（`unblockUser`）。名前はプロフィールの表が無いので、その人の最新の投稿の名前（`fetchUserNames`）。投稿が残っていない人は「名前のわからない人」。
 - 言葉を置く前に、利用規約への同意（`TermsConsentModal`）を求める。同意はログイン情報の `user_metadata.terms_accepted` に `TERMS_VERSION`（`src/config/legal.ts`）を入れて記録し、版を上げるともう一度求める。`TERMS_URL` / `PRIVACY_URL` が空のあいだは「すべて読む」のリンクを出さない。
 
 ### その他

@@ -189,6 +189,8 @@ export type UniversalARViewProps = {
   onCardLongPressed?: (event: NativeSyntheticEvent<{ postId: string }>) => void;
   /** 出さない投稿（通報した言葉・ブロックした人の言葉）。もう出ているカードも消す（iOSのみ） */
   hiddenPostIds?: string[];
+  /** 使い方ツアーの間、AR の案内（Apple のコーチング・自前の案内・お知らせ）を隠す（iOSのみ） */
+  hudHidden?: boolean;
   onCardPlaced?: (event: NativeSyntheticEvent<CardPlacedEvent>) => void;
   onModelPlaced?: (event: NativeSyntheticEvent<any>) => void;
   worldMapSaveRequest?: WorldMapSaveRequest | null;

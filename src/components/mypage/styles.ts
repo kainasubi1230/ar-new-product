@@ -697,6 +697,8 @@ export const styles = StyleSheet.create({
     color: '#EF4444',
     fontSize: 13,
     fontWeight: '600',
+    textAlign: 'center',
+    lineHeight: 19,
   },
   authSubmitBtn: {
     backgroundColor: '#10B981',

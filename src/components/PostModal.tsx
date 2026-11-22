@@ -31,7 +31,7 @@ type Props = {
   preferredTags?: string[];
 };
 
-const DEFAULT_INITIAL_MESSAGE = '今日はいい日になりそう ☀️';
+const DEFAULT_INITIAL_MESSAGE = '今日はいい日になりそう';
 
 export function PostModal({ visible, onClose, onSubmit, preferredTags = [] }: Props): React.JSX.Element {
   const [message, setMessage] = useState<string>(DEFAULT_INITIAL_MESSAGE);
@@ -46,7 +46,7 @@ export function PostModal({ visible, onClose, onSubmit, preferredTags = [] }: Pr
 
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // ユーザーが自分でタグを選んだ・外したか。触るまでは、本文に合わせて自動の選択を選び直す
-  // （初期の本文「今日はいい日になりそう ☀️」で選ばれた #いい天気 が、書き換えたあとも残らないように）
+  // （初期の本文「今日はいい日になりそう」で選ばれた #いい天気 が、書き換えたあとも残らないように）
   const hasEditedTagsRef = useRef(false);
 
   // 開くたびに、前の投稿のタグを持ち越さず空から始める（本文に合うタグが自動で選ばれる）

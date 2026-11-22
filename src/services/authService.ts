@@ -4,13 +4,14 @@ import { deleteMyPost } from './postService';
 /**
  * 新規登録 (Email & Password)
  */
-export const signUpWithEmail = async (email: string, password: string, username?: string) => {
+export const signUpWithEmail = async (email: string, password: string, username: string) => {
   const { data, error } = await supabase.auth.signUp({
     email: email.trim(),
     password,
     options: {
       data: {
-        username: username?.trim() || email.split('@')[0],
+        // メールアドレスの一部を名前にすると人に見えてしまうので、必ず入力されたニックネームを使う
+        username: username.trim(),
       },
     },
   });

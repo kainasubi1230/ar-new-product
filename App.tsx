@@ -44,15 +44,18 @@ import {
 import { PresenceSheet } from './src/components/PresenceSheet';
 import { BottomNav, type Tab } from './src/components/BottomNav';
 import { TermsConsentModal } from './src/components/TermsConsentModal';
+import { OnboardingScreen, hasSeenOnboarding } from './src/components/OnboardingScreen';
+import SplashOverlay from './src/components/SplashOverlay';
+import { GuidedTour, hasFinishedTour } from './src/components/tour/GuidedTour';
 import { TERMS_VERSION } from './src/config/legal';
-import { blockUser, fetchMyModeration, reportPost } from './src/services/moderationService';
+import { blockUser, fetchMyModeration, reportPost, unblockUser } from './src/services/moderationService';
 import { openPostMenu } from './src/utils/postMenu';
 import { usePocketNotice } from './src/hooks/usePocketNotice';
 import { CalmToast, type ToastKind, type ToastMessage } from './src/components/CalmToast';
 import { SparkleBurst, type Sparkle } from './src/components/SparkleBurst';
 import { isVisibleUnderFilters, matchesInterestTags } from './src/utils/interestTags';
 import { checkPostSafety } from './src/services/safetyFilter';
-import { usePreferences } from './src/services/preferencesStore';
+import { adoptPreferencesForUser, usePreferences } from './src/services/preferencesStore';
 import { collectPost } from './src/services/readService';
 import { reverseGeocode } from './src/services/geocoder';
 import { GpsAverager } from './src/utils/gpsAverager';
@@ -94,7 +97,40 @@ type TrackedCoords = LocationCoords & {
 // 探索画面で選んだ「探している言葉」を覚えておく時間（遠くから歩いて向かう分も見込む）
 const FOCUS_EXPIRE_MS = 30 * 60 * 1000;
 
+/**
+ * 初めて開いたときは、説明（OnboardingScreen）だけを出す。見終わるまで AR は作らない
+ * （AR を作るとカメラの許可を求められるので、説明の途中で許可のダイアログが出てしまう）
+ */
 export default function App(): React.JSX.Element {
+  const [hasSeenIntro, setHasSeenIntro] = useState<boolean | null>(null);
+  useEffect(() => {
+    hasSeenOnboarding().then(setHasSeenIntro);
+  }, []);
+  let content: React.JSX.Element;
+  if (hasSeenIntro === null) {
+    // 読み込むまでは、起動画面と同じ白
+    content = <View style={styles.root} />;
+  } else if (!hasSeenIntro) {
+    content = (
+      <OnboardingScreen
+        onDone={() => {
+          setHasSeenIntro(true);
+        }}
+      />
+    );
+  } else {
+    content = <MainApp />;
+  }
+  // 起動画面のロゴを少し長く見せてから、ふわっと消す
+  return (
+    <View style={styles.root}>
+      {content}
+      <SplashOverlay />
+    </View>
+  );
+}
+
+function MainApp(): React.JSX.Element {
   // ホームはAR機能そのもの
   const [activeTab, setActiveTab] = useState<Tab>('home');
   const [isPostModalVisible, setIsPostModalVisible] = useState<boolean>(false);
@@ -217,6 +253,10 @@ export default function App(): React.JSX.Element {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((_event, session) => {
       setUser(session?.user ?? null);
+      // 関心タグなどの設定は端末に保存しているので、別のアカウントになったら初期値に戻す
+      if (session?.user) {
+        adoptPreferencesForUser(session.user.id);
+      }
       // 前のバージョンでログイン情報に入れてしまった写真のアイコン（巨大な data: URI）を短い目印に置き換える。
       // 残っているとトークンが巨大になり、投稿が「ログインしていない人」として保存されて地図の保存も失敗する
       const avatarIcon = session?.user?.user_metadata?.avatar_icon;
@@ -237,6 +277,18 @@ export default function App(): React.JSX.Element {
     return () => {
       subscription.unsubscribe();
     };
+  }, []);
+
+  // 使い方ツアー（本物の画面の上で、光るところを押しながら一通り案内する）
+  const [isTourVisible, setIsTourVisible] = useState(false);
+  // ツアーをまだ最後まで見ていなければ始める（起動のロゴが消え、カメラ・位置の許可のダイアログに答えるころに）。
+  // 途中でアプリを閉じたら、次に開いたときにもう一度
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    hasFinishedTour().then((done) => {
+      if (!done) timer = setTimeout(() => setIsTourVisible(true), 2500);
+    });
+    return () => clearTimeout(timer);
   }, []);
 
   // 探索画面から来たときのお知らせ（作り直された AR ビューに渡す）
@@ -810,6 +862,8 @@ export default function App(): React.JSX.Element {
     kind: ToastKind = 'info',
     options: { symbol?: string; subtitle?: string } = {}
   ) => {
+    // 使い方ツアーの間は出さない（吹き出しと重なるため）
+    if (isTourVisible) return;
     if (isWorldMapSupported && activeTab === 'home') {
       setNotice({
         id: Date.now(),
@@ -903,6 +957,7 @@ export default function App(): React.JSX.Element {
               handleOpenPostMenu(postId, owner?.userId ?? null, owner?.author ?? 'guest');
             }}
             hiddenPostIds={hiddenPostIds}
+            hudHidden={isTourVisible}
             onPresenceTapped={(event) => {
               const post = nearbyPostsRef.current.get(event.nativeEvent.postId);
               if (!post) return;
@@ -1098,9 +1153,24 @@ export default function App(): React.JSX.Element {
               showToast('ログアウトしました');
             }}
             onNotice={(message, options) => showToast(message, 'success', options)}
+            blockedUserIds={blockedUserIds}
+            onUnblock={async (userId) => {
+              try {
+                await unblockUser(userId);
+                setBlockedUserIds((prev) => prev.filter((id) => id !== userId));
+                showToast('ブロックを解除しました', 'success', { symbol: 'hand.raised.slash' });
+              } catch (err) {
+                console.warn(err);
+                showToast('解除できませんでした', 'error');
+              }
+            }}
             onDeleteAccount={async () => {
               await deleteMyAccount();
               showToast('アカウントを削除しました');
+            }}
+            onReplayTour={() => {
+              setActiveTab('home');
+              setIsTourVisible(true);
             }}
           />
         )}
@@ -1127,6 +1197,13 @@ export default function App(): React.JSX.Element {
         onClose={() => setIsPostModalVisible(false)}
         onSubmit={handlePostSubmit}
         preferredTags={interestTags}
+      />
+
+      <GuidedTour
+        visible={isTourVisible}
+        isLoggedIn={user != null}
+        onSelectTab={setActiveTab}
+        onFinish={() => setIsTourVisible(false)}
       />
     </SafeAreaView>
   );
