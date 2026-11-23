@@ -1,12 +1,22 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import React, { memo, useEffect, useMemo, useRef, useState } from 'react';
+import { Image, Linking, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import MapView, { Circle, Marker, type Region } from 'react-native-maps';
 import { ScreenHeader } from './ScreenHeader';
+import { Icons } from '../assets/icons';
 import { findPostsInRegion, MAP_REGION_LIMIT, type NearbyPost } from '../services/nearbyPostService';
 import type { LocationCoords } from '../services/postService';
 import { DISTANCE_TIERS, geoTagLevelFor } from '../config/distanceTiers';
 import { useHeading } from '../hooks/useHeading';
 import { matchesInterestTags } from '../utils/interestTags';
+import { usePreferences } from '../services/preferencesStore';
+import {
+  findHeritageInRegion,
+  heritageIcon,
+  heritageKindText,
+  heritageSourceUrl,
+  isMajorHeritage,
+  type NearbyHeritageSite,
+} from '../services/heritageService';
 
 type Props = {
   /** 近い順の、近くの投稿（位置・距離・方角つき） */
@@ -27,6 +37,8 @@ type Props = {
 
 // これより広い範囲（緯度の幅、度）を映しているときは取りに行かない（日本全体などを映すと重い・意味が薄い）
 const MAX_FETCH_SPAN_DEG = 0.6;
+// 文化遺産のピンは同梱データなので、もう少し広い範囲まで出す（真ん中に近い順に上限まで）
+const HERITAGE_MAX_SPAN_DEG = 2.0;
 // 地図を動かし終えてから取りに行くまでの待ち（動かしている途中で何度も取らない）
 const REGION_FETCH_DELAY_MS = 400;
 
@@ -58,7 +70,65 @@ const tagLine = (tags: string[] | null) =>
     .join('  ');
 
 /**
- * 探索ページ：地図に、近くのメッセージのピンを出す（iOS は Apple のマップ。API キー・料金なし）
+ * 文化遺産のピン。Marker の image は、この版の react-native-maps だと新しいアーキテクチャで画像が読み込まれない
+ * （古いブリッジ経由で読むため）ので、メッセージのピンと同じく View で描く。
+ * 地図に描いたピンは止めた絵になる（tracksViewChanges=false）ので、絵が読み込めてから・選んだ/外したときだけ少しの間描き直す
+ */
+const HeritageMarker = memo(function HeritageMarker({
+  site,
+  isSelected,
+  onSelect,
+}: {
+  site: NearbyHeritageSite;
+  isSelected: boolean;
+  onSelect: (id: string) => void;
+}) {
+  const [isLoaded, setIsLoaded] = useState(false);
+  const [isTracking, setIsTracking] = useState(true);
+  const isMajor = isMajorHeritage(site);
+  useEffect(() => {
+    if (!isLoaded) return;
+    setIsTracking(true);
+    const timer = setTimeout(() => setIsTracking(false), 300);
+    return () => clearTimeout(timer);
+  }, [isLoaded, isSelected]);
+
+  return (
+    <Marker
+      coordinate={{ latitude: site.lat, longitude: site.lng }}
+      onPress={() => onSelect(site.id)}
+      tracksViewChanges={isTracking}
+      anchor={{ x: 0.5, y: 0.5 }}
+      zIndex={isSelected ? 1 : 0}
+    >
+      <View
+        style={[
+          styles.heritagePin,
+          isMajor && styles.heritagePinMajor,
+          isSelected && styles.heritagePinSelected,
+        ]}
+      >
+        <Image
+          source={heritageIcon(site)}
+          style={[
+            styles.heritagePinIcon,
+            isMajor && styles.heritagePinIconMajor,
+            isSelected && styles.heritagePinIconSelected,
+          ]}
+          resizeMode="contain"
+          fadeDuration={0}
+          onLoad={() => setIsLoaded(true)}
+        />
+      </View>
+    </Marker>
+  );
+});
+
+/** 選んでいるピン：メッセージか文化遺産か */
+type Selection = { type: 'post' | 'heritage'; id: string };
+
+/**
+ * 探索ページ：地図に、近くのメッセージと文化遺産のピンを出す（iOS は Apple のマップ。API キー・料金なし）
  */
 export function DiscoveryMapScreen({
   posts: nearbyPosts,
@@ -82,8 +152,17 @@ export function DiscoveryMapScreen({
   const coordsRef = useRef(coords);
   coordsRef.current = coords;
 
+  // 地図に映っている範囲の文化遺産（同梱データから、その場で絞り込む）
+  const [heritageSites, setHeritageSites] = useState<NearbyHeritageSite[]>([]);
+  const { showHeritagePins, setShowHeritagePins } = usePreferences();
+  // 選んでいる文化遺産は、地図を動かして間引かれても消さない
+  const selectedHeritageIdRef = useRef<string | null>(null);
+
   const loadRegion = (region: Region) => {
     if (regionTimerRef.current) clearTimeout(regionTimerRef.current);
+    setHeritageSites(
+      region.latitudeDelta > HERITAGE_MAX_SPAN_DEG ? [] : findHeritageInRegion(region, coordsRef.current, selectedHeritageIdRef.current)
+    );
     if (region.latitudeDelta > MAX_FETCH_SPAN_DEG) {
       setIsZoomedOutTooFar(true);
       return;
@@ -119,11 +198,21 @@ export function DiscoveryMapScreen({
     return [...byId.values()].sort((a, b) => a.distanceM - b.distanceM);
   }, [regionPosts, nearbyPosts, isPostVisible]);
 
-  // 選んだ投稿（最初は一番近いもの）。一覧から消えたら一番近いものに戻す
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  // 選んだピン。文化遺産を選んでいればその説明を、そうでなければ選んだ投稿（最初は一番近いもの）を出す。
+  // 一覧から消えたら一番近い投稿に戻す
+  const [selection, setSelection] = useState<Selection | null>(null);
+  const selectedHeritage = useMemo(
+    () =>
+      selection?.type === 'heritage' ? heritageSites.find((h) => h.id === selection.id) ?? null : null,
+    [heritageSites, selection]
+  );
+  selectedHeritageIdRef.current = selectedHeritage?.id ?? null;
   const selected = useMemo(
-    () => posts.find((p) => String(p.id) === selectedId) ?? posts[0] ?? null,
-    [posts, selectedId]
+    () =>
+      selectedHeritage
+        ? null
+        : posts.find((p) => selection?.type === 'post' && String(p.id) === selection.id) ?? posts[0] ?? null,
+    [posts, selection, selectedHeritage]
   );
 
   // 位置が初めて分かったら、そこを中心に映す
@@ -155,7 +244,12 @@ export function DiscoveryMapScreen({
     );
   };
 
+  // HeritageMarker を memo で描き直さないように、同じ関数を渡し続ける
+  const selectHeritage = useMemo(() => (id: string) => setSelection({ type: 'heritage', id }), []);
+
   const selectedRelative = selected && heading != null ? selected.bearingDeg - heading : null;
+  const heritageRelative =
+    selectedHeritage && heading != null ? selectedHeritage.bearingDeg - heading : null;
   const selectedLevel = selected ? geoTagLevelFor(selected.distanceM) : null;
 
   return (
@@ -184,6 +278,16 @@ export function DiscoveryMapScreen({
               : undefined
           }
         >
+          {/* 文化遺産のピン（メッセージのピンより下に） */}
+          {showHeritagePins && heritageSites.map((site) => (
+            <HeritageMarker
+              key={`heritage:${site.id}`}
+              site={site}
+              isSelected={selectedHeritage?.id === site.id}
+              onSelect={selectHeritage}
+            />
+          ))}
+
           {posts.map((post) => {
             const level = geoTagLevelFor(post.distanceM);
             const isSelected = selected != null && String(selected.id) === String(post.id);
@@ -203,8 +307,9 @@ export function DiscoveryMapScreen({
                 )}
                 <Marker
                   coordinate={coordinate}
-                  onPress={() => setSelectedId(String(post.id))}
+                  onPress={() => setSelection({ type: 'post', id: String(post.id) })}
                   tracksViewChanges={false}
+                  zIndex={2}
                   anchor={{ x: 0.5, y: 1 }}
                 >
                   <View style={styles.pinWrapper}>
@@ -240,6 +345,23 @@ export function DiscoveryMapScreen({
           </Text>
         </View>
 
+        {/* 文化遺産のピンを出す・隠す */}
+        <TouchableOpacity
+          style={[styles.heritageToggle, showHeritagePins && styles.heritageToggleOn]}
+          onPress={() => {
+            if (showHeritagePins && selectedHeritage) setSelection(null);
+            setShowHeritagePins(!showHeritagePins);
+          }}
+          activeOpacity={0.8}
+          accessibilityLabel={showHeritagePins ? '文化遺産を隠す' : '文化遺産を表示'}
+        >
+          <Image
+            source={Icons.heritageTemple}
+            style={[styles.heritageToggleIcon, showHeritagePins && styles.heritageToggleIconOn]}
+            resizeMode="contain"
+          />
+        </TouchableOpacity>
+
         {/* 現在地に戻る */}
         {coords && (
           <TouchableOpacity style={styles.recenterButton} onPress={recenter} activeOpacity={0.8}>
@@ -248,9 +370,40 @@ export function DiscoveryMapScreen({
         )}
       </View>
 
-      {/* 選んだ投稿 */}
+      {/* 選んだ文化遺産・投稿 */}
       <View style={styles.bottomSection}>
-        {selected ? (
+        {selectedHeritage ? (
+          <View style={styles.card}>
+            <View style={styles.cardHeader}>
+              <View style={styles.heritageIconCircle}>
+                <Image source={heritageIcon(selectedHeritage)} style={styles.heritageIcon} resizeMode="contain" />
+              </View>
+              <View style={styles.cardHeaderText}>
+                <Text style={styles.heritageName} numberOfLines={2}>
+                  {selectedHeritage.name}
+                </Text>
+                <Text style={styles.heritageKind}>{heritageKindText(selectedHeritage)}</Text>
+              </View>
+            </View>
+            <Text style={styles.heritageDistance}>
+              {heritageRelative != null ? `${directionText(heritageRelative)} ` : ''}
+              {distanceText(selectedHeritage.distanceM)}
+            </Text>
+            <Text style={styles.heritageDesc} numberOfLines={4}>
+              {selectedHeritage.desc}
+            </Text>
+            {/* 説明は Wikipedia（CC BY-SA 4.0）から。出典の表示はライセンスの条件 */}
+            <TouchableOpacity
+              onPress={() => Linking.openURL(heritageSourceUrl(selectedHeritage)).catch(() => {})}
+              activeOpacity={0.6}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            >
+              <Text style={styles.heritageSource}>
+                出典：Wikipedia「{selectedHeritage.wiki}」（CC BY-SA 4.0）
+              </Text>
+            </TouchableOpacity>
+          </View>
+        ) : selected ? (
           <View style={styles.card}>
             <View style={styles.cardHeader}>
               {/* 選んだ投稿の方向を指す矢印（スマホの向きが分かるときだけ） */}
@@ -479,6 +632,120 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 15,
     fontWeight: '700',
+  },
+  // 文化遺産のピン（落ち着いた土色の丸に白い絵）
+  // ふつうの文化遺産：小さく淡く（メッセージより目立たないように）
+  heritagePin: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: '#B89B74',
+    borderWidth: 2,
+    borderColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#4A3218',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.3,
+    shadowRadius: 2,
+  },
+  // 世界遺産・国宝・特別史跡・特別名勝：濃く大きく
+  heritagePinMajor: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: '#9A7445',
+  },
+  heritagePinIconMajor: {
+    width: 15,
+    height: 15,
+  },
+  heritagePinSelected: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#7A562C',
+    borderWidth: 3,
+  },
+  heritagePinIcon: {
+    width: 12,
+    height: 12,
+    tintColor: '#FFFFFF',
+  },
+  heritagePinIconSelected: {
+    width: 19,
+    height: 19,
+  },
+  // 文化遺産のピンを出す・隠すボタン（現在地ボタンの上）
+  heritageToggle: {
+    position: 'absolute',
+    right: 14,
+    bottom: 68,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: 'rgba(255, 255, 255, 0.95)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.12,
+    shadowRadius: 4,
+  },
+  heritageToggleOn: {
+    backgroundColor: '#9A7445',
+  },
+  heritageToggleIcon: {
+    width: 22,
+    height: 22,
+    tintColor: '#94A3B8',
+  },
+  heritageToggleIconOn: {
+    tintColor: '#FFFFFF',
+  },
+  // 文化遺産のカード
+  heritageIconCircle: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: '#9A7445',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+  },
+  heritageIcon: {
+    width: 24,
+    height: 24,
+    tintColor: '#FFFFFF',
+  },
+  heritageName: {
+    color: '#0F172A',
+    fontSize: 17,
+    fontWeight: '800',
+  },
+  heritageKind: {
+    marginTop: 2,
+    color: '#7A562C',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  heritageDistance: {
+    marginTop: 12,
+    color: '#64748B',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  heritageDesc: {
+    marginTop: 6,
+    color: '#1E293B',
+    fontSize: 14,
+    lineHeight: 21,
+  },
+  heritageSource: {
+    marginTop: 10,
+    color: '#94A3B8',
+    fontSize: 11,
+    textDecorationLine: 'underline',
   },
   // 通報・ブロックのメニュー（…）
   menuButton: {

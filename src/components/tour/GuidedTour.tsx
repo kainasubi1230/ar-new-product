@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Animated,
   Easing,
+  Image,
   Modal,
   Platform,
   StyleSheet,
@@ -12,6 +13,7 @@ import {
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { Tab } from '../BottomNav';
+import { Icons } from '../../assets/icons';
 import { measureTourTarget, type TourTargetKey } from './tourTargets';
 
 // 使い方ツアーを最後まで見たか（初回の説明のあと 1 回だけ出す。マイページの歯車からもう一度見られる）
@@ -72,7 +74,7 @@ const buildSteps = (isLoggedIn: boolean): Step[] => [
     title: '探索',
     body: 'ピンを選んで「この言葉をARで探す」を押すと、その言葉だけを探す準備をしてからホームに戻ります。',
     mode: 'next',
-    placement: 'bottom',
+    placement: 'center',
     dim: 0.25,
   },
   {
@@ -88,7 +90,7 @@ const buildSteps = (isLoggedIn: boolean): Step[] => [
     title: '通知',
     body: '関心タグに合う言葉の近くを通ったときだけ、通知が届きます。スマホに振り回されることはありません。',
     mode: 'next',
-    placement: 'bottom',
+    placement: 'center',
     dim: 0.25,
   },
   {
@@ -106,7 +108,7 @@ const buildSteps = (isLoggedIn: boolean): Step[] => [
       ? '残した言葉と拾った言葉を見返せます。「関心タグ」では、見たい言葉と見たくない言葉を選べます。'
       : 'ログインすると、言葉を残したり拾ったりできます。関心タグや安心フィルターで、見たい言葉と見たくない言葉も選べます。',
     mode: 'next',
-    placement: 'bottom',
+    placement: 'center',
     dim: 0.25,
   },
   {
@@ -140,14 +142,21 @@ type Props = {
 
 // 光らせる丸の、部品より大きくする分
 const HOLE_PADDING = 10;
-// 穴の外側を暗くする太い枠（画面より十分大きく）
-const DIM_BORDER = 2400;
+// 穴の外側を暗くする太い枠。穴から画面の角まで（約 1000pt）届けば足りる。
+// 大きすぎると iPhone が一度に描ける大きさ（約 8000px）を超え、画面によって膜が崩れる
+const DIM_BORDER = 1250;
 // 穴の基準の半径（実際の大きさは scale で合わせる。動きはすべてネイティブで動かしてなめらかにする）
 const BASE_RADIUS = 40;
 const EASE = Easing.bezier(0.33, 0, 0.2, 1);
 const DIM_COLOR = '#0F172A';
 
 type Hole = { cx: number; cy: number; r: number };
+
+// 画面の作り直しが終わり、次の描画が 2 回まわるまで待つ
+const waitForIdle = () =>
+  new Promise<void>((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+  });
 
 /**
  * 使い方ツアー。本物の画面の上に暗い膜を重ね、1 か所だけ丸く光らせて吹き出しで説明する。
@@ -164,9 +173,15 @@ export function GuidedTour({ visible, isLoggedIn, onSelectTab, onFinish }: Props
   // 下のタブの上端（吹き出しを「下のタブの上」に置くため）
   const [navTop, setNavTop] = useState<number | null>(null);
   const isTransitioningRef = useRef(false);
-  const hasHolePositionRef = useRef(false);
+  // ひとつ前の段階で丸が見えていたか。見えていたときだけ次の場所へすべらせ、
+  // 見えていなかったら（真ん中の吹き出しのあと）新しい場所でその場に開く（膜が薄く見えている間に丸が画面を横切らないように）
+  const isHoleShownRef = useRef(false);
+  // タブを移った直後か。ホームの AR は作り直しで一瞬固まるので、落ち着くまで待ってから丸を動かす
+  const didSwitchTabRef = useRef(false);
 
   const bubble = useRef(new Animated.Value(0)).current;
+  // 吹き出しの「ぽんっ」と出る動き（0 → 1。ばねで少し行き過ぎてから落ち着く）
+  const pop = useRef(new Animated.Value(0)).current;
   const holeX = useRef(new Animated.Value(0)).current;
   const holeY = useRef(new Animated.Value(0)).current;
   const holeScale = useRef(new Animated.Value(1)).current;
@@ -176,6 +191,7 @@ export function GuidedTour({ visible, isLoggedIn, onSelectTab, onFinish }: Props
   const pulse = useRef(new Animated.Value(0)).current;
 
   const step = steps[Math.min(shownIndex, steps.length - 1)];
+  const isFinal = shownIndex === steps.length - 1;
 
   // 開くたびに最初から
   useEffect(() => {
@@ -183,7 +199,7 @@ export function GuidedTour({ visible, isLoggedIn, onSelectTab, onFinish }: Props
     setIndex(0);
     setShownIndex(0);
     setHole(null);
-    hasHolePositionRef.current = false;
+    isHoleShownRef.current = false;
     bubble.setValue(0);
     holeLayer.setValue(0);
     fullLayer.setValue(0);
@@ -197,13 +213,20 @@ export function GuidedTour({ visible, isLoggedIn, onSelectTab, onFinish }: Props
     isTransitioningRef.current = true;
     const run = async () => {
       const fadeOut = new Promise<void>((resolve) =>
-        Animated.timing(bubble, { toValue: 0, duration: 160, easing: EASE, useNativeDriver: true }).start(() =>
+        Animated.parallel([
+          Animated.timing(bubble, { toValue: 0, duration: 160, easing: EASE, useNativeDriver: true }),
+          Animated.timing(pop, { toValue: 0.6, duration: 160, easing: EASE, useNativeDriver: true }),
+        ]).start(() =>
           resolve()
         )
       );
-      // タブを移った直後は画面が作り直されるので、少し待ってから測る
+      // タブを移った直後は画面が作り直されて一瞬固まるので、落ち着くまで待ってから測る
+      // （固まっている間に丸を動かすと、引っかかって見える）
+      const settleMs = didSwitchTabRef.current ? 420 : 60;
+      didSwitchTabRef.current = false;
       const measure = (async () => {
-        await new Promise<void>((resolve) => setTimeout(() => resolve(), 120));
+        await new Promise<void>((resolve) => setTimeout(() => resolve(), settleMs));
+        await waitForIdle();
         const home = await measureTourTarget('tab:home');
         const rect = next.target ? await measureTourTarget(next.target) : null;
         return { home, rect };
@@ -225,7 +248,7 @@ export function GuidedTour({ visible, isLoggedIn, onSelectTab, onFinish }: Props
       const animations: Animated.CompositeAnimation[] = [];
       if (nextHole) {
         const scale = nextHole.r / BASE_RADIUS;
-        if (hasHolePositionRef.current) {
+        if (isHoleShownRef.current) {
           animations.push(
             Animated.timing(holeX, { toValue: nextHole.cx, duration: 440, easing: EASE, useNativeDriver: true }),
             Animated.timing(holeY, { toValue: nextHole.cy, duration: 440, easing: EASE, useNativeDriver: true }),
@@ -235,9 +258,9 @@ export function GuidedTour({ visible, isLoggedIn, onSelectTab, onFinish }: Props
           holeX.setValue(nextHole.cx);
           holeY.setValue(nextHole.cy);
           holeScale.setValue(scale);
-          hasHolePositionRef.current = true;
         }
       }
+      isHoleShownRef.current = nextHole != null;
       animations.push(
         Animated.timing(holeLayer, {
           toValue: nextHole ? next.dim : 0,
@@ -253,7 +276,13 @@ export function GuidedTour({ visible, isLoggedIn, onSelectTab, onFinish }: Props
         }),
         Animated.sequence([
           Animated.delay(nextHole ? 260 : 140),
-          Animated.timing(bubble, { toValue: 1, duration: 300, easing: EASE, useNativeDriver: true }),
+          Animated.parallel([
+            Animated.timing(bubble, { toValue: 1, duration: 220, easing: EASE, useNativeDriver: true }),
+            Animated.sequence([
+              Animated.timing(pop, { toValue: 0, duration: 0, useNativeDriver: true }),
+              Animated.spring(pop, { toValue: 1, friction: 7, tension: 90, useNativeDriver: true }),
+            ]),
+          ]),
         ])
       );
       Animated.parallel(animations).start(() => {
@@ -266,9 +295,13 @@ export function GuidedTour({ visible, isLoggedIn, onSelectTab, onFinish }: Props
     };
   }, [visible, index, steps, bubble, holeX, holeY, holeScale, holeLayer, fullLayer]);
 
-  // 光っている丸から、輪がゆっくり広がって消える
+  // 光っている丸から、輪がゆっくり広がって消える。
+  // 輪は段階ごとに作り直されるので、そのたびに動きをかけ直す
+  // （ネイティブで動いている途中の値に、あとから作った輪をつないでも動かないため）
+  const isRingShown = visible && hole != null && step.mode === 'tap';
   useEffect(() => {
-    if (!visible) return;
+    if (!isRingShown) return;
+    pulse.setValue(0);
     const loop = Animated.loop(
       Animated.sequence([
         Animated.timing(pulse, { toValue: 1, duration: 1400, easing: Easing.out(Easing.quad), useNativeDriver: true }),
@@ -277,7 +310,7 @@ export function GuidedTour({ visible, isLoggedIn, onSelectTab, onFinish }: Props
     );
     loop.start();
     return () => loop.stop();
-  }, [visible, pulse]);
+  }, [isRingShown, shownIndex, pulse]);
 
   if (!visible) return null;
 
@@ -296,10 +329,24 @@ export function GuidedTour({ visible, isLoggedIn, onSelectTab, onFinish }: Props
     setIndex(shownIndex + 1);
   };
 
+  // 光っているタブを押したら、先に吹き出しと輪を消してからタブを移る（固まる時間に何も動いていないように）
   const onTapTarget = () => {
     if (isTransitioningRef.current) return;
-    if (step.tab) onSelectTab(step.tab);
-    goNext();
+    isTransitioningRef.current = true;
+    Animated.parallel([
+          Animated.timing(bubble, { toValue: 0, duration: 160, easing: EASE, useNativeDriver: true }),
+          Animated.timing(pop, { toValue: 0.6, duration: 160, easing: EASE, useNativeDriver: true }),
+        ]).start(() => {
+      if (step.tab) {
+        didSwitchTabRef.current = true;
+        onSelectTab(step.tab);
+      }
+      if (shownIndex >= steps.length - 1) {
+        finish();
+        return;
+      }
+      setIndex(shownIndex + 1);
+    });
   };
 
   // 吹き出しの位置
@@ -317,6 +364,10 @@ export function GuidedTour({ visible, isLoggedIn, onSelectTab, onFinish }: Props
     step.placement === 'target' && hole
       ? Math.min(Math.max(hole.cx - bubbleLeft - 9, 24), bubbleWidth - 42)
       : null;
+
+  // transformOrigin は小数を読めない（「132.5px」だとエラーになる）ので整数にする
+  const bubbleOrigin =
+    arrowLeft != null ? `${Math.round(arrowLeft + 9)}px 100%` : step.placement === 'bottom' ? '50% 100%' : '50% 50%';
 
   const holeTransform = [{ translateX: holeX }, { translateY: holeY }, { scale: holeScale }];
   const ringScale = pulse.interpolate({ inputRange: [0, 1], outputRange: [1, 1.35] });
@@ -347,8 +398,8 @@ export function GuidedTour({ visible, isLoggedIn, onSelectTab, onFinish }: Props
             },
           ]}
         />
-        {/* 広がって消える輪 */}
-        {hole && (
+        {/* 広がって消える輪（押してほしい段階だけ。「＋」の説明のように見せるだけの段階では出さない） */}
+        {isRingShown && hole && (
           <Animated.View
             pointerEvents="none"
             style={[
@@ -385,25 +436,45 @@ export function GuidedTour({ visible, isLoggedIn, onSelectTab, onFinish }: Props
               left: bubbleLeft,
               width: bubbleWidth,
               opacity: bubble,
-              transform: [{ translateY: bubble.interpolate({ inputRange: [0, 1], outputRange: [10, 0] }) }],
+              // 光らせた場所（矢印の先）から、ふくらむように出てくる
+              transformOrigin: bubbleOrigin,
+              transform: [
+                { translateY: pop.interpolate({ inputRange: [0, 1], outputRange: [step.placement === 'center' ? 12 : 22, 0] }) },
+                { scale: pop.interpolate({ inputRange: [0, 1], outputRange: [0.86, 1] }) },
+              ],
             },
           ]}
         >
-          <Text style={styles.title}>{step.title}</Text>
-          <Text style={styles.body}>{step.body}</Text>
-          {step.note && <Text style={styles.note}>{step.note}</Text>}
-          <View style={styles.footer}>
-            <Text style={styles.progress}>
-              {shownIndex + 1} / {steps.length}
-            </Text>
-            {step.mode === 'next' ? (
-              <TouchableOpacity style={styles.button} onPress={goNext} activeOpacity={0.85}>
-                <Text style={styles.buttonText}>{step.buttonLabel ?? '次へ'}</Text>
+          {isFinal ? (
+            // さいごの段階だけ、ロゴと大きなボタンで送り出す
+            <View style={styles.finalContent}>
+              <Image source={Icons.logo} style={styles.finalLogo} resizeMode="cover" />
+              <Text style={styles.finalTitle}>{step.title}</Text>
+              <Text style={styles.finalBody}>{step.body}</Text>
+              {step.note && <Text style={styles.finalNote}>{step.note}</Text>}
+              <TouchableOpacity style={styles.finalButton} onPress={goNext} activeOpacity={0.85}>
+                <Text style={styles.finalButtonText}>{step.buttonLabel ?? 'はじめる'}</Text>
               </TouchableOpacity>
-            ) : (
-              <Text style={styles.tapHint}>光っているところをタップ</Text>
-            )}
-          </View>
+            </View>
+          ) : (
+            <>
+              <Text style={styles.title}>{step.title}</Text>
+              <Text style={styles.body}>{step.body}</Text>
+              {step.note && <Text style={styles.note}>{step.note}</Text>}
+              <View style={styles.footer}>
+                <Text style={styles.progress}>
+                  {shownIndex + 1} / {steps.length}
+                </Text>
+                {step.mode === 'next' ? (
+                  <TouchableOpacity style={styles.button} onPress={goNext} activeOpacity={0.85}>
+                    <Text style={styles.buttonText}>{step.buttonLabel ?? '次へ'}</Text>
+                  </TouchableOpacity>
+                ) : (
+                  <Text style={styles.tapHint}>光っているところをタップ</Text>
+                )}
+              </View>
+            </>
+          )}
           {arrowLeft != null && <View style={[styles.arrow, { left: arrowLeft }]} />}
         </Animated.View>
 
@@ -503,6 +574,55 @@ const styles = StyleSheet.create({
     backgroundColor: '#FFFFFF',
     borderRadius: 3,
     transform: [{ rotate: '45deg' }],
+  },
+  finalContent: {
+    alignItems: 'center',
+    paddingTop: 10,
+    paddingBottom: 8,
+  },
+  finalLogo: {
+    width: 72,
+    height: 72,
+    borderRadius: 18,
+    marginBottom: 18,
+  },
+  finalTitle: {
+    color: '#0F172A',
+    fontSize: 21,
+    fontWeight: '800',
+    textAlign: 'center',
+    marginBottom: 10,
+  },
+  finalBody: {
+    color: '#475569',
+    fontSize: 15,
+    lineHeight: 23,
+    textAlign: 'center',
+  },
+  finalNote: {
+    color: '#94A3B8',
+    fontSize: 12,
+    lineHeight: 18,
+    textAlign: 'center',
+    marginTop: 12,
+  },
+  finalButton: {
+    alignSelf: 'stretch',
+    marginTop: 22,
+    backgroundColor: '#10B981',
+    borderRadius: 16,
+    paddingVertical: 16,
+    alignItems: 'center',
+    shadowColor: '#10B981',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.35,
+    shadowRadius: 12,
+  },
+  finalButtonText: {
+    color: '#FFFFFF',
+    fontSize: 17,
+    fontWeight: '800',
+    letterSpacing: 1,
   },
   skip: {
     position: 'absolute',

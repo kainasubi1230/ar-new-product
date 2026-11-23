@@ -1,12 +1,11 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Alert, AppState, Image, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { AppState, Image, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { ScreenHeader } from './ScreenHeader';
 import { NotificationCard } from './NotificationCard';
 import { Icons } from '../assets/icons';
 import { interestTagIcon } from '../utils/tagIcon';
 import type { NotificationItem } from './NotificationCard';
 import {
-  clearPocketHistory,
   getUnseenPocketHistory,
   isPocketNoticeSupported,
   markPocketSeenUntil,
@@ -88,21 +87,6 @@ export function NotificationScreen({ pocketNoticeEnabled, interestTags, onOpenAR
     };
   }, [reload]);
 
-  const handleClear = () => {
-    if (history.length === 0) return;
-    Alert.alert('通知の履歴を消す', 'これまでのポケット通知の履歴を消しますか？', [
-      { text: 'キャンセル', style: 'cancel' },
-      {
-        text: '消す',
-        style: 'destructive',
-        onPress: () => {
-          clearPocketHistory();
-          setHistory([]);
-        },
-      },
-    ]);
-  };
-
   const noticeTitle = !isPocketNoticeSupported
     ? 'ポケット通知はこの端末では使えません'
     : !pocketNoticeEnabled
@@ -117,14 +101,8 @@ export function NotificationScreen({ pocketNoticeEnabled, interestTags, onOpenAR
 
   return (
     <View style={styles.container}>
-      <ScreenHeader
-        title="通知"
-        rightAction={
-          <TouchableOpacity style={styles.clearBtn} activeOpacity={0.7} onPress={handleClear}>
-            <Text style={styles.clearBtnText}>履歴を消す</Text>
-          </TouchableOpacity>
-        }
-      />
+      {/* 見た通知は画面を離れると消えるので、「履歴を消す」は置かない */}
+      <ScreenHeader title="通知" />
 
       <ScrollView contentContainerStyle={styles.listContent}>
         <View style={styles.calmNoticeBox}>
@@ -162,16 +140,6 @@ const styles = StyleSheet.create({
     backgroundColor: '#F8FAFC',
   },
 
-  clearBtn: {
-    width: 72,
-    alignItems: 'flex-end',
-    paddingVertical: 4,
-  },
-  clearBtnText: {
-    color: '#64748B',
-    fontSize: 12,
-    fontWeight: '600',
-  },
   listContent: {
     padding: 16,
     gap: 12,

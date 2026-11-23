@@ -1146,7 +1146,6 @@ function MainApp(): React.JSX.Element {
         {/* 4. MyPage Screen (Profile & history / Auth screen if not logged in) */}
         {activeTab === 'mypage' && (
           <MyPageScreen
-            onOpenARLens={() => setActiveTab('home')}
             user={user}
             onSignOut={async () => {
               await signOut();

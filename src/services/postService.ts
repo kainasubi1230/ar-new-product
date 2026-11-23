@@ -2,6 +2,7 @@ import Geolocation from '@react-native-community/geolocation';
 import { supabase } from '../lib/supabase';
 import { offsetLatLng } from '../utils/geo';
 import { reverseGeocode } from './geocoder';
+import { cleanPostTags } from './interestTagService';
 
 export interface LocationCoords {
   latitude: number;
@@ -108,7 +109,8 @@ export const insertPostWithCurrentLocation = async (
         accuracy_m: camera.accuracy ?? null,
         author: postData.author ?? 'guest',
         handle: postData.handle ?? null,
-        tags: postData.tags ?? [],
+        // 画面で整えていても、保存の直前にもう一度（長さ・数・絵文字・表記揺れの重複）
+        tags: cleanPostTags(postData.tags ?? []),
         ar_x: postData.ar_x ?? null,
         ar_y: postData.ar_y ?? null,
         ar_z: postData.ar_z ?? null,

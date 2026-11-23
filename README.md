@@ -1,18 +1,15 @@
-## アプリ修正点2(堀川)
+# Loca
 
-### マイページのアイコン
+現実空間に言葉を残す、空間メディア（iOS / React Native + ARKit + Supabase）。
 
-自分の好きな画像を入れれる(できれば不適切なアイコンは禁止したい)
+- 仕組み・決まりごと・ファイルの分け方は [CLAUDE.md](CLAUDE.md) にまとめています。
+- データベースの変更は `supabase/migrations/` にあります（Supabase の SQL Editor で実行）。
 
-### 安心フィルター (堀川くんは解決策を考えてください)
+## 動かし方
 
-ユーザーが内容とは違うタグをつけるのでは
-
-### 関心タグ (堀川くんは解決策を考えてください)
-
-ユーザーが増えタグの種類が増えた時どうするか
-
-### よりARの精度向上
-
-AR機能の精度向上。
-正確な位置に出るように、メッセージカードの瞬間移動はNG。
+```sh
+npm install
+cd ios && pod install && cd ..
+npm start          # Metro
+# Xcode で ios/SpatialInventory.xcworkspace を開き、実機を選んで ▶
+```

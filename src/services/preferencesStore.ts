@@ -17,10 +17,10 @@ export type Preferences = {
   hideNegativePosts: boolean;
   /** 安心フィルターで除外するタグ一覧（「#」付き） */
   mutedTags: string[];
+  /** 探索の地図に文化遺産のピンを出すか（地図の右下のボタンで切り替える） */
+  showHeritagePins: boolean;
   /** アイコン（名前の頭文字の丸）の色（#RRGGBB、`src/config/avatarColors.ts` の AVATAR_COLORS から選ぶ） */
   avatarColor: string;
-  /** 開発用の情報（通知画面のポケット通知の状態など）を出すか。開発ビルドのときだけマイページの設定で切り替えられる */
-  showDevInfo: boolean;
   /** この設定を使っているアカウント（auth の user id）。別のアカウントでログインしたら初期値に戻す */
   ownerUserId?: string;
 };
@@ -34,8 +34,8 @@ const DEFAULT_PREFERENCES: Preferences = {
   onlyInterestTags: false,
   hideNegativePosts: true,
   mutedTags: ['#愚痴', '#混雑', '#騒音', '#危険'],
+  showHeritagePins: true,
   avatarColor: DEFAULT_AVATAR_COLOR,
-  showDevInfo: false,
 };
 
 let current: Preferences = DEFAULT_PREFERENCES;
@@ -114,10 +114,10 @@ export const usePreferences = () => {
       });
     },
     setPocketNoticeEnabled: (pocketNoticeEnabled: boolean) => updatePreferences({ pocketNoticeEnabled }),
-    setShowDevInfo: (showDevInfo: boolean) => updatePreferences({ showDevInfo }),
     setOnlyInterestTags: (onlyInterestTags: boolean) => updatePreferences({ onlyInterestTags }),
     setHideNegativePosts: (hideNegativePosts: boolean) => updatePreferences({ hideNegativePosts }),
     setMutedTags: (mutedTags: string[]) => updatePreferences({ mutedTags }),
+    setShowHeritagePins: (showHeritagePins: boolean) => updatePreferences({ showHeritagePins }),
     toggleMutedTag: (tag: string) => {
       const normalized = normalizeTag(tag);
       updatePreferences({

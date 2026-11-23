@@ -14,6 +14,7 @@ import {
 } from 'react-native';
 import { suggestTagsAndSentiment, SentimentResult } from '../services/tagSuggestionService';
 import { checkPostSafety } from '../services/safetyFilter';
+import { POST_TAG_LIMIT, TAG_MAX_LENGTH, canonicalTagKey, cleanTag } from '../services/interestTagService';
 import { getCurrentLocation } from '../services/postService';
 import { reverseGeocode } from '../services/geocoder';
 import { Icons } from '../assets/icons';
@@ -106,28 +107,34 @@ export function PostModal({ visible, onClose, onSubmit, preferredTags = [] }: Pr
     };
   }, [message, visible, preferredTags]);
 
+  // タグは POST_TAG_LIMIT 個まで。上限のときは、選んでいないタグを押せない（薄く見せる）
+  const isTagLimitReached = selectedTags.length >= POST_TAG_LIMIT;
+
   const toggleTag = (tag: string) => {
     hasEditedTagsRef.current = true;
     if (selectedTags.includes(tag)) {
       setSelectedTags(selectedTags.filter((t) => t !== tag));
-    } else {
+    } else if (!isTagLimitReached) {
       setSelectedTags([...selectedTags, tag]);
     }
   };
 
   const handleAddManualTag = () => {
-    const trimmed = manualTag.trim();
-    if (!trimmed) return;
-    const formatted = trimmed.startsWith('#') ? trimmed : `#${trimmed}`;
-    hasEditedTagsRef.current = true;
-    if (!selectedTags.includes(formatted)) {
-      setSelectedTags([...selectedTags, formatted]);
-    }
-    // 候補リストにもなければ追加
-    if (!suggestedTags.includes(formatted)) {
-      setSuggestedTags((prev) => [...prev, formatted]);
-    }
+    // #・空白・絵文字を取って、TAG_MAX_LENGTH 文字までに整える
+    const formatted = cleanTag(manualTag);
     setManualTag('');
+    if (!formatted) return;
+    hasEditedTagsRef.current = true;
+    // 表記揺れが同じタグ（#カフェ と #かふぇ など）がもう候補にあれば、新しく足さずにそれを使う
+    const key = canonicalTagKey(formatted);
+    const existing = [...selectedTags, ...suggestedTags].find((t) => canonicalTagKey(t) === key);
+    const tag = existing ?? formatted;
+    if (!selectedTags.includes(tag) && !isTagLimitReached) {
+      setSelectedTags([...selectedTags, tag]);
+    }
+    if (!existing) {
+      setSuggestedTags((prev) => [...prev, tag]);
+    }
   };
 
   const handleSubmit = () => {
@@ -207,7 +214,7 @@ export function PostModal({ visible, onClose, onSubmit, preferredTags = [] }: Pr
                   return (
                     <TouchableOpacity
                       key={tag}
-                      style={[styles.tagChip, isSelected && styles.tagChipActive]}
+                      style={[styles.tagChip, isSelected && styles.tagChipActive, !isSelected && isTagLimitReached && styles.tagChipDisabled]}
                       onPress={() => toggleTag(tag)}
                       activeOpacity={0.7}
                     >
@@ -232,7 +239,7 @@ export function PostModal({ visible, onClose, onSubmit, preferredTags = [] }: Pr
                       return (
                         <TouchableOpacity
                           key={tag}
-                          style={[styles.tagChip, isSelected && styles.tagChipActive]}
+                          style={[styles.tagChip, isSelected && styles.tagChipActive, !isSelected && isTagLimitReached && styles.tagChipDisabled]}
                           onPress={() => toggleTag(tag)}
                           activeOpacity={0.7}
                         >
@@ -248,16 +255,24 @@ export function PostModal({ visible, onClose, onSubmit, preferredTags = [] }: Pr
 
             {/* Manual Tag Input */}
             <View style={styles.sectionGroup}>
-              <Text style={styles.sectionTitle}>手動でタグを追加</Text>
+              <View style={styles.sectionTitleRow}>
+                <Text style={styles.sectionTitle}>手動でタグを追加</Text>
+                <Text style={styles.tagCountText}>
+                  選択中 {selectedTags.length}/{POST_TAG_LIMIT}
+                </Text>
+              </View>
               <View style={styles.manualInputRow}>
                 <TextInput
                   style={styles.manualInput}
                   value={manualTag}
                   onChangeText={setManualTag}
-                  placeholder="# 追加するタグを入力..."
+                  placeholder={isTagLimitReached ? `タグは${POST_TAG_LIMIT}個までです` : `# 追加するタグ（${TAG_MAX_LENGTH}文字まで）`}
                   placeholderTextColor="#94A3B8"
                   onSubmitEditing={handleAddManualTag}
                   returnKeyType="done"
+                  editable={!isTagLimitReached}
+                  // # の 1 文字ぶん余分に入れられるように
+                  maxLength={TAG_MAX_LENGTH + 1}
                 />
                 {manualTag.trim().length > 0 && (
                   <TouchableOpacity style={styles.addTagBtn} onPress={handleAddManualTag}>
@@ -457,6 +472,16 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#E2E8F0',
     paddingHorizontal: 14,
+  },
+  // タグが上限のとき、選んでいないタグは押せないので薄く
+  tagChipDisabled: {
+    opacity: 0.4,
+  },
+  tagCountText: {
+    marginLeft: 'auto',
+    color: '#94A3B8',
+    fontSize: 12,
+    fontWeight: '600',
   },
   manualInput: {
     flex: 1,

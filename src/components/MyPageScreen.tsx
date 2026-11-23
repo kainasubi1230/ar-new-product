@@ -61,7 +61,6 @@ type CollectedWord = {
 
 
 type Props = {
-  onOpenARLens: () => void;
   user?: User | null;
   onSignOut?: () => void;
   /** アカウントを削除する（確認はマイページで出す） */
@@ -89,7 +88,6 @@ const normalizeTags = (tags: string[] | null | undefined) =>
 
 
 export function MyPageScreen({
-  onOpenARLens,
   user,
   onSignOut,
   onDeleteAccount,

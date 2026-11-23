@@ -165,6 +165,44 @@ export function normalizeTag(raw: string): string {
   return `#${trimmed}`;
 }
 
+/** 1 つのタグの長さ（# を除いた文字数）。AR の方角タグや地図のカードからはみ出さないように */
+export const TAG_MAX_LENGTH = 15;
+/** 1 つの投稿に付けられるタグの数 */
+export const POST_TAG_LIMIT = 5;
+
+// 絵文字（記号・国旗・肌の色・つなぎ文字・異体字セレクタなど）。タグは文字だけにする
+const EMOJI_PATTERN =
+  /[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2300}-\u{23FF}\u{2B00}-\u{2BFF}\u{2190}-\u{21FF}\u{3297}\u{3299}\u{303D}\u{3030}\u{00A9}\u{00AE}\u{2122}\u{FE0E}\u{FE0F}\u{200D}\u{20E3}\u{E0020}-\u{E007F}]/gu;
+
+/**
+ * 入れたタグを整える：先頭や途中の #・空白・絵文字を取り、TAG_MAX_LENGTH 文字までにして `#タグ` の形に。
+ * 何も残らなければ null
+ */
+export function cleanTag(raw: string): string | null {
+  const body = raw.normalize('NFKC').replace(EMOJI_PATTERN, '').replace(/[#\s]+/g, '');
+  if (!body) return null;
+  return `#${Array.from(body).slice(0, TAG_MAX_LENGTH).join('')}`;
+}
+
+/**
+ * 投稿のタグをまとめて整える：1 つずつ cleanTag し、表記揺れが同じもの（#カフェ と #かふぇ、#Cafe と #cafe）は
+ * 先に出たほうだけ残して、POST_TAG_LIMIT 個まで
+ */
+export function cleanPostTags(tags: readonly string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const raw of tags) {
+    const tag = cleanTag(raw);
+    if (!tag) continue;
+    const key = canonicalTagKey(tag);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(tag);
+    if (result.length >= POST_TAG_LIMIT) break;
+  }
+  return result;
+}
+
 /**
  * 指定された関心タグ（1つまたは複数）に対して、関連タグ・同義語・表記揺れも含めた展開セットを返す
  */

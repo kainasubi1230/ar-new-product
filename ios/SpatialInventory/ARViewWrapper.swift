@@ -3339,10 +3339,6 @@ final class LocaPocket: RCTEventEmitter, CLLocationManagerDelegate, UNUserNotifi
   // 最後に届いた位置。対象の一覧が新しくなったとき、動いていなくてもすぐ判定するのに使う
   private var lastLocation: CLLocation?
   private var isRunning = false
-  // 直近の判定の結果（なぜ通知しなかったか）。開発用の診断表示に出す
-  private var lastCheckResult = "まだ位置が届いていません"
-  private var lastCheckAt: Date?
-  private var lastNearestDistance: Double?
   private var hasListeners = false
   private static let notifiedKey = "loca.pocket.notified" // [postId: 通知した時刻]
   private static let historyKey = "loca.pocket.history" // 通知画面に出す履歴（新しい順、最大 50 件）
@@ -3429,60 +3425,6 @@ final class LocaPocket: RCTEventEmitter, CLLocationManagerDelegate, UNUserNotifi
     resolve(UserDefaults.standard.array(forKey: Self.historyKey) ?? [])
   }
 
-  @objc
-  func clearHistory() {
-    UserDefaults.standard.removeObject(forKey: Self.historyKey)
-  }
-
-  // 開発用：今の見張りの状態（通知の許可・対象の件数・GPS の誤差・いちばん近い対象・直近の判定結果）
-  @objc(getStatus:rejecter:)
-  func getStatus(_ resolve: @escaping RCTPromiseResolveBlock, rejecter reject: @escaping RCTPromiseRejectBlock) {
-    UNUserNotificationCenter.current().getNotificationSettings { settings in
-      DispatchQueue.main.async {
-        let permission: String
-        switch settings.authorizationStatus {
-        case .authorized, .provisional, .ephemeral: permission = "許可"
-        case .denied: permission = "拒否"
-        case .notDetermined: permission = "未確認"
-        @unknown default: permission = "不明"
-        }
-        let nearest = self.lastLocation.flatMap { location in
-          self.targets.map { location.distance(from: $0.location) }.min()
-        }
-        let cooldownLeft = self.lastNotifiedAt.map { max(0, self.cooldown - Date().timeIntervalSince($0)) } ?? 0
-        var status: [String: Any] = [
-          "permission": permission,
-          "running": self.isRunning,
-          "targetCount": self.targets.count,
-          "radiusM": self.radiusM,
-          "maxAccuracyM": self.maxAccuracyM,
-          "cooldownLeftSec": cooldownLeft,
-          "notifiedCount": (UserDefaults.standard.dictionary(forKey: Self.notifiedKey) ?? [:]).count,
-          "lastCheckResult": self.lastCheckResult,
-        ]
-        if let location = self.lastLocation {
-          status["accuracyM"] = location.horizontalAccuracy
-          status["locationAgeSec"] = Date().timeIntervalSince(location.timestamp)
-        }
-        if let nearest { status["nearestDistanceM"] = nearest }
-        if let at = self.lastCheckAt { status["lastCheckAgeSec"] = Date().timeIntervalSince(at) }
-        resolve(status)
-      }
-    }
-  }
-
-  // 開発用：「このメッセージはもう通知した」の記録と通知どうしの間隔を消し、同じカードでもう一度試せるようにする
-  @objc
-  func resetNotified() {
-    DispatchQueue.main.async {
-      UserDefaults.standard.removeObject(forKey: Self.notifiedKey)
-      self.lastNotifiedAt = nil
-      if let location = self.lastLocation {
-        self.notifyIfNear(location)
-      }
-    }
-  }
-
   private func setTargets(_ items: NSArray) {
     targets = items.compactMap { item in
       guard let dict = item as? NSDictionary,
@@ -3517,18 +3459,13 @@ final class LocaPocket: RCTEventEmitter, CLLocationManagerDelegate, UNUserNotifi
 
   // 範囲内に、最近通知していないメッセージがあれば通知する
   private func notifyIfNear(_ location: CLLocation) {
-    lastCheckAt = Date()
-    lastNearestDistance = targets.map { location.distance(from: $0.location) }.min()
     guard location.horizontalAccuracy <= maxAccuracyM else {
-      lastCheckResult = "GPS の誤差が大きい（\(Int(location.horizontalAccuracy))m > \(Int(maxAccuracyM))m）"
       return
     }
     if let last = lastNotifiedAt, Date().timeIntervalSince(last) < cooldown {
-      lastCheckResult = "通知どうしの間隔をあけている（あと \(Int(cooldown - Date().timeIntervalSince(last)))秒）"
       return
     }
     guard !targets.isEmpty else {
-      lastCheckResult = "対象のメッセージが 0 件"
       return
     }
 
@@ -3538,7 +3475,6 @@ final class LocaPocket: RCTEventEmitter, CLLocationManagerDelegate, UNUserNotifi
       .map { ($0, location.distance(from: $0.location)) }
       .filter { $0.1 <= radiusM }
     guard !inRange.isEmpty else {
-      lastCheckResult = "範囲（\(Int(radiusM))m）の外"
       return
     }
     // 範囲内で、最近通知していない、いちばん近いメッセージ
@@ -3546,10 +3482,8 @@ final class LocaPocket: RCTEventEmitter, CLLocationManagerDelegate, UNUserNotifi
       .filter { target, _ in notified[target.postId].map { now - $0 >= perPostInterval } ?? true }
       .min { $0.1 < $1.1 }
     guard let (target, _) = nearest else {
-      lastCheckResult = "範囲内のメッセージはどれも通知済み（同じメッセージは 1 日 1 回）"
       return
     }
-    lastCheckResult = "通知しました"
 
     notified[target.postId] = now
     UserDefaults.standard.set(notified, forKey: Self.notifiedKey)

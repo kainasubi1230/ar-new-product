@@ -1,8 +1,9 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Animated, Easing, StyleSheet } from 'react-native';
 
-// 起動画面（LaunchScreen.storyboard）と同じロゴ・同じ大きさ・同じ位置
-const LOGO = require('../assets/splash/launch_logo.png');
+// 起動画面（LaunchScreen.storyboard）と同じロゴ・同じ大きさ・同じ位置。
+// 画像は Images.xcassets の LaunchLogo をそのまま使う（JS 側に同じ画像を持たない）
+const LOGO = { uri: 'LaunchLogo' };
 const LOGO_SIZE = 140;
 // ロゴを見せておく時間と、消えていく時間
 const HOLD_MS = 1400;

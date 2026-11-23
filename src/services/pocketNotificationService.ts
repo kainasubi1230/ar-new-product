@@ -3,7 +3,7 @@ import { NativeEventEmitter, NativeModules, Platform } from 'react-native';
 import { POCKET_NOTICE } from '../config/pocketNotice';
 
 /** ネイティブに渡す、通知の対象のメッセージ */
-export type PocketTarget = {
+type PocketTarget = {
   postId: string;
   latitude: number;
   longitude: number;
@@ -43,10 +43,8 @@ export const updatePocketTargets = (targets: PocketTarget[]) => LocaPocket?.upda
 
 export const stopPocketNotice = () => LocaPocket?.stop();
 
-export const getPocketHistory = async (): Promise<PocketHistoryEntry[]> =>
+const getPocketHistory = async (): Promise<PocketHistoryEntry[]> =>
   LocaPocket ? LocaPocket.getHistory() : [];
-
-export const clearPocketHistory = () => LocaPocket?.clearHistory();
 
 // 通知画面で見た通知は、画面を離れたら消す。ネイティブの履歴はそのままにして、
 // 「ここまで見た」時刻（UNIX 秒）を端末に覚えておき、それより前の通知を出さない
@@ -84,25 +82,3 @@ export const onPocketNotified = (listener: (entry: PocketHistoryEntry) => void) 
 /** 通知がタップされた */
 export const onNotificationOpened = (listener: (event: { postId: string }) => void) =>
   emitter?.addListener('notificationOpened', listener);
-
-/** 開発用：見張りの今の状態（ネイティブの LocaPocket.getStatus） */
-export type PocketStatus = {
-  permission: '許可' | '拒否' | '未確認' | '不明';
-  running: boolean;
-  targetCount: number;
-  radiusM: number;
-  maxAccuracyM: number;
-  cooldownLeftSec: number;
-  notifiedCount: number;
-  lastCheckResult: string;
-  accuracyM?: number;
-  locationAgeSec?: number;
-  nearestDistanceM?: number;
-  lastCheckAgeSec?: number;
-};
-
-export const getPocketStatus = async (): Promise<PocketStatus | null> =>
-  LocaPocket ? LocaPocket.getStatus() : null;
-
-/** 開発用：「もう通知した」の記録と通知どうしの間隔を消す（同じカードでもう一度試せる） */
-export const resetPocketNotified = () => LocaPocket?.resetNotified();
