@@ -19,7 +19,9 @@ export type Preferences = {
   mutedTags: string[];
   /** 探索の地図に文化遺産のピンを出すか（地図の右下のボタンで切り替える） */
   showHeritagePins: boolean;
-  /** アイコン（名前の頭文字の丸）の色（#RRGGBB、`src/config/avatarColors.ts` の AVATAR_COLORS から選ぶ） */
+  /** アイコンの動物（`src/config/avatarColors.ts` の AVATAR_ANIMALS の key）。まだ選んでいなければ無し（アカウントごとに決まった動物） */
+  avatarAnimal?: string;
+  /** アイコン（動物の後ろの丸）の色（#RRGGBB、`src/config/avatarColors.ts` の AVATAR_COLORS から選ぶ） */
   avatarColor: string;
   /** この設定を使っているアカウント（auth の user id）。別のアカウントでログインしたら初期値に戻す */
   ownerUserId?: string;
@@ -118,6 +120,7 @@ export const usePreferences = () => {
     setHideNegativePosts: (hideNegativePosts: boolean) => updatePreferences({ hideNegativePosts }),
     setMutedTags: (mutedTags: string[]) => updatePreferences({ mutedTags }),
     setShowHeritagePins: (showHeritagePins: boolean) => updatePreferences({ showHeritagePins }),
+    setAvatar: (avatarAnimal: string, avatarColor: string) => updatePreferences({ avatarAnimal, avatarColor }),
     toggleMutedTag: (tag: string) => {
       const normalized = normalizeTag(tag);
       updatePreferences({

@@ -286,7 +286,7 @@
 					"-ObjC",
 					"-lc++",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.anji.loca;
+				PRODUCT_BUNDLE_IDENTIFIER = com.anji.loca.dev;
 				PRODUCT_NAME = SpatialInventory;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
@@ -316,7 +316,7 @@
 					"-ObjC",
 					"-lc++",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.anji.loca;
+				PRODUCT_BUNDLE_IDENTIFIER = com.anji.loca.dev;
 				PRODUCT_NAME = SpatialInventory;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SWIFT_VERSION = 5.0;

@@ -8,7 +8,8 @@ import UserNotifications
 
 final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDelegate, CLLocationManagerDelegate {
   private static let worldMapBucket = "worldmaps"
-  private static let relocalizationTimeout: TimeInterval = 15
+  // 景色の照合を待つ時間。短いと、見回している途中であきらめてしまう（見つからなければ JS が次の候補の地図で探す）
+  private static let relocalizationTimeout: TimeInterval = 30
   // 地図を育てる（照合した人が見回した分を足して保存し直す）条件
   private static let mapGrowthInterval: TimeInterval = 15
   private static let mapGrowthMinMove: Float = 1.0
@@ -368,6 +369,19 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
 
   // タグを空間に固定するときの基準（GPS の位置が届いたときのカメラ位置）
   private var geoOriginCameraPosition: SIMD3<Float>?
+
+  // MARK: 座標の飛び（照合の成功など）の打ち消し
+  // 地図との照合に成功した瞬間、ARKit は AR 座標そのものを記録したときの座標へ切り替える（カメラの位置・向きの値が 1 フレームで飛ぶ）。
+  // 自前でワールド座標に置いているもの（方角タグ・気配の光・照合カードの入れ物・北の向き）は、そのままだと前の座標のまま残り、
+  // なめらかに寄せる処理のせいで数秒かけて回り込む（「空間が斜めにくるくる回る」）。
+  // 1 フレームでの飛びを測り、同じだけ動かして、見た目は止まったままにする
+  private var lastCameraTransform: simd_float4x4?
+  private var lastCameraTimestamp: TimeInterval = 0
+  // この量を超えて 1 フレームで動いたら、端末が動いたのではなく座標が切り替わったとみなす
+  private static let worldJumpTranslation: Float = 0.25
+  private static let worldJumpRotation: Float = 12 * .pi / 180
+  // デバッグ表示用：最後に打ち消した飛び
+  private var debugLastWorldJump: String?
   // これより遠いタグは、この距離に置く（遠すぎると描画されないおそれがある）。見かけの大きさは本当の距離で決める
   private static let geoTagMaxRenderDistance: Float = 40
   // 気配（光）の濃さ。くっきり見せない
@@ -620,6 +634,7 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
 
   private func setupPreviewSubscription() {
     updateCancellable = arView.scene.subscribe(to: SceneEvents.Update.self) { [weak self] _ in
+      self?.compensateWorldJumpIfNeeded()
       self?.updatePreview()
       self?.checkWorldMappingProgress()
       self?.checkMapGrowth()
@@ -758,9 +773,9 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
   private func faceGhostCardToCamera(_ cameraPosition: SIMD3<Float>, smooth: Bool = true) {
     guard let ghost = ghostCardEntity else { return }
     let entityWorldPos = previewAnchor.position + ghost.position
-    let probe = Entity()
-    probe.look(at: cameraPosition, from: entityWorldPos, relativeTo: nil)
-    let targetRot = probe.orientation * simd_quatf(angle: .pi, axis: SIMD3<Float>(0, 1, 0))
+    // 左右の向きだけカメラに合わせ、カードは地面に対してまっすぐ立てる（置いたあと・照合で出したときと同じ姿勢）
+    let toCamera = cameraPosition - entityWorldPos
+    let targetRot = simd_quatf(angle: atan2(toCamera.x, toCamera.z), axis: SIMD3<Float>(0, 1, 0))
 
     if smooth, let prevRot = lastValidPreviewOrientation {
       ghost.setOrientation(simd_slerp(prevRot, targetRot, 0.28), relativeTo: nil)
@@ -1153,10 +1168,9 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
         cameraTransform.columns.3.y,
         cameraTransform.columns.3.z
       )
-      // Look at camera position, then rotate 180 degrees around Y so textured front faces the user
-      let probe = Entity()
-      probe.look(at: cameraPosition, from: position, relativeTo: nil)
-      orientation = probe.orientation * simd_quatf(angle: .pi, axis: SIMD3<Float>(0, 1, 0))
+      // カメラの方を向かせる。ただし左右の向きだけ（スマホを上下に向けて置いても、カードは傾けずまっすぐ立てる）
+      let toCamera = cameraPosition - position
+      orientation = simd_quatf(angle: atan2(toCamera.x, toCamera.z), axis: SIMD3<Float>(0, 1, 0))
     } else {
       orientation = simd_quatf(angle: 0, axis: SIMD3<Float>(0, 1, 0))
     }
@@ -1344,23 +1358,35 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
       cgContext.strokePath()
 
       // 7. Footer: Circular Avatar
-      let authorDisplay = name.isEmpty ? "sora" : name
+      let authorDisplay = name.isEmpty ? "ゲスト" : name
       let avatarRect = CGRect(x: 52, y: 372, width: 50, height: 50)
       let avatarPath = UIBezierPath(ovalIn: avatarRect)
-      // アイコンは「名前の頭文字」を、投稿者が選んだ色の丸に白い字で（handle が `color:#RRGGBB`）。
-      // 古い投稿（絵のアイコンのキーなど）は今まで通りの淡い緑の丸
-      let chosenAvatarColor: UIColor? = handle.hasPrefix("color:#")
-        ? parseHexColor(String(handle.dropFirst("color:".count)))
-        : nil
+      // アイコンは、投稿者が選んだ色の丸に、選んだ動物の顔（handle が `animal:cat:#RRGGBB`。絵は Images.xcassets の AnimalCat など）。
+      // 前の投稿（`color:#RRGGBB`）は色の丸に名前の頭文字、もっと古い投稿（絵のアイコンのキーなど）は淡い緑の丸
+      var animalImage: UIImage?
+      var chosenAvatarColor: UIColor?
+      if handle.hasPrefix("animal:") {
+        let parts = handle.split(separator: ":")
+        if parts.count == 3 {
+          let key = String(parts[1])
+          animalImage = UIImage(named: "Animal" + key.prefix(1).uppercased() + key.dropFirst())
+          chosenAvatarColor = parseHexColor(String(parts[2]))
+        }
+      } else if handle.hasPrefix("color:#") {
+        chosenAvatarColor = parseHexColor(String(handle.dropFirst("color:".count)))
+      }
       (chosenAvatarColor ?? UIColor(red: 52/255.0, green: 211/255.0, blue: 153/255.0, alpha: 0.35)).setFill()
       avatarPath.fill()
 
       let iconColor = chosenAvatarColor != nil
         ? UIColor.white
         : UIColor(red: 5/255.0, green: 150/255.0, blue: 105/255.0, alpha: 1.0)
-      // 色の丸のときは、絵ではなく頭文字を描く
+      // 動物のアイコンなら動物を、色の丸のときは頭文字を描く
       var drewIcon = false
-      if chosenAvatarColor == nil {
+      if let animalImage {
+        animalImage.draw(in: avatarRect.insetBy(dx: 4, dy: 4))
+        drewIcon = true
+      } else if chosenAvatarColor == nil {
         let cleanIconName = handle.replacingOccurrences(of: "@", with: "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let sfMap: [String: String] = [
           "walking": "figure.walk",
@@ -1399,7 +1425,7 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
         avatarInitial.draw(in: initialRect, withAttributes: initialAttrs)
       }
 
-      // 8. Footer: Author Name ("sora")
+      // 8. Footer: Author Name
       let nameAttributes: [NSAttributedString.Key: Any] = [
         .font: UIFont.systemFont(ofSize: 34, weight: .bold),
         .foregroundColor: UIColor(red: 51/255.0, green: 65/255.0, blue: 85/255.0, alpha: 1.0)
@@ -1738,7 +1764,7 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
 
   // extending のままこの秒数たったら、mapped を待たずに書き出す
   // 短いと机の周りしか記録されず、物が動くと照合できなくなるので、部屋の形まで映してもらえるよう長めに待つ
-  private static let mappingExtendingFallback: TimeInterval = 15
+  private static let mappingExtendingFallback: TimeInterval = 25
 
   // 記録の進み具合（0〜1）。mapped で 1。extending は書き出しの保険の時間に向けて少しずつ進める
   private static func mappingProgress(status: ARFrame.WorldMappingStatus, elapsed: TimeInterval) -> Float {
@@ -2047,7 +2073,12 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
       preciseCardPostIds.insert(postId)
       // ARAnchor に直接ぶら下げると、照合直後に ARKit が位置を直すたびカードが跳ねる。
       // ワールド座標の入れ物に乗せ、updateCardReveal で ARAnchor の最新位置へ滑らかに寄せる
-      let anchorEntity = AnchorEntity(world: anchor.transform)
+      // 傾いて置かれた古い投稿も、地面に対してまっすぐ立てて出す
+      let anchorEntity = AnchorEntity(world: Transform(
+        scale: .one,
+        rotation: Self.uprightRotation(of: anchor.transform),
+        translation: Self.translation(of: anchor.transform)
+      ).matrix)
       let cardEntity = makeCardEntity(
         title: card.title,
         description: card.description,
@@ -2300,6 +2331,90 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
     let sum = northSamples.reduce(SIMD2<Float>(0, 0)) { $0 + $1.value }
     guard simd_length(sum) > 0.0001 else { return }
     northOffset = simd_normalize(sum)
+  }
+
+  private func compensateWorldJumpIfNeeded() {
+    guard let frame = arView.session.currentFrame else { return }
+    let current = frame.camera.transform
+    defer {
+      lastCameraTransform = current
+      lastCameraTimestamp = frame.timestamp
+    }
+    // 同じフレームを 2 回見たとき・間が空いたとき（別のタブから戻った等）は比べない
+    guard let previous = lastCameraTransform, frame.timestamp > lastCameraTimestamp,
+          frame.timestamp - lastCameraTimestamp < 0.1 else { return }
+
+    let moved = simd_distance(Self.translation(of: current), Self.translation(of: previous))
+    let turned = Self.angleBetween(simd_quatf(current), simd_quatf(previous))
+    guard moved > Self.worldJumpTranslation || turned > Self.worldJumpRotation else { return }
+
+    // 前の座標 → 今の座標への変換（端末はこの 1 フレームでほぼ動いていない前提）
+    let delta = current * previous.inverse
+    applyWorldCorrection(delta)
+    debugLastWorldJump = String(format: "%.2fm %.0f° (%.1fs)", moved, turned * 180 / .pi, frame.timestamp)
+  }
+
+  private func applyWorldCorrection(_ delta: simd_float4x4) {
+    let transformPoint = { (p: SIMD3<Float>) -> SIMD3<Float> in
+      let v = delta * SIMD4<Float>(p.x, p.y, p.z, 1)
+      return SIMD3<Float>(v.x, v.y, v.z)
+    }
+
+    // 北の向き：AR 座標のヨーが回った分だけ回す（測定値の平均も同じだけ回す）
+    let deltaYaw = Self.yawChange(of: delta)
+    let rotateNorth = { (v: SIMD2<Float>) -> SIMD2<Float> in
+      SIMD2<Float>(v.x * cos(deltaYaw) - v.y * sin(deltaYaw), v.x * sin(deltaYaw) + v.y * cos(deltaYaw))
+    }
+    if let northOffset {
+      let samples = northSamples
+      self.northOffset = rotateNorth(northOffset)
+      northSamples = samples.map { ($0.time, rotateNorth($0.value)) }
+    }
+
+    // 方角タグ・気配の光（geoTagRoot は原点にあるので、位置はそのままワールド座標）
+    if let origin = geoOriginCameraPosition {
+      geoOriginCameraPosition = transformPoint(origin)
+    }
+    for (postId, var tag) in geoTagEntities {
+      tag.entity.position = transformPoint(tag.entity.position)
+      tag.target = transformPoint(tag.target)
+      geoTagEntities[postId] = tag
+    }
+
+    // 照合で出したカードの入れ物（ワールド座標）
+    for item in revealCards {
+      let moved = delta * item.holder.transformMatrix(relativeTo: nil)
+      item.holder.setTransformMatrix(moved, relativeTo: nil)
+    }
+  }
+
+  private static func translation(of m: simd_float4x4) -> SIMD3<Float> {
+    SIMD3<Float>(m.columns.3.x, m.columns.3.y, m.columns.3.z)
+  }
+
+  private static func angleBetween(_ a: simd_quatf, _ b: simd_quatf) -> Float {
+    let dot = min(abs(simd_dot(a.vector, b.vector)), 1)
+    return 2 * acos(dot)
+  }
+
+  // 変換のうち、上から見た回転（ヨー）。arYaw と同じ向き（-Z から +X へ）
+  private static func yawChange(of m: simd_float4x4) -> Float {
+    let forward = -SIMD3<Float>(0, 0, 1)
+    let rotated = simd_quatf(m).act(forward)
+    return atan2(rotated.x, -rotated.z) - atan2(forward.x, -forward.z)
+  }
+
+  /// カードを地面に対してまっすぐ立てた向き（左右の向きだけ残す）。カードの表は +Z
+  private static func uprightRotation(of transform: simd_float4x4) -> simd_quatf {
+    var facing = SIMD3<Float>(transform.columns.2.x, 0, transform.columns.2.z)
+    if simd_length(facing) < 0.1 {
+      // 真上・真下を向いて置かれたカードは、横向き（X 軸）から決める
+      let side = SIMD3<Float>(transform.columns.0.x, 0, transform.columns.0.z)
+      facing = SIMD3<Float>(-side.z, 0, side.x)
+    }
+    guard simd_length(facing) > 0.0001 else { return simd_quatf(angle: 0, axis: SIMD3<Float>(0, 1, 0)) }
+    facing = simd_normalize(facing)
+    return simd_quatf(angle: atan2(facing.x, facing.z), axis: SIMD3<Float>(0, 1, 0))
   }
 
   private func updateGeoTags() {
@@ -2731,7 +2846,7 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
           liveAnchor.transform.columns.3.y,
           liveAnchor.transform.columns.3.z
         )
-        let targetRot = simd_quatf(liveAnchor.transform)
+        let targetRot = Self.uprightRotation(of: liveAnchor.transform)
         let currentPos = item.holder.position(relativeTo: nil)
         let currentRot = item.holder.orientation(relativeTo: nil)
 
@@ -2967,6 +3082,7 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
       "elapsed": sinceStart(now),
       "foundPostIds": Array(relocalization?.foundPostIds ?? []),
       "northReady": northOffset != nil,
+      "lastWorldJump": debugLastWorldJump ?? NSNull(),
       "headingAccuracy": latestHeadingAccuracy,
       // 障害物で隠す判定（照合で出したカードごと）
       "lidar": ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh),

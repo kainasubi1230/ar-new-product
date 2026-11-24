@@ -107,7 +107,7 @@ export const insertPostWithCurrentLocation = async (
         camera_lng: camera.longitude,
         // 位置の確かさ（そのときの GPS の誤差）
         accuracy_m: camera.accuracy ?? null,
-        author: postData.author ?? 'guest',
+        author: postData.author ?? 'ゲスト',
         handle: postData.handle ?? null,
         // 画面で整えていても、保存の直前にもう一度（長さ・数・絵文字・表記揺れの重複）
         tags: cleanPostTags(postData.tags ?? []),
@@ -169,5 +169,19 @@ export const deleteMyPost = async (postId: string) => {
   if (!data || data.length === 0) {
     // RLS で弾かれると、エラーにならず 0 件削除になる
     throw new Error('削除できませんでした（自分の投稿でないか、削除の権限がありません）');
+  }
+};
+
+/**
+ * 自分の投稿すべての、置き主の名前・アイコンを変える（マイページでアイコンを変えたとき）。
+ * 名前とアイコンは投稿のたびに posts に写しているので、変えたら過去の投稿もそろえる（RLS で自分の投稿だけ）
+ */
+export const updateMyPostsAuthor = async (
+  userId: string,
+  patch: { author?: string; handle?: string }
+) => {
+  const { error } = await supabase.from('posts').update(patch).eq('user_id', userId);
+  if (error) {
+    throw new Error(`投稿のアイコンの更新に失敗しました: ${error.message}`);
   }
 };

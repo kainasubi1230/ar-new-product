@@ -30,8 +30,8 @@ import {
 import { ScreenHeader } from './src/components/ScreenHeader';
 import { Icons } from './src/assets/icons';
 import { insertPostWithCurrentLocation } from './src/services/postService';
-import { deleteMyAccount, signOut } from './src/services/authService';
-import { avatarHandleFor } from './src/config/avatarColors';
+import { deleteMyAccount, displayNameOf, signOut } from './src/services/authService';
+import { avatarHandleFor, isAvatarAnimal, resolveAvatarAnimal } from './src/config/avatarColors';
 import type { LocationCoords } from './src/services/postService';
 import { findNearbyPosts, type NearbyPost } from './src/services/nearbyPostService';
 import {
@@ -55,7 +55,7 @@ import { CalmToast, type ToastKind, type ToastMessage } from './src/components/C
 import { SparkleBurst, type Sparkle } from './src/components/SparkleBurst';
 import { isVisibleUnderFilters, matchesInterestTags } from './src/utils/interestTags';
 import { checkPostSafety } from './src/services/safetyFilter';
-import { adoptPreferencesForUser, usePreferences } from './src/services/preferencesStore';
+import { adoptPreferencesForUser, updatePreferences, usePreferences } from './src/services/preferencesStore';
 import { collectPost } from './src/services/readService';
 import { reverseGeocode } from './src/services/geocoder';
 import { GpsAverager } from './src/utils/gpsAverager';
@@ -96,6 +96,8 @@ type TrackedCoords = LocationCoords & {
 
 // 探索画面で選んだ「探している言葉」を覚えておく時間（遠くから歩いて向かう分も見込む）
 const FOCUS_EXPIRE_MS = 30 * 60 * 1000;
+// 景色が見つからなかった地図を、もう一度選ぶまでの時間
+const FAILED_MAP_RETRY_MS = 3 * 60 * 1000;
 
 /**
  * 初めて開いたときは、説明（OnboardingScreen）だけを出す。見終わるまで AR は作らない
@@ -137,12 +139,13 @@ function MainApp(): React.JSX.Element {
 
   // Auth User
   const [user, setUser] = useState<User | null>(null);
+  // 置き主の名前（置くときのプレビューのカードと、保存する投稿の author）。アカウントのニックネーム
+  const authorDisplayName = displayNameOf(user);
   // ログイン中のアクセストークン（約 1 時間で更新される）。ネイティブが Storage に地図や写真を読み書きするのに使う
   const [accessToken, setAccessToken] = useState<string | null>(null);
 
   // AR Card Data
   const [currentMessage, setCurrentMessage] = useState<string>('ここの席、午後の光が最高。');
-  const [currentAuthor] = useState<string>('sora');
   // これから置くカードのタグ（投稿画面で選んだもの）
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
   const [placeTrigger, setPlaceTrigger] = useState<number>(0);
@@ -179,7 +182,10 @@ function MainApp(): React.JSX.Element {
     hideNegativePosts,
     mutedTags,
     avatarColor,
+    avatarAnimal: savedAvatarAnimal,
   } = usePreferences();
+  // アイコンの動物（まだ選んでいなければ、アカウントごとに決まった動物）
+  const avatarAnimal = resolveAvatarAnimal(savedAvatarAnimal, user?.id);
   // 表示の設定（関心タグのみ表示・安心フィルター）で、AR・地図に出すか。自分の投稿はいつも出す
   // 通報した言葉と、ブロックした人（その人のアプリでは AR・地図・通知に出さない）
   const [blockedUserIds, setBlockedUserIds] = useState<string[]>([]);
@@ -221,6 +227,10 @@ function MainApp(): React.JSX.Element {
   const [relocalizeSearchDebug, setRelocalizeSearchDebug] = useState<RelocalizeSearchDebug | null>(null);
   const [rawGpsAccuracy, setRawGpsAccuracy] = useState<number | null>(null);
   const relocalizeTargetRef = React.useRef<RelocalizeTarget | null>(null);
+  // 景色が見つからなかった（timeout）地図と、その時刻。しばらくはその地図を選ばず、次の候補の地図で探す
+  const failedMapsRef = React.useRef<Map<string, number>>(new Map());
+  // 見つからなかった地図を外して、もう一度候補を選び直すための合図
+  const [relocalizeRetryKey, setRelocalizeRetryKey] = useState(0);
   // セカイカメラ風に、近くの投稿を方角タグとして AR 画面に浮かべる
   const [geoTags, setGeoTags] = useState<GeoTag[]>([]);
   const nearbyPostsRef = React.useRef<Map<string, NearbyPost>>(new Map());
@@ -255,7 +265,17 @@ function MainApp(): React.JSX.Element {
       setUser(session?.user ?? null);
       // 関心タグなどの設定は端末に保存しているので、別のアカウントになったら初期値に戻す
       if (session?.user) {
-        adoptPreferencesForUser(session.user.id);
+        // アイコンはログイン情報にも入れてあるので、別の端末・アカウントの切り替えのあとも、それに戻す
+        const savedAvatarColor = session.user.user_metadata?.avatar_color;
+        const savedAnimal = session.user.user_metadata?.avatar_animal;
+        adoptPreferencesForUser(session.user.id).then(() => {
+          if (typeof savedAvatarColor === 'string' && /^#[0-9A-Fa-f]{6}$/.test(savedAvatarColor)) {
+            updatePreferences({ avatarColor: savedAvatarColor });
+          }
+          if (isAvatarAnimal(savedAnimal)) {
+            updatePreferences({ avatarAnimal: savedAnimal });
+          }
+        });
       }
       // 前のバージョンでログイン情報に入れてしまった写真のアイコン（巨大な data: URI）を短い目印に置き換える。
       // 残っているとトークンが巨大になり、投稿が「ログインしていない人」として保存されて地図の保存も失敗する
@@ -509,7 +529,13 @@ function MainApp(): React.JSX.Element {
         const isFocusSearch = focusMaps.length > 0;
 
         // 近くの投稿をいちばん多く含む地図を選ぶ（同じ数なら新しいほう）。今のセッションで自分が置いた投稿の地図は選ばない
-        const chosen = chooseWorldMapPost(isFocusSearch ? focusMaps : posts, ownPostIdsRef.current);
+        // 見つからなかった地図は FAILED_MAP_RETRY_MS の間は選ばない（同じ地図で何度も止まらない。時間がたてば、見回したあとでもう一度試す）
+        const now = Date.now();
+        failedMapsRef.current.forEach((at, id) => {
+          if (now - at > FAILED_MAP_RETRY_MS) failedMapsRef.current.delete(id);
+        });
+        const excludeIds = new Set([...ownPostIdsRef.current, ...failedMapsRef.current.keys()]);
+        const chosen = chooseWorldMapPost(isFocusSearch ? focusMaps : posts, excludeIds);
         const mapPost = chosen?.post;
         // いま読み込んでいる地図と同じなら読み直さない（読み直すと出ているカードが消える）。
         // 探している言葉が、いま読み込んでいる地図に入っているときも読み直さない
@@ -559,10 +585,10 @@ function MainApp(): React.JSX.Element {
           })(),
           // 表示の設定で隠す投稿はカードにしない（地図にアンカーがあっても、内容を知らない投稿は出ない）
           cards: posts.filter(isPostVisible).map((post) => {
-            cardOwnersRef.current.set(String(post.id), { userId: post.user_id, author: post.author ?? 'guest' });
+            cardOwnersRef.current.set(String(post.id), { userId: post.user_id, author: post.author ?? 'ゲスト' });
             return {
             postId: String(post.id),
-            cardTitle: post.author ?? 'guest',
+            cardTitle: post.author ?? 'ゲスト',
             cardDescription: post.message ?? '',
             cardIcon: post.handle ?? '',
             cardColor: '#10B981',
@@ -590,7 +616,7 @@ function MainApp(): React.JSX.Element {
     };
     // 止める理由は relocalizeBlockKey にまとめてある
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [relocalizeCoords, relocalizeBlockKey]);
+  }, [relocalizeCoords, relocalizeBlockKey, relocalizeRetryKey]);
 
   useEffect(() => {
     if (!isWorldMapSupported || !isLocationActive || !currentCoords) {
@@ -611,7 +637,7 @@ function MainApp(): React.JSX.Element {
             .filter((post) => geoTagLevelFor(post.distanceM) === 'presence')
             .map((post) => ({
               postId: String(post.id),
-              cardTitle: post.author ?? 'guest',
+              cardTitle: post.author ?? 'ゲスト',
               cardDescription: post.message ?? '',
               cardIcon: post.handle ?? '',
               cardColor: '#10B981',
@@ -701,12 +727,15 @@ function MainApp(): React.JSX.Element {
         updatePostWorldMapPostIds(event.postId, event.anchorPostIds).catch(() => {});
       }
     } else if (event.phase === 'timeout') {
-      // relocalizeTarget は残す（同じ場所で何度も照合し直さないため。別の場所に移動すれば探し直す）
+      // この地図はしばらく選ばず、近くにほかの地図があれば、そちらで続けて探す
+      failedMapsRef.current.set(event.postId, Date.now());
       setRelocalizationPhase(null);
       focusRef.current = null;
+      setRelocalizeTarget(null);
+      setRelocalizeRetryKey((key) => key + 1);
       showToast('景色が見つかりませんでした', 'info', {
         symbol: 'eye.slash',
-        subtitle: 'いつもの表示に戻しました',
+        subtitle: 'ほかの記録があれば、続けて探します',
       });
     } else if (event.phase === 'cancelled') {
       setRelocalizationPhase(null);
@@ -768,7 +797,7 @@ function MainApp(): React.JSX.Element {
         ? {
             message: '近づくと、この言葉を探します',
             symbol: 'location.north.line',
-            subtitle: `${post.author ?? 'guest'}さんの言葉まで ${
+            subtitle: `${post.author ?? 'ゲスト'}さんの言葉まで ${
               post.distanceM >= 1000 ? `${(post.distanceM / 1000).toFixed(1)}km` : `${Math.round(post.distanceM)}m`
             }`,
           }
@@ -939,10 +968,10 @@ function MainApp(): React.JSX.Element {
         >
           <UniversalARView
             style={StyleSheet.absoluteFill}
-            cardTitle={currentAuthor}
+            cardTitle={authorDisplayName}
             cardDescription={currentMessage}
             cardColor="#10B981"
-            cardIcon={avatarHandleFor(avatarColor)}
+            cardIcon={avatarHandleFor(avatarColor, avatarAnimal)}
             cardTags={selectedTags}
             placeTrigger={placeTrigger}
             isPreviewActive={isPlacementMode}
@@ -954,14 +983,14 @@ function MainApp(): React.JSX.Element {
             onCardLongPressed={(event) => {
               const postId = event.nativeEvent.postId;
               const owner = cardOwnersRef.current.get(postId);
-              handleOpenPostMenu(postId, owner?.userId ?? null, owner?.author ?? 'guest');
+              handleOpenPostMenu(postId, owner?.userId ?? null, owner?.author ?? 'ゲスト');
             }}
             hiddenPostIds={hiddenPostIds}
             hudHidden={isTourVisible}
             onPresenceTapped={(event) => {
               const post = nearbyPostsRef.current.get(event.nativeEvent.postId);
               if (!post) return;
-              setTappedPresence({ authorName: post.author ?? 'guest', snapshotPath: post.snapshot_path });
+              setTappedPresence({ authorName: post.author ?? 'ゲスト', snapshotPath: post.snapshot_path });
             }}
             onScreenTapped={() => {
               // 配置モード中でなければログインチェックして投稿作成
@@ -988,10 +1017,9 @@ function MainApp(): React.JSX.Element {
                 });
                 return;
               }
-              const authorName =
-                user?.user_metadata?.username || user?.email?.split('@')[0] || currentAuthor;
+              const authorName = authorDisplayName;
               // アイコンは名前の頭文字の丸。選んだ色を handle に入れて、他の人のカードでも同じ色で出す
-              const authorHandle = avatarHandleFor(avatarColor);
+              const authorHandle = avatarHandleFor(avatarColor, avatarAnimal);
 
               showToast('言葉を置いています…', 'info', { symbol: 'arrow.up.circle' });
               try {
@@ -1128,8 +1156,9 @@ function MainApp(): React.JSX.Element {
             onOpenAR={handleOpenARFromMap}
             isPostVisible={isPostVisibleForMap}
             isOwnPost={(post) => user != null && post.user_id === user.id}
+            userId={user?.id ?? null}
             onOpenPostMenu={(post) =>
-              handleOpenPostMenu(String(post.id), post.user_id, post.author ?? 'guest')
+              handleOpenPostMenu(String(post.id), post.user_id, post.author ?? 'ゲスト')
             }
           />
         )}

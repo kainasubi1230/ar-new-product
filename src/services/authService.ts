@@ -1,9 +1,19 @@
+import type { User } from '@supabase/supabase-js';
 import { supabase } from '../lib/supabase';
 import { deleteMyPost } from './postService';
 
 /**
  * 新規登録 (Email & Password)
  */
+/**
+ * みんなに見える名前（言葉の置き主）。新規登録で決めたニックネーム。
+ * 無いとき（ログインしていない・古いアカウント）は「ゲスト」。メールアドレスの一部は、人に見えるので使わない
+ */
+export const displayNameOf = (user: User | null | undefined): string => {
+  const name = user?.user_metadata?.username;
+  return typeof name === 'string' && name.trim() ? name.trim() : 'ゲスト';
+};
+
 export const signUpWithEmail = async (email: string, password: string, username: string) => {
   const { data, error } = await supabase.auth.signUp({
     email: email.trim(),

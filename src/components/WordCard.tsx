@@ -1,7 +1,7 @@
 import React, { ReactNode } from 'react';
 import { Image, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Icons } from '../assets/icons';
-import { avatarColorOf } from '../config/avatarColors';
+import { animalImageOf, avatarAnimalOf, avatarColorOf } from '../config/avatarColors';
 
 type Props = {
   message: string;
@@ -112,7 +112,7 @@ export const getAvatarIconSource = (key?: string | null): any => {
   return AVATAR_ICON_MAP[cleanKey] || Icons.mypage;
 };
 
-/** 下の行に置く、投稿者のアイコン（選んだ色の丸に名前の頭文字。古い投稿は絵のアイコン） */
+/** 下の行に置く、投稿者のアイコン（選んだ色の丸に動物。前の投稿は色の丸に名前の頭文字、もっと古い投稿は絵のアイコン） */
 export function WordCardAvatar({
   name,
   icon,
@@ -121,6 +121,14 @@ export function WordCardAvatar({
   icon?: string | null;
 }): React.JSX.Element {
   const color = avatarColorOf(icon);
+  const animal = avatarAnimalOf(icon);
+  if (color && animal) {
+    return (
+      <View style={[styles.avatar, { backgroundColor: color }]}>
+        <Image source={animalImageOf(animal)} style={styles.avatarAnimalImage} resizeMode="contain" />
+      </View>
+    );
+  }
   if (color) {
     return (
       <View style={[styles.avatar, { backgroundColor: color }]}>
@@ -235,6 +243,10 @@ const styles = StyleSheet.create({
     width: 14,
     height: 14,
     tintColor: '#047857',
+  },
+  avatarAnimalImage: {
+    width: '84%',
+    height: '84%',
   },
   avatarText: {
     color: '#047857',

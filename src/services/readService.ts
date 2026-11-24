@@ -55,13 +55,22 @@ export const fetchCollectedPosts = async (userId: string): Promise<CollectedPost
         postId: String(post.id),
         readAt: row.read_at,
         message: post.message ?? '',
-        author: post.author ?? 'guest',
+        author: post.author ?? 'ゲスト',
         handle: post.handle ?? '',
         tags: post.tags ?? [],
         placeName: row.place_name ?? null,
       },
     ];
   });
+};
+
+/** 拾った言葉の ID だけ（探索マップのピンで「拾った」を淡く見せる） */
+export const fetchCollectedPostIds = async (userId: string): Promise<Set<string>> => {
+  const { data, error } = await supabase.from('post_reads').select('post_id').eq('user_id', userId);
+  if (error) {
+    throw new Error(`拾った言葉の取得に失敗しました: ${error.message}`);
+  }
+  return new Set((data ?? []).map((row: { post_id: string | number }) => String(row.post_id)));
 };
 
 /** 拾った言葉を外す（自分の「拾った」記録を消す）。その言葉の「誰かが読んだよ」の人数も 1 減る */

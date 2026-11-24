@@ -17,12 +17,13 @@ import { ScreenHeader } from './ScreenHeader';
 import { ExpandDown } from './ExpandDown';
 import { styles } from './mypage/styles';
 import { AuthForm } from './mypage/AuthForm';
-import { AvatarColorModal } from './mypage/AvatarColorModal';
+import { AvatarPickerModal } from './mypage/AvatarPickerModal';
 import { BlockedUsersModal } from './mypage/BlockedUsersModal';
 import { InterestSettingsTab } from './mypage/InterestSettingsTab';
-import { deleteMyPost, fillPostPlaceName } from '../services/postService';
+import { deleteMyPost, fillPostPlaceName, updateMyPostsAuthor } from '../services/postService';
 import { usePreferences } from '../services/preferencesStore';
-import { avatarHandleFor } from '../config/avatarColors';
+import { displayNameOf } from '../services/authService';
+import { animalImageOf, avatarHandleFor, resolveAvatarAnimal, type AvatarAnimal } from '../config/avatarColors';
 import {
   WordCard,
   WordCardAvatar,
@@ -104,7 +105,8 @@ export function MyPageScreen({
   const [collectedList, setCollectedList] = useState<CollectedWord[]>(INITIAL_COLLECTED);
 
   // 関心タグの数（上の数字）とアイコンの色（preferencesStore）。関心タグの設定は InterestSettingsTab
-  const { interestTags, avatarColor, setAvatarColor } = usePreferences();
+  const { interestTags, avatarColor, avatarAnimal: savedAvatarAnimal, setAvatar } = usePreferences();
+  const avatarAnimal = resolveAvatarAnimal(savedAvatarAnimal, user?.id);
 
   const [isAvatarModalVisible, setIsAvatarModalVisible] = useState(false);
   const [isBlockedListVisible, setIsBlockedListVisible] = useState(false);
@@ -186,15 +188,17 @@ export function MyPageScreen({
     setIsRefreshing(false);
   };
 
-  // アイコン（名前の頭文字の丸）の色の変更。ログイン情報にも短い色の値だけを入れる（別の端末でログインしたとき用）
-  const handleSelectAvatarColor = async (hex: string) => {
-    setAvatarColor(hex);
+  // アイコン（動物と色）の変更。ログイン情報にも短い値だけを入れる（別の端末でログインしたとき用）
+  const handleSelectAvatar = async (animal: AvatarAnimal, hex: string) => {
+    setAvatar(animal, hex);
     setIsAvatarModalVisible(false);
     if (user) {
       try {
         await supabase.auth.updateUser({
-          data: { avatar_color: hex },
+          data: { avatar_color: hex, avatar_animal: animal },
         });
+        // これまでに置いた言葉のアイコンも、新しいものにそろえる
+        await updateMyPostsAuthor(user.id, { handle: avatarHandleFor(hex, animal) });
       } catch (e) {
         console.warn('アバターアイコン保存エラー:', e);
       }
@@ -288,8 +292,7 @@ export function MyPageScreen({
   }
 
   // 2. ログイン済みの場合：通常のマイページを表示
-  const displayName =
-    user.user_metadata?.username || user.email?.split('@')[0] || 'ユーザー';
+  const displayName = displayNameOf(user);
 
   // アカウントの削除は元に戻せないので、もう一度確かめてから
   const confirmDeleteAccount = () => {
@@ -378,7 +381,7 @@ export function MyPageScreen({
             activeOpacity={0.8}
           >
             <View style={[styles.avatarCircle, { backgroundColor: avatarColor, shadowColor: avatarColor }]}>
-              <Text style={styles.avatarInitial}>{displayName.slice(0, 1)}</Text>
+              <Image source={animalImageOf(avatarAnimal)} style={styles.avatarAnimalImage} resizeMode="contain" />
             </View>
             <View style={styles.avatarEditBadge}>
               <Text style={styles.avatarEditBadgeText}>✎</Text>
@@ -480,7 +483,7 @@ export function MyPageScreen({
                   onDelete={() => handleDeleteMemory(item.id, item.message)}
                   footer={
                     <>
-                      <WordCardAvatar name={displayName} icon={avatarHandleFor(avatarColor)} />
+                      <WordCardAvatar name={displayName} icon={avatarHandleFor(avatarColor, avatarAnimal)} />
                       <WordCardDate date={item.placedAt} placeName={item.placeName} action="placed" />
                       {item.readCount > 0 && <WordCardReadCount count={item.readCount} />}
                     </>
@@ -562,12 +565,12 @@ export function MyPageScreen({
           await onUnblock?.(userId);
         }}
       />
-      <AvatarColorModal
+      <AvatarPickerModal
         visible={isAvatarModalVisible}
         onClose={() => setIsAvatarModalVisible(false)}
-        displayName={displayName}
+        avatarAnimal={avatarAnimal}
         avatarColor={avatarColor}
-        onSelect={handleSelectAvatarColor}
+        onSelect={handleSelectAvatar}
       />
     </View>
   );

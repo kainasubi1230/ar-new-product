@@ -381,11 +381,71 @@ export const styles = StyleSheet.create({
     color: '#065F46',
     fontWeight: '800',
   },
-  avatarSelectedBadge: {
-    color: '#059669',
-    fontSize: 9,
-    fontWeight: '800',
-    marginTop: 2,
+  avatarOptionImage: {
+    width: 36,
+    height: 36,
+  },
+  // アイコンを選ぶ画面
+  avatarPreviewRow: {
+    alignItems: 'center',
+    marginBottom: 14,
+  },
+  avatarPreviewCircle: {
+    width: 76,
+    height: 76,
+    borderRadius: 38,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  avatarPreviewImage: {
+    width: 64,
+    height: 64,
+  },
+  avatarSectionLabel: {
+    color: '#64748B',
+    fontSize: 12,
+    fontWeight: '700',
+    marginBottom: 8,
+    marginTop: 4,
+  },
+  avatarColorRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 18,
+  },
+  avatarColorDotOuter: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    borderWidth: 2,
+    borderColor: 'transparent',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  avatarColorDot: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+  },
+  avatarSaveBtn: {
+    height: 46,
+    borderRadius: 23,
+    backgroundColor: '#10B981',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  avatarSaveBtnDisabled: {
+    backgroundColor: '#CBD5E1',
+  },
+  avatarSaveBtnText: {
+    color: '#FFFFFF',
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  // マイページの大きいアイコンの動物
+  avatarAnimalImage: {
+    width: 66,
+    height: 66,
   },
 
   // Footprint Summary Stats

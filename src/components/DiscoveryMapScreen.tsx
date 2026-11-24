@@ -7,7 +7,9 @@ import { findPostsInRegion, MAP_REGION_LIMIT, type NearbyPost } from '../service
 import type { LocationCoords } from '../services/postService';
 import { DISTANCE_TIERS, geoTagLevelFor } from '../config/distanceTiers';
 import { useHeading } from '../hooks/useHeading';
-import { matchesInterestTags } from '../utils/interestTags';
+import { findMatchedInterestTag } from '../utils/interestTags';
+import { interestTagColor } from '../utils/tagIcon';
+import { fetchCollectedPostIds } from '../services/readService';
 import { usePreferences } from '../services/preferencesStore';
 import {
   findHeritageInRegion,
@@ -33,6 +35,31 @@ type Props = {
   onOpenPostMenu: (post: NearbyPost) => void;
   /** 自分の投稿か（「…」を出さない） */
   isOwnPost: (post: NearbyPost) => boolean;
+  /** ログイン中の人（拾った言葉のピンを淡くするため）。未ログインなら null */
+  userId: string | null;
+};
+
+// ピンの色（文字は出さず、色で分ける）
+const PIN_GREEN = '#10B981';
+// 拾った言葉：くすんだ緑（もう読んだので控えめに）
+const PIN_COLLECTED = '#9CC5B5';
+
+type PinLook = { fill: string; border: string; kind: 'own' | 'collected' | 'interest' | 'default' };
+
+/**
+ * ピンの見た目：自分の言葉 → 拾った言葉 → 関心タグに合う言葉（そのタグの色）→ ふつう（緑）の順で決める
+ */
+const pinLookOf = (
+  post: NearbyPost,
+  isOwn: boolean,
+  isCollected: boolean,
+  interestTags: string[]
+): PinLook => {
+  if (isOwn) return { fill: '#FFFFFF', border: PIN_GREEN, kind: 'own' };
+  if (isCollected) return { fill: PIN_COLLECTED, border: '#FFFFFF', kind: 'collected' };
+  const matched = findMatchedInterestTag(post.tags, interestTags);
+  if (matched) return { fill: interestTagColor(matched) ?? '#047857', border: '#FFFFFF', kind: 'interest' };
+  return { fill: PIN_GREEN, border: '#FFFFFF', kind: 'default' };
 };
 
 // これより広い範囲（緯度の幅、度）を映しているときは取りに行かない（日本全体などを映すと重い・意味が薄い）
@@ -138,6 +165,7 @@ export function DiscoveryMapScreen({
   isPostVisible,
   onOpenPostMenu,
   isOwnPost,
+  userId,
 }: Props): React.JSX.Element {
   const mapRef = useRef<MapView>(null);
   // 下のカードの方向（「右前方」など）と矢印のために、スマホの向きを使う
@@ -151,6 +179,24 @@ export function DiscoveryMapScreen({
   const regionRequestRef = useRef(0);
   const coordsRef = useRef(coords);
   coordsRef.current = coords;
+
+  // 拾った言葉（ピンを淡くする）。ログインしていなければ空
+  const [collectedIds, setCollectedIds] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    if (!userId) {
+      setCollectedIds(new Set());
+      return;
+    }
+    let cancelled = false;
+    fetchCollectedPostIds(userId)
+      .then((ids) => {
+        if (!cancelled) setCollectedIds(ids);
+      })
+      .catch((err) => console.warn(err));
+    return () => {
+      cancelled = true;
+    };
+  }, [userId]);
 
   // 地図に映っている範囲の文化遺産（同梱データから、その場で絞り込む）
   const [heritageSites, setHeritageSites] = useState<NearbyHeritageSite[]>([]);
@@ -291,7 +337,7 @@ export function DiscoveryMapScreen({
           {posts.map((post) => {
             const level = geoTagLevelFor(post.distanceM);
             const isSelected = selected != null && String(selected.id) === String(post.id);
-            const isInterest = matchesInterestTags(post.tags, interestTags);
+            const look = pinLookOf(post, isOwnPost(post), collectedIds.has(String(post.id)), interestTags);
             const coordinate = { latitude: post.latitude, longitude: post.longitude };
             return (
               <React.Fragment key={String(post.id)}>
@@ -312,19 +358,31 @@ export function DiscoveryMapScreen({
                   zIndex={2}
                   anchor={{ x: 0.5, y: 1 }}
                 >
-                  <View style={styles.pinWrapper}>
+                  {/* 文字は出さず、色で分ける（自分・拾った・関心タグの色・ふつう）。距離は大きさと濃さ */}
+                  <View
+                    style={[
+                      styles.pinWrapper,
+                      level === 'summary' && styles.pinWrapperFar,
+                      level === 'presence' && styles.pinWrapperNear,
+                    ]}
+                  >
                     <View
                       style={[
                         styles.pinHead,
+                        { backgroundColor: look.fill, borderColor: look.border },
+                        look.kind === 'own' && styles.pinHeadOwn,
+                        look.kind === 'interest' && styles.pinHeadInterest,
                         level === 'summary' && styles.pinHeadFar,
-                        level === 'presence' && styles.pinHeadNear,
-                        isInterest && styles.pinHeadInterest,
                         isSelected && styles.pinHeadSelected,
                       ]}
-                    >
-                      <Text style={styles.pinLetter}>{(post.author ?? 'g').slice(0, 1)}</Text>
-                    </View>
-                    <View style={[styles.pinTail, level === 'summary' && styles.pinTailFar]} />
+                    />
+                    <View
+                      style={[
+                        styles.pinTail,
+                        { backgroundColor: look.kind === 'own' ? PIN_GREEN : look.fill },
+                        level === 'summary' && styles.pinTailFar,
+                      ]}
+                    />
                   </View>
                 </Marker>
               </React.Fragment>
@@ -344,6 +402,29 @@ export function DiscoveryMapScreen({
                   : 'この範囲にメッセージはまだありません'}
           </Text>
         </View>
+
+        {/* ピンの色の見方 */}
+        {posts.length > 0 && (
+          <View style={styles.legend} pointerEvents="none">
+            <View style={styles.legendItem}>
+              <View style={[styles.legendDot, { backgroundColor: PIN_GREEN }]} />
+              <Text style={styles.legendText}>まだ</Text>
+            </View>
+            <View style={styles.legendItem}>
+              <View style={[styles.legendDot, { backgroundColor: '#B45309' }]} />
+              <View style={[styles.legendDot, styles.legendDotStacked, { backgroundColor: '#4F46E5' }]} />
+              <Text style={styles.legendText}>関心タグ</Text>
+            </View>
+            <View style={styles.legendItem}>
+              <View style={[styles.legendDot, { backgroundColor: PIN_COLLECTED }]} />
+              <Text style={styles.legendText}>拾った</Text>
+            </View>
+            <View style={styles.legendItem}>
+              <View style={[styles.legendDot, styles.legendDotOwn]} />
+              <Text style={styles.legendText}>自分</Text>
+            </View>
+          </View>
+        )}
 
         {/* 文化遺産のピンを出す・隠す */}
         <TouchableOpacity
@@ -417,7 +498,7 @@ export function DiscoveryMapScreen({
                   {selectedRelative != null ? `${directionText(selectedRelative)} ` : ''}
                   {distanceText(selected.distanceM)}
                 </Text>
-                <Text style={styles.cardAuthor}>{selected.author ?? 'guest'}さんのメッセージ</Text>
+                <Text style={styles.cardAuthor}>{selected.author ?? 'ゲスト'}さんのメッセージ</Text>
               </View>
               {!isOwnPost(selected) && (
                 <TouchableOpacity
@@ -505,58 +586,88 @@ const styles = StyleSheet.create({
     fontSize: 20,
   },
 
-  // ピン
+  // ピン（文字なしの丸。色は pinLookOf で決める）
   pinWrapper: {
     alignItems: 'center',
   },
+  // 遠い（タグと距離だけの段階）：薄く
+  pinWrapperFar: {
+    opacity: 0.6,
+  },
+  // すぐ近く：位置があやふやなので少し淡く（まわりの輪が「このあたり」）
+  pinWrapperNear: {
+    opacity: 0.85,
+  },
   pinHead: {
-    width: 30,
-    height: 30,
-    borderRadius: 15,
-    backgroundColor: '#10B981',
-    borderWidth: 2,
-    borderColor: '#FFFFFF',
-    alignItems: 'center',
-    justifyContent: 'center',
-    shadowColor: '#059669',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.3,
-    shadowRadius: 3,
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    borderWidth: 2.5,
+    shadowColor: '#0F172A',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.25,
+    shadowRadius: 2,
   },
-  // 遠い（タグと距離だけの段階）：小さく薄く
-  pinHeadFar: {
-    width: 22,
-    height: 22,
-    borderRadius: 11,
-    backgroundColor: 'rgba(16, 185, 129, 0.55)',
+  // 自分の言葉：白い丸に緑のふち
+  pinHeadOwn: {
+    borderWidth: 4,
   },
-  // すぐ近く：位置があやふやなので淡く（まわりの輪が「このあたり」）
-  pinHeadNear: {
-    backgroundColor: 'rgba(16, 185, 129, 0.7)',
-  },
-  // 関心タグに合う投稿：少し濃く大きく
+  // 関心タグに合う言葉：少し大きく
   pinHeadInterest: {
-    backgroundColor: '#047857',
-    transform: [{ scale: 1.1 }],
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+  },
+  pinHeadFar: {
+    width: 14,
+    height: 14,
+    borderRadius: 7,
+    borderWidth: 2,
   },
   pinHeadSelected: {
-    borderColor: '#065F46',
-    borderWidth: 3,
-    transform: [{ scale: 1.15 }],
-  },
-  pinLetter: {
-    color: '#FFFFFF',
-    fontSize: 12,
-    fontWeight: '800',
+    transform: [{ scale: 1.3 }],
   },
   pinTail: {
     width: 2,
-    height: 8,
-    backgroundColor: '#10B981',
+    height: 7,
   },
   pinTailFar: {
-    height: 6,
-    backgroundColor: 'rgba(16, 185, 129, 0.55)',
+    height: 5,
+  },
+  // ピンの色の見方
+  legend: {
+    position: 'absolute',
+    left: 12,
+    bottom: 14,
+    flexDirection: 'row',
+    gap: 10,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: 14,
+    backgroundColor: 'rgba(255, 255, 255, 0.92)',
+  },
+  legendItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  legendDot: {
+    width: 9,
+    height: 9,
+    borderRadius: 5,
+    marginRight: 4,
+  },
+  legendDotStacked: {
+    marginLeft: -7,
+  },
+  legendDotOwn: {
+    backgroundColor: '#FFFFFF',
+    borderWidth: 2,
+    borderColor: PIN_GREEN,
+  },
+  legendText: {
+    color: '#475569',
+    fontSize: 10,
+    fontWeight: '600',
   },
 
   bottomSection: {
