@@ -1,6 +1,4 @@
-import { Dimensions, Platform, StyleSheet } from 'react-native';
-
-const { width } = Dimensions.get('window');
+import { Platform, StyleSheet } from 'react-native';
 
 /** マイページ（とその部品）で使うスタイル */
 export const styles = StyleSheet.create({
@@ -47,11 +45,6 @@ export const styles = StyleSheet.create({
     shadowRadius: 8,
     elevation: 4,
   },
-  avatarInitial: {
-    color: '#FFFFFF',
-    fontSize: 34,
-    fontWeight: '800',
-  },
   avatarEditBadge: {
     position: 'absolute',
     bottom: 0,
@@ -75,24 +68,6 @@ export const styles = StyleSheet.create({
     fontSize: 19,
     fontWeight: '800',
     marginBottom: 2,
-  },
-  avatarStudioBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    marginTop: 10,
-    paddingLeft: 8,
-    paddingRight: 14,
-    paddingVertical: 5,
-    borderRadius: 18,
-    backgroundColor: '#ECFDF5',
-    borderWidth: 2,
-    borderColor: '#A7F3D0',
-  },
-  avatarStudioBtnText: {
-    color: '#047857',
-    fontSize: 13,
-    fontWeight: '800',
   },
   userBio: {
     color: '#64748B',
@@ -355,115 +330,11 @@ export const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '700',
   },
-  avatarGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 12,
-    justifyContent: 'space-between',
-  },
-  avatarOptionItem: {
-    width: (width - 40 - 36) / 4,
-    alignItems: 'center',
-    paddingVertical: 8,
-    borderRadius: 16,
-    borderWidth: 1.5,
-    borderColor: '#E2E8F0',
-    backgroundColor: '#F8FAFC',
-  },
-  avatarOptionItemSelected: {
-    borderColor: '#10B981',
-    backgroundColor: '#ECFDF5',
-  },
-  avatarOptionCircle: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: '#FFFFFF',
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    marginBottom: 4,
-  },
-  avatarOptionInitial: {
-    color: '#FFFFFF',
-    fontSize: 18,
-    fontWeight: '800',
-  },
-  avatarOptionLabel: {
-    color: '#475569',
-    fontSize: 11,
-    fontWeight: '600',
-  },
-  avatarOptionLabelSelected: {
-    color: '#065F46',
-    fontWeight: '800',
-  },
-  avatarOptionImage: {
-    width: 36,
-    height: 36,
-  },
-  // アイコンを選ぶ画面
-  avatarPreviewRow: {
-    alignItems: 'center',
-    marginBottom: 14,
-  },
-  avatarPreviewCircle: {
-    width: 76,
-    height: 76,
-    borderRadius: 38,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  avatarPreviewImage: {
-    width: 64,
-    height: 64,
-  },
-  avatarSectionLabel: {
-    color: '#64748B',
-    fontSize: 12,
-    fontWeight: '700',
-    marginBottom: 8,
-    marginTop: 4,
-  },
-  avatarColorRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginBottom: 18,
-  },
-  avatarColorDotOuter: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    borderWidth: 2,
-    borderColor: 'transparent',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  avatarColorDot: {
-    width: 24,
-    height: 24,
-    borderRadius: 12,
-  },
-  avatarSaveBtn: {
-    height: 46,
-    borderRadius: 23,
-    backgroundColor: '#10B981',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  avatarSaveBtnDisabled: {
-    backgroundColor: '#CBD5E1',
-  },
-  avatarSaveBtnText: {
-    color: '#FFFFFF',
-    fontSize: 15,
-    fontWeight: '700',
-  },
   // マイページの大きいアイコンの動物
   avatarAnimalImage: {
-    width: 66,
-    height: 66,
+    width: 74,
+    height: 74,
+    borderRadius: 37,
   },
 
   // Footprint Summary Stats

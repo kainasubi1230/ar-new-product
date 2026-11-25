@@ -1,20 +1,41 @@
+import {
+  attachmentKeysOf,
+  cleanAttachmentSelection,
+  isAttachmentKey,
+  type AttachmentKey,
+  type AttachmentsByAnimal,
+} from './avatarAttachments';
+
 /**
- * アイコンは、選んだ色の丸に、選んだ動物の顔（scripts/avatar-animals/animals.swift で描いたオリジナルの絵）。
- * 投稿の handle に `animal:cat:#10B981` として入れ、他の人の言葉カード・AR のカードでも同じアイコンで出す。
+ * アバター（＝アイコン）は、8 種類の動物の絵（avatar_animals_png/*.png をそのまま使う。
+ * src/assets/animals と ios の Images.xcassets/Animal*.imageset）の「オレンジ・黄色」の部分だけを、選んだ色に変えたもの。
+ * どこを変えるかはキャラクターごとのマスク（Animal*Mask.imageset、scripts/avatar-animals/build-assets.sh で作る）、
+ * 色変えはネイティブの AvatarRecolor（形・模様・質感はそのまま）。
+ * 投稿の handle に `animal:cat:#3B82F6` として入れ、他の人の言葉カード・AR のカードでも同じアイコンで出す。
  * 前のバージョンの投稿（`color:#RRGGBB`）は、その色の丸に名前の頭文字のまま
  */
-export const AVATAR_COLORS = [
-  { key: 'green', label: 'グリーン', hex: '#10B981' },
-  { key: 'blue', label: 'ブルー', hex: '#0EA5E9' },
-  { key: 'purple', label: 'パープル', hex: '#8B5CF6' },
+
+/** 元の絵のオレンジ。この色のときは元の絵をそのまま出す（ARViewWrapper.swift の AvatarRecolorCore.originalAccentHex と同じ） */
+export const ORIGINAL_ACCENT_HEX = '#F9B837';
+
+/** 絵のキャンバス（背景）のクリーム色。アイコンの丸の色にもして、絵の四角い端が見えないようにする（AR のカードも同じ） */
+export const AVATAR_CANVAS_COLOR = '#FAF7EF';
+
+/** 色のプリセット（8 色。最初が元のオレンジ） */
+export const AVATAR_COLOR_PRESETS = [
+  { key: 'orange', label: 'オレンジ', hex: ORIGINAL_ACCENT_HEX },
+  { key: 'blue', label: 'ブルー', hex: '#3B82F6' },
   { key: 'pink', label: 'ピンク', hex: '#EC4899' },
+  { key: 'purple', label: 'パープル', hex: '#8B5CF6' },
+  { key: 'green', label: 'グリーン', hex: '#10B981' },
   { key: 'red', label: 'レッド', hex: '#EF4444' },
-  { key: 'orange', label: 'オレンジ', hex: '#F97316' },
-  { key: 'yellow', label: 'イエロー', hex: '#EAB308' },
-  { key: 'gray', label: 'グレー', hex: '#64748B' },
+  { key: 'sky', label: 'スカイ', hex: '#38BDF8' },
+  { key: 'navy', label: 'ネイビー', hex: '#1E3A8A' },
 ] as const;
 
-export const DEFAULT_AVATAR_COLOR = AVATAR_COLORS[0].hex;
+export const DEFAULT_AVATAR_COLOR = ORIGINAL_ACCENT_HEX;
+
+export const isOriginalAccent = (hex: string) => hex.toLowerCase() === ORIGINAL_ACCENT_HEX.toLowerCase();
 
 export const AVATAR_ANIMALS = [
   { key: 'cat', label: 'ねこ', image: require('../assets/animals/cat.png') },
@@ -51,14 +72,17 @@ const HEX = /^#[0-9A-Fa-f]{6}$/;
 const COLOR_PREFIX = 'color:';
 const ANIMAL_PREFIX = 'animal:';
 
-/** 投稿の handle に入れる形（`animal:cat:#10B981`） */
-export const avatarHandleFor = (hex: string, animal: AvatarAnimal) => `${ANIMAL_PREFIX}${animal}:${hex}`;
+/**
+ * 投稿の handle に入れる形：`animal:cat:#10B981`、アタッチメントを付けていれば `animal:cat:#10B981:ribbon_01+hat_02`
+ */
+export const avatarHandleFor = (hex: string, animal: AvatarAnimal, attachments: readonly AttachmentKey[] = []) =>
+  `${ANIMAL_PREFIX}${animal}:${hex}${attachments.length > 0 ? `:${attachments.join('+')}` : ''}`;
 
-/** handle から色を取り出す（`animal:cat:#…` と前の `color:#…` の両方）。どちらでもなければ null（もっと古い絵のアイコンなど） */
+/** handle から色を取り出す（`animal:cat:#…[:…]` と前の `color:#…` の両方）。どちらでもなければ null（もっと古い絵のアイコンなど） */
 export const avatarColorOf = (handle?: string | null): string | null => {
   if (!handle) return null;
   const hex = handle.startsWith(ANIMAL_PREFIX)
-    ? handle.slice(handle.lastIndexOf(':') + 1)
+    ? (handle.split(':')[2] ?? '')
     : handle.startsWith(COLOR_PREFIX)
       ? handle.slice(COLOR_PREFIX.length)
       : '';
@@ -68,6 +92,41 @@ export const avatarColorOf = (handle?: string | null): string | null => {
 /** handle から動物を取り出す。動物のアイコンでなければ null（頭文字の丸で出す） */
 export const avatarAnimalOf = (handle?: string | null): AvatarAnimal | null => {
   if (!handle?.startsWith(ANIMAL_PREFIX)) return null;
-  const key = handle.slice(ANIMAL_PREFIX.length).split(':')[0];
+  const key = handle.split(':')[1];
   return isAvatarAnimal(key) ? key : null;
+};
+
+/** handle から装着しているアタッチメントを取り出す（無ければ空） */
+export const avatarAttachmentsOf = (handle?: string | null): AttachmentKey[] => {
+  if (!handle?.startsWith(ANIMAL_PREFIX)) return [];
+  return (handle.split(':')[3] ?? '').split('+').filter(isAttachmentKey);
+};
+
+/**
+ * アバターのデータ：キャラクターの ID・色（絵のオレンジ・黄色を変える色）・キャラクターごとのアタッチメントの装着。
+ * 背景などを足すときは、ここにフィールドを足す（例：`background?: string`）。
+ * 投稿の handle には今のキャラクターの分を `avatarHandleFor` の形で入れる
+ */
+export type AvatarConfig = {
+  character: AvatarAnimal;
+  /** #RRGGBB。初期は元のオレンジ */
+  color: string;
+  /** キャラクターごとの装着（キャラクターを切り替えても、それぞれ覚えておく） */
+  attachments: AttachmentsByAnimal;
+};
+
+/** 今のキャラクターに装着しているアイテム（重ねる順） */
+export const currentAttachmentsOf = (config: AvatarConfig): AttachmentKey[] =>
+  attachmentKeysOf(config.attachments[config.character]);
+
+/** 保存されていたキャラクターごとの装着から、知らない値を除く */
+export const cleanAttachmentsByAnimal = (value: unknown): AttachmentsByAnimal => {
+  if (!value || typeof value !== 'object') return {};
+  const result: AttachmentsByAnimal = {};
+  for (const [animal, selection] of Object.entries(value as Record<string, unknown>)) {
+    if (!isAvatarAnimal(animal)) continue;
+    const clean = cleanAttachmentSelection(selection);
+    if (Object.keys(clean).length > 0) result[animal] = clean;
+  }
+  return result;
 };

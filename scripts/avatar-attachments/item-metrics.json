@@ -1,0 +1,130 @@
+{
+  "glasses_01" : {
+    "box" : {
+      "height" : 124,
+      "width" : 254,
+      "x" : 129,
+      "y" : 194
+    },
+    "imageSize" : 512,
+    "lens" : {
+      "diameter" : 123,
+      "x" : 201.5,
+      "y" : 255.5
+    }
+  },
+  "glasses_02" : {
+    "box" : {
+      "height" : 97,
+      "width" : 255,
+      "x" : 128,
+      "y" : 208
+    },
+    "imageSize" : 512,
+    "lens" : {
+      "diameter" : 96,
+      "x" : 187.5,
+      "y" : 256
+    }
+  },
+  "glasses_03" : {
+    "box" : {
+      "height" : 112,
+      "width" : 258,
+      "x" : 127,
+      "y" : 200
+    },
+    "imageSize" : 512,
+    "lens" : {
+      "diameter" : 111,
+      "x" : 195,
+      "y" : 255.5
+    }
+  },
+  "glasses_04" : {
+    "box" : {
+      "height" : 119,
+      "width" : 268,
+      "x" : 122,
+      "y" : 197
+    },
+    "imageSize" : 512,
+    "lens" : {
+      "diameter" : 118,
+      "x" : 183,
+      "y" : 256
+    }
+  },
+  "hat_01" : {
+    "box" : {
+      "height" : 167,
+      "width" : 261,
+      "x" : 125,
+      "y" : 173
+    },
+    "imageSize" : 512
+  },
+  "hat_02" : {
+    "box" : {
+      "height" : 160,
+      "width" : 269,
+      "x" : 121,
+      "y" : 176
+    },
+    "imageSize" : 512
+  },
+  "hat_03" : {
+    "box" : {
+      "height" : 160,
+      "width" : 247,
+      "x" : 132,
+      "y" : 176
+    },
+    "imageSize" : 512
+  },
+  "hat_04" : {
+    "box" : {
+      "height" : 228,
+      "width" : 252,
+      "x" : 130,
+      "y" : 142
+    },
+    "imageSize" : 512
+  },
+  "ribbon_01" : {
+    "box" : {
+      "height" : 157,
+      "width" : 226,
+      "x" : 143,
+      "y" : 178
+    },
+    "imageSize" : 512
+  },
+  "ribbon_02" : {
+    "box" : {
+      "height" : 209,
+      "width" : 225,
+      "x" : 143,
+      "y" : 152
+    },
+    "imageSize" : 512
+  },
+  "ribbon_03" : {
+    "box" : {
+      "height" : 223,
+      "width" : 223,
+      "x" : 144,
+      "y" : 145
+    },
+    "imageSize" : 512
+  },
+  "ribbon_04" : {
+    "box" : {
+      "height" : 230,
+      "width" : 240,
+      "x" : 136,
+      "y" : 141
+    },
+    "imageSize" : 512
+  }
+}

@@ -21,8 +21,10 @@ export type Preferences = {
   showHeritagePins: boolean;
   /** アイコンの動物（`src/config/avatarColors.ts` の AVATAR_ANIMALS の key）。まだ選んでいなければ無し（アカウントごとに決まった動物） */
   avatarAnimal?: string;
-  /** アイコン（動物の後ろの丸）の色（#RRGGBB、`src/config/avatarColors.ts` の AVATAR_COLORS から選ぶ） */
+  /** アイコンの色（絵のオレンジ・黄色を変える色。#RRGGBB、初期は元のオレンジ。`src/config/avatarColors.ts`） */
   avatarColor: string;
+  /** キャラクターごとのアタッチメントの装着（`AttachmentsByAnimal`。キャラクターを切り替えても、それぞれ覚えておく） */
+  avatarAttachments?: Record<string, Record<string, string>>;
   /** この設定を使っているアカウント（auth の user id）。別のアカウントでログインしたら初期値に戻す */
   ownerUserId?: string;
 };
@@ -120,7 +122,8 @@ export const usePreferences = () => {
     setHideNegativePosts: (hideNegativePosts: boolean) => updatePreferences({ hideNegativePosts }),
     setMutedTags: (mutedTags: string[]) => updatePreferences({ mutedTags }),
     setShowHeritagePins: (showHeritagePins: boolean) => updatePreferences({ showHeritagePins }),
-    setAvatar: (avatarAnimal: string, avatarColor: string) => updatePreferences({ avatarAnimal, avatarColor }),
+    setAvatar: (avatarAnimal: string, avatarColor: string, avatarAttachments: Record<string, Record<string, string>>) =>
+      updatePreferences({ avatarAnimal, avatarColor, avatarAttachments }),
     toggleMutedTag: (tag: string) => {
       const normalized = normalizeTag(tag);
       updatePreferences({

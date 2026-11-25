@@ -19,12 +19,19 @@ import { styles } from './mypage/styles';
 import { AuthForm } from './mypage/AuthForm';
 import { AvatarPickerModal } from './mypage/AvatarPickerModal';
 import { BlockedUsersModal } from './mypage/BlockedUsersModal';
-import { AvatarStudioModal, AvatarSvg, useAvatarConfig } from '../features/avatar';
 import { InterestSettingsTab } from './mypage/InterestSettingsTab';
 import { deleteMyPost, fillPostPlaceName, updateMyPostsAuthor } from '../services/postService';
 import { usePreferences } from '../services/preferencesStore';
 import { displayNameOf } from '../services/authService';
-import { animalImageOf, avatarHandleFor, resolveAvatarAnimal, type AvatarAnimal } from '../config/avatarColors';
+import {
+  AVATAR_CANVAS_COLOR,
+  avatarHandleFor,
+  cleanAttachmentsByAnimal,
+  currentAttachmentsOf,
+  resolveAvatarAnimal,
+  type AvatarConfig,
+} from '../config/avatarColors';
+import { AnimalAvatarImage } from './AnimalAvatarImage';
 import {
   WordCard,
   WordCardAvatar,
@@ -106,13 +113,23 @@ export function MyPageScreen({
   const [collectedList, setCollectedList] = useState<CollectedWord[]>(INITIAL_COLLECTED);
 
   // 関心タグの数（上の数字）とアイコンの色（preferencesStore）。関心タグの設定は InterestSettingsTab
-  const { interestTags, avatarColor, avatarAnimal: savedAvatarAnimal, setAvatar } = usePreferences();
+  const {
+    interestTags,
+    avatarColor,
+    avatarAnimal: savedAvatarAnimal,
+    avatarAttachments: savedAttachments,
+    setAvatar,
+  } = usePreferences();
   const avatarAnimal = resolveAvatarAnimal(savedAvatarAnimal, user?.id);
+  // アバターのデータ（キャラクター・色・キャラクターごとのアタッチメント）
+  const avatarConfig: AvatarConfig = {
+    character: avatarAnimal,
+    color: avatarColor,
+    attachments: cleanAttachmentsByAnimal(savedAttachments),
+  };
+  const avatarAttachments = currentAttachmentsOf(avatarConfig);
 
   const [isAvatarModalVisible, setIsAvatarModalVisible] = useState(false);
-  // 全身のアバター（キャラクターと 5 色）を作る画面。アイコン（動物の顔と丸の色）とは別に保存する
-  const [isAvatarStudioVisible, setIsAvatarStudioVisible] = useState(false);
-  const { config: avatarConfig } = useAvatarConfig();
   const [isBlockedListVisible, setIsBlockedListVisible] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
 
@@ -192,17 +209,21 @@ export function MyPageScreen({
     setIsRefreshing(false);
   };
 
-  // アイコン（動物と色）の変更。ログイン情報にも短い値だけを入れる（別の端末でログインしたとき用）
-  const handleSelectAvatar = async (animal: AvatarAnimal, hex: string) => {
-    setAvatar(animal, hex);
+  // アバター（キャラクター・色・アタッチメント）の変更。ログイン情報にも短い値だけを入れる（別の端末でログインしたとき用）
+  const handleSelectAvatar = async (config: AvatarConfig) => {
+    const { character: animal, color: hex } = config;
+    const attachments = cleanAttachmentsByAnimal(config.attachments);
+    setAvatar(animal, hex, attachments);
     setIsAvatarModalVisible(false);
     if (user) {
       try {
         await supabase.auth.updateUser({
-          data: { avatar_color: hex, avatar_animal: animal },
+          data: { avatar_color: hex, avatar_animal: animal, avatar_attachments: attachments },
         });
         // これまでに置いた言葉のアイコンも、新しいものにそろえる
-        await updateMyPostsAuthor(user.id, { handle: avatarHandleFor(hex, animal) });
+        await updateMyPostsAuthor(user.id, {
+          handle: avatarHandleFor(hex, animal, currentAttachmentsOf({ ...config, attachments })),
+        });
       } catch (e) {
         console.warn('アバターアイコン保存エラー:', e);
       }
@@ -384,8 +405,13 @@ export function MyPageScreen({
             onPress={() => setIsAvatarModalVisible(true)}
             activeOpacity={0.8}
           >
-            <View style={[styles.avatarCircle, { backgroundColor: avatarColor, shadowColor: avatarColor }]}>
-              <Image source={animalImageOf(avatarAnimal)} style={styles.avatarAnimalImage} resizeMode="contain" />
+            <View style={[styles.avatarCircle, { backgroundColor: AVATAR_CANVAS_COLOR, shadowColor: avatarColor }]}>
+              <AnimalAvatarImage
+                animal={avatarAnimal}
+                color={avatarColor}
+                attachments={avatarAttachments}
+                style={styles.avatarAnimalImage}
+              />
             </View>
             <View style={styles.avatarEditBadge}>
               <Text style={styles.avatarEditBadgeText}>✎</Text>
@@ -393,19 +419,6 @@ export function MyPageScreen({
           </TouchableOpacity>
           <Text style={styles.userName}>{displayName}</Text>
           <Text style={styles.userBio}>{user.email}</Text>
-
-          <TouchableOpacity
-            style={styles.avatarStudioBtn}
-            onPress={() => setIsAvatarStudioVisible(true)}
-            activeOpacity={0.8}
-          >
-            <AvatarSvg
-              character={avatarConfig.character}
-              colors={avatarConfig.colorsByCharacter[avatarConfig.character]}
-              width={28}
-            />
-            <Text style={styles.avatarStudioBtnText}>アバターをつくる</Text>
-          </TouchableOpacity>
 
           {/* Footprint Count Summary */}
           <View style={styles.statsRow}>
@@ -500,7 +513,7 @@ export function MyPageScreen({
                   onDelete={() => handleDeleteMemory(item.id, item.message)}
                   footer={
                     <>
-                      <WordCardAvatar name={displayName} icon={avatarHandleFor(avatarColor, avatarAnimal)} />
+                      <WordCardAvatar name={displayName} icon={avatarHandleFor(avatarColor, avatarAnimal, avatarAttachments)} />
                       <WordCardDate date={item.placedAt} placeName={item.placeName} action="placed" />
                       {item.readCount > 0 && <WordCardReadCount count={item.readCount} />}
                     </>
@@ -582,12 +595,10 @@ export function MyPageScreen({
           await onUnblock?.(userId);
         }}
       />
-      <AvatarStudioModal visible={isAvatarStudioVisible} onClose={() => setIsAvatarStudioVisible(false)} />
       <AvatarPickerModal
         visible={isAvatarModalVisible}
         onClose={() => setIsAvatarModalVisible(false)}
-        avatarAnimal={avatarAnimal}
-        avatarColor={avatarColor}
+        avatarConfig={avatarConfig}
         onSelect={handleSelectAvatar}
       />
     </View>

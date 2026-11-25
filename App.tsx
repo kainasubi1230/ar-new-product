@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import Geolocation from '@react-native-community/geolocation';
 import {
+  Alert,
   Image,
   Linking,
   Platform,
@@ -21,7 +22,6 @@ import {
   UniversalARView,
   type ARDebugInfoEvent,
   type ARNotice,
-  type GeoTag,
   type RelocalizationStatusEvent,
   type RelocalizeTarget,
   type WorldMapSaveRequest,
@@ -31,17 +31,16 @@ import { ScreenHeader } from './src/components/ScreenHeader';
 import { Icons } from './src/assets/icons';
 import { insertPostWithCurrentLocation } from './src/services/postService';
 import { deleteMyAccount, displayNameOf, signOut } from './src/services/authService';
-import { avatarHandleFor, isAvatarAnimal, resolveAvatarAnimal } from './src/config/avatarColors';
+import {
+  avatarHandleFor,
+  cleanAttachmentsByAnimal,
+  currentAttachmentsOf,
+  isAvatarAnimal,
+  resolveAvatarAnimal,
+} from './src/config/avatarColors';
 import type { LocationCoords } from './src/services/postService';
 import { findNearbyPosts, type NearbyPost } from './src/services/nearbyPostService';
-import {
-  DISTANCE_TIERS,
-  geoTagLevelFor,
-  geoTagProminenceFor,
-  positionUncertaintyFor,
-  relocalizeSearchRadiusFor,
-} from './src/config/distanceTiers';
-import { PresenceSheet } from './src/components/PresenceSheet';
+import { DISTANCE_TIERS, relocalizeSearchRadiusFor } from './src/config/distanceTiers';
 import { BottomNav, type Tab } from './src/components/BottomNav';
 import { TermsConsentModal } from './src/components/TermsConsentModal';
 import { OnboardingScreen, hasSeenOnboarding } from './src/components/OnboardingScreen';
@@ -53,7 +52,8 @@ import { openPostMenu } from './src/utils/postMenu';
 import { usePocketNotice } from './src/hooks/usePocketNotice';
 import { CalmToast, type ToastKind, type ToastMessage } from './src/components/CalmToast';
 import { SparkleBurst, type Sparkle } from './src/components/SparkleBurst';
-import { isVisibleUnderFilters, matchesInterestTags } from './src/utils/interestTags';
+import { isVisibleUnderFilters } from './src/utils/interestTags';
+import { MovingSpeedMonitor } from './src/utils/movingSpeed';
 import { checkPostSafety } from './src/services/safetyFilter';
 import { adoptPreferencesForUser, updatePreferences, usePreferences } from './src/services/preferencesStore';
 import { collectPost } from './src/services/readService';
@@ -171,6 +171,8 @@ function MainApp(): React.JSX.Element {
   const suppressedAtRef = React.useRef<LocationCoords | null>(null);
   // ホーム表示中に追いかけている現在地（移動したら近くの地図を探し直す）
   const [currentCoords, setCurrentCoords] = useState<TrackedCoords | null>(null);
+  // 乗り物（車・電車など）で移動中かの判定（GPS の速さ）。移動中は言葉を置けない
+  const movingSpeedRef = React.useRef(new MovingSpeedMonitor());
   // 照合する地図を探すための位置。誤差 15m 以下の平均（currentCoords）を待たず、
   // GPS の生の値が fallbackMaxAccuracyM 以内なら使う（候補を広めに探して、景色で確かめるため）
   const [relocalizeCoords, setRelocalizeCoords] = useState<LocationCoords | null>(null);
@@ -183,9 +185,20 @@ function MainApp(): React.JSX.Element {
     mutedTags,
     avatarColor,
     avatarAnimal: savedAvatarAnimal,
+    avatarAttachments: savedAvatarAttachments,
   } = usePreferences();
   // アイコンの動物（まだ選んでいなければ、アカウントごとに決まった動物）
   const avatarAnimal = resolveAvatarAnimal(savedAvatarAnimal, user?.id);
+  // 投稿・AR のカードに入れるアイコン（キャラクター・色・そのキャラクターのアタッチメント）
+  const avatarHandle = avatarHandleFor(
+    avatarColor,
+    avatarAnimal,
+    currentAttachmentsOf({
+      character: avatarAnimal,
+      color: avatarColor,
+      attachments: cleanAttachmentsByAnimal(savedAvatarAttachments),
+    })
+  );
   // 表示の設定（関心タグのみ表示・安心フィルター）で、AR・地図に出すか。自分の投稿はいつも出す
   // 通報した言葉と、ブロックした人（その人のアプリでは AR・地図・通知に出さない）
   const [blockedUserIds, setBlockedUserIds] = useState<string[]>([]);
@@ -232,7 +245,6 @@ function MainApp(): React.JSX.Element {
   // 見つからなかった地図を外して、もう一度候補を選び直すための合図
   const [relocalizeRetryKey, setRelocalizeRetryKey] = useState(0);
   // セカイカメラ風に、近くの投稿を方角タグとして AR 画面に浮かべる
-  const [geoTags, setGeoTags] = useState<GeoTag[]>([]);
   const nearbyPostsRef = React.useRef<Map<string, NearbyPost>>(new Map());
   // 「カードをタップすると、言葉を拾えます」は 1 回の起動で 1 回だけ
   const hasShownCollectHintRef = React.useRef(false);
@@ -248,7 +260,6 @@ function MainApp(): React.JSX.Element {
   // 現在地を追うのは、ホーム（AR）と探索（レーダー）を開いている間
   const isLocationActive = activeTab === 'home' || activeTab === 'radar';
   // 気配をタップしたときの案内（投稿者名と、置いたときの景色の写真）
-  const [tappedPresence, setTappedPresence] = useState<{ authorName: string; snapshotPath: string | null } | null>(null);
   relocalizeTargetRef.current = relocalizeTarget;
   const isRelocalizing = relocalizationPhase === 'downloading' || relocalizationPhase === 'relocalizing';
 
@@ -268,7 +279,11 @@ function MainApp(): React.JSX.Element {
         // アイコンはログイン情報にも入れてあるので、別の端末・アカウントの切り替えのあとも、それに戻す
         const savedAvatarColor = session.user.user_metadata?.avatar_color;
         const savedAnimal = session.user.user_metadata?.avatar_animal;
+        const savedAttachments = cleanAttachmentsByAnimal(session.user.user_metadata?.avatar_attachments);
         adoptPreferencesForUser(session.user.id).then(() => {
+          if (Object.keys(savedAttachments).length > 0) {
+            updatePreferences({ avatarAttachments: savedAttachments });
+          }
           if (typeof savedAvatarColor === 'string' && /^#[0-9A-Fa-f]{6}$/.test(savedAvatarColor)) {
             updatePreferences({ avatarColor: savedAvatarColor });
           }
@@ -385,6 +400,8 @@ function MainApp(): React.JSX.Element {
     const watchStartedAt = Date.now();
     const watchId = Geolocation.watchPosition(
       (position) => {
+        // 乗り物で移動中かを見張る（誤差の大きい値も含めて、速さだけを見る）
+        movingSpeedRef.current.add(position);
         if (SHOW_AR_DEBUG) {
           setRawGpsAccuracy(position.coords.accuracy);
         }
@@ -627,29 +644,12 @@ function MainApp(): React.JSX.Element {
       .then((allPosts) => {
         if (cancelled) return;
         const posts = allPosts.filter(isPostVisible);
-        // 気配をタップしたときに、投稿者名と景色の写真を引けるように覚えておく
+        // 照合の案内（景色の写真）や自分の投稿かの判定で引けるように覚えておく
         nearbyPostsRef.current = new Map(posts.map((post) => [String(post.id), post]));
         // 探索（レーダー）画面にも同じ一覧を出す
         setNearbyPosts(posts);
-        // AR空間には遠くの方角タグ（message / summary）を出さず、近くの気配（presence）だけを渡す
-        setGeoTags(
-          posts
-            .filter((post) => geoTagLevelFor(post.distanceM) === 'presence')
-            .map((post) => ({
-              postId: String(post.id),
-              cardTitle: post.author ?? 'ゲスト',
-              cardDescription: post.message ?? '',
-              cardIcon: post.handle ?? '',
-              cardColor: '#10B981',
-              cardTags: post.tags ?? [],
-              level: geoTagLevelFor(post.distanceM),
-              prominence: geoTagProminenceFor(post.distanceM),
-              uncertaintyM: positionUncertaintyFor(post.accuracy_m, currentCoords.accuracy),
-              highlighted: matchesInterestTags(post.tags, interestTags),
-              distanceM: post.distanceM,
-              bearingDeg: post.bearingDeg,
-            }))
-        );
+        // AR 空間には方角タグも、近くの気配（GPS の誤差の分だけぼかした緑の光）も出さない。
+        // 気配は位置が不正確なうえ照合中は残り続けて邪魔なので、言葉は照合で正確な位置にカードとしてだけ出す
       })
       .catch((err) => console.warn('近くの投稿の取得に失敗しました:', err));
     return () => {
@@ -806,12 +806,23 @@ function MainApp(): React.JSX.Element {
     setActiveTab('home');
   };
 
+  // 車・電車などで移動中は置けない（置いたときの景色の記録が、あとで現地に行っても合わず、見つけられなくなるため）
+  const blockIfMovingFast = () => {
+    if (!movingSpeedRef.current.isFast()) return false;
+    showToast('移動中は言葉を置けません', 'info', {
+      symbol: 'car.fill',
+      subtitle: '乗り物を降りて、立ち止まってから置いてください',
+    });
+    return true;
+  };
+
   const handleOpenPostCreation = () => {
     if (!user) {
       showToast('言葉を置くにはログインが必要です', 'info', { symbol: 'person.crop.circle' });
       setActiveTab('mypage');
       return;
     }
+    if (blockIfMovingFast()) return;
     // 初めて置くとき（と、規約を改定したとき）は、先に利用規約への同意をもらう
     if (user.user_metadata?.terms_accepted !== TERMS_VERSION) {
       setIsTermsVisible(true);
@@ -931,6 +942,11 @@ function MainApp(): React.JSX.Element {
       return;
     }
 
+    // 書いている間に乗り物で動き出していたら、置く場面に進まない。投稿画面は閉じず、書いた言葉はそのまま残す
+    if (movingSpeedRef.current.isFast()) {
+      Alert.alert('移動中は言葉を置けません', '乗り物を降りて、立ち止まってから置いてください。書いた言葉はそのまま残っています。');
+      return;
+    }
     setIsPostModalVisible(false);
     setCurrentMessage(data.message);
     // 選んだタグをそのまま使う（空なら空のまま保存し、カードにもタグを出さない）
@@ -971,7 +987,7 @@ function MainApp(): React.JSX.Element {
             cardTitle={authorDisplayName}
             cardDescription={currentMessage}
             cardColor="#10B981"
-            cardIcon={avatarHandleFor(avatarColor, avatarAnimal)}
+            cardIcon={avatarHandle}
             cardTags={selectedTags}
             placeTrigger={placeTrigger}
             isPreviewActive={isPlacementMode}
@@ -987,11 +1003,6 @@ function MainApp(): React.JSX.Element {
             }}
             hiddenPostIds={hiddenPostIds}
             hudHidden={isTourVisible}
-            onPresenceTapped={(event) => {
-              const post = nearbyPostsRef.current.get(event.nativeEvent.postId);
-              if (!post) return;
-              setTappedPresence({ authorName: post.author ?? 'ゲスト', snapshotPath: post.snapshot_path });
-            }}
             onScreenTapped={() => {
               // 配置モード中でなければログインチェックして投稿作成
               if (!isPlacementMode) {
@@ -1019,7 +1030,7 @@ function MainApp(): React.JSX.Element {
               }
               const authorName = authorDisplayName;
               // アイコンは名前の頭文字の丸。選んだ色を handle に入れて、他の人のカードでも同じ色で出す
-              const authorHandle = avatarHandleFor(avatarColor, avatarAnimal);
+              const authorHandle = avatarHandle;
 
               showToast('言葉を置いています…', 'info', { symbol: 'arrow.up.circle' });
               try {
@@ -1062,7 +1073,6 @@ function MainApp(): React.JSX.Element {
             }}
             worldMapSaveRequest={worldMapSaveRequest}
             relocalizeTarget={relocalizeTarget}
-            geoTags={geoTags}
             onWorldMapStatus={(event) => handleWorldMapStatus(event.nativeEvent)}
             onRelocalizationStatus={(event) => handleRelocalizationStatus(event.nativeEvent)}
             onLocationAccuracyStatus={(event) => setIsFullAccuracy(event.nativeEvent.fullAccuracy)}
@@ -1139,9 +1149,6 @@ function MainApp(): React.JSX.Element {
             sparkles={sparkles}
             onDone={(id) => setSparkles((prev) => prev.filter((sparkle) => sparkle.id !== id))}
           />
-
-          {/* 気配（照合できていない近くの投稿の光）をタップしたときの案内 */}
-          <PresenceSheet presence={tappedPresence} onClose={() => setTappedPresence(null)} />
 
           {/* 画面の下に出る小さなお知らせ */}
           <CalmToast toast={toast} />

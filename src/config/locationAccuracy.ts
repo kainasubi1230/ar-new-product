@@ -21,4 +21,12 @@ export const LOCATION_ACCURACY = {
   relocalizeFallbackAfterMs: 8_000,
   /** 平均した位置がこれ以上動いたときだけ現在地を更新する（m）。細かく揺れるたびに取り直さない */
   commitDistanceM: 5,
+  /**
+   * 乗り物（車・電車など）で動いている間は、言葉を置けないようにする（置いた景色の記録が、あとで現地と合わなくなるため）。
+   * この速さ（m/s。6m/s ≒ 時速 22km。歩き・ジョギングより速く、自転車の速め〜車・電車）以上が
+   * 続けて fastMovingMinSamples 回、直近 fastMovingWindowMs のうちに測れたら「移動中」とみなす
+   */
+  fastMovingSpeedMps: 6,
+  fastMovingMinSamples: 2,
+  fastMovingWindowMs: 10_000,
 } as const;

@@ -1,7 +1,8 @@
 import React, { ReactNode } from 'react';
 import { Image, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Icons } from '../assets/icons';
-import { animalImageOf, avatarAnimalOf, avatarColorOf } from '../config/avatarColors';
+import { AVATAR_CANVAS_COLOR, avatarAnimalOf, avatarAttachmentsOf, avatarColorOf } from '../config/avatarColors';
+import { AnimalAvatarImage } from './AnimalAvatarImage';
 
 type Props = {
   message: string;
@@ -112,7 +113,7 @@ export const getAvatarIconSource = (key?: string | null): any => {
   return AVATAR_ICON_MAP[cleanKey] || Icons.mypage;
 };
 
-/** 下の行に置く、投稿者のアイコン（選んだ色の丸に動物。前の投稿は色の丸に名前の頭文字、もっと古い投稿は絵のアイコン） */
+/** 下の行に置く、投稿者のアイコン（オレンジ・黄色を選んだ色に変えた動物。前の投稿は色の丸に名前の頭文字、もっと古い投稿は絵のアイコン） */
 export function WordCardAvatar({
   name,
   icon,
@@ -124,8 +125,13 @@ export function WordCardAvatar({
   const animal = avatarAnimalOf(icon);
   if (color && animal) {
     return (
-      <View style={[styles.avatar, { backgroundColor: color }]}>
-        <Image source={animalImageOf(animal)} style={styles.avatarAnimalImage} resizeMode="contain" />
+      <View style={[styles.avatar, { backgroundColor: AVATAR_CANVAS_COLOR }]}>
+        <AnimalAvatarImage
+          animal={animal}
+          color={color}
+          attachments={avatarAttachmentsOf(icon)}
+          style={styles.avatarAnimalImage}
+        />
       </View>
     );
   }
@@ -244,9 +250,10 @@ const styles = StyleSheet.create({
     height: 14,
     tintColor: '#047857',
   },
+  // 絵はキャンバスごと丸に収める（キャンバスの色＝丸の色なので、四角い端は見えない）
   avatarAnimalImage: {
-    width: '84%',
-    height: '84%',
+    width: '100%',
+    height: '100%',
   },
   avatarText: {
     color: '#047857',

@@ -1,5 +1,6 @@
 import ARKit
 import Combine
+import CoreImage
 import CoreMotion
 import RealityKit
 import React
@@ -366,7 +367,7 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
     var hasMaterialized = false
     // 現れる途中の大きさ・位置の変化を終えたか（終えたら毎フレーム書き換えない＝タップのふくらみを邪魔しない）
     var isTransformAtRest = false
-    // 落ち着いた時点の向きで固定する（以後は毎フレーム向きを追いかけない＝回り続けない）
+    // カードが現れた瞬間の向き（見ている人の方）で固定する（以後は毎フレーム向きを追いかけない＝回り続けない）
     var lockedRotation: simd_quatf?
     // 床より下に出てしまうときに持ち上げる量（m）。上にだけ補正する
     var heightOffset: Float = 0
@@ -1391,21 +1392,30 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
       let authorDisplay = name.isEmpty ? "ゲスト" : name
       let avatarRect = CGRect(x: 52, y: 372, width: 50, height: 50)
       let avatarPath = UIBezierPath(ovalIn: avatarRect)
-      // アイコンは、投稿者が選んだ色の丸に、選んだ動物の顔（handle が `animal:cat:#RRGGBB`。絵は Images.xcassets の AnimalCat など）。
+      // アイコンは、選んだ動物の絵の「オレンジ・黄色」を、投稿者が選んだ色に変えたもの（handle が `animal:cat:#RRGGBB`。
+      // 絵は Images.xcassets の AnimalCat など、色変えは AvatarRecolor）。絵はクリーム色のキャンバスごと丸に収め、
+      // 丸の色もキャンバスと同じにする（src/config/avatarColors.ts の AVATAR_CANVAS_COLOR）。
       // 前の投稿（`color:#RRGGBB`）は色の丸に名前の頭文字、もっと古い投稿（絵のアイコンのキーなど）は淡い緑の丸
       var animalImage: UIImage?
+      var animalKey = ""
+      var attachmentKeys: [String] = []
       var chosenAvatarColor: UIColor?
+      var avatarBackground: UIColor?
       if handle.hasPrefix("animal:") {
+        // animal:cat:#RRGGBB、アタッチメントを付けていれば animal:cat:#RRGGBB:ribbon_01+hat_02
         let parts = handle.split(separator: ":")
-        if parts.count == 3 {
-          let key = String(parts[1])
-          animalImage = UIImage(named: "Animal" + key.prefix(1).uppercased() + key.dropFirst())
-          chosenAvatarColor = parseHexColor(String(parts[2]))
+        if parts.count >= 3, AvatarRecolorCore.parseHex(String(parts[2])) != nil {
+          let hex = String(parts[2])
+          animalKey = String(parts[1])
+          attachmentKeys = parts.count >= 4 ? parts[3].split(separator: "+").map(String.init) : []
+          animalImage = AvatarRecolor.image(animal: animalKey, hex: hex)
+          chosenAvatarColor = parseHexColor(hex)
+          avatarBackground = UIColor(red: 0xFA / 255.0, green: 0xF7 / 255.0, blue: 0xEF / 255.0, alpha: 1)
         }
       } else if handle.hasPrefix("color:#") {
         chosenAvatarColor = parseHexColor(String(handle.dropFirst("color:".count)))
       }
-      (chosenAvatarColor ?? UIColor(red: 52/255.0, green: 211/255.0, blue: 153/255.0, alpha: 0.35)).setFill()
+      (avatarBackground ?? chosenAvatarColor ?? UIColor(red: 52/255.0, green: 211/255.0, blue: 153/255.0, alpha: 0.35)).setFill()
       avatarPath.fill()
 
       let iconColor = chosenAvatarColor != nil
@@ -1414,7 +1424,17 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
       // 動物のアイコンなら動物を、色の丸のときは頭文字を描く
       var drewIcon = false
       if let animalImage {
-        animalImage.draw(in: avatarRect.insetBy(dx: 4, dy: 4))
+        // 縦横比を保って丸いっぱいに収める（キャンバスの四隅は丸の外なので切れる）
+        let box = avatarRect
+        let fit = min(box.width / animalImage.size.width, box.height / animalImage.size.height)
+        let drawSize = CGSize(width: animalImage.size.width * fit, height: animalImage.size.height * fit)
+        cgContext.saveGState()
+        avatarPath.addClip()
+        let animalRect = CGRect(x: box.midX - drawSize.width / 2, y: box.midY - drawSize.height / 2,
+                                width: drawSize.width, height: drawSize.height)
+        animalImage.draw(in: animalRect)
+        AvatarAttachments.draw(attachmentKeys, animal: animalKey, in: animalRect, context: cgContext)
+        cgContext.restoreGState()
         drewIcon = true
       } else if chosenAvatarColor == nil {
         let cleanIconName = handle.replacingOccurrences(of: "@", with: "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -2126,12 +2146,15 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
       target.foundPostIds.insert(postId)
       preciseCardPostIds.insert(postId)
       // ARAnchor に直接ぶら下げると、照合直後に ARKit が位置を直すたびカードが跳ねる。
-      // ワールド座標の入れ物に乗せ、updateCardReveal で ARAnchor の最新位置へ滑らかに寄せる
-      // 傾いて置かれた古い投稿も、地面に対してまっすぐ立てて出す
+      // ワールド座標の入れ物に乗せ、updateCardReveal で ARAnchor の最新位置へ滑らかに寄せる。
+      // 向きはアンカーの向きを使わず、地面に対してまっすぐ立てて見ている人の方へ向ける（現れた瞬間に固定する）。
+      // アンカーの向きを使うと、置いた人とは別の方向から来たとき横を向いて見え、古い投稿では横倒しになることがある
+      let position = Self.translation(of: anchor.transform)
+      let cameraPosition = arView.session.currentFrame.map { Self.translation(of: $0.camera.transform) } ?? position
       let anchorEntity = AnchorEntity(world: Transform(
         scale: .one,
-        rotation: Self.uprightRotation(of: anchor.transform),
-        translation: Self.translation(of: anchor.transform)
+        rotation: Self.yawFacing(from: position, toward: cameraPosition),
+        translation: position
       ).matrix)
       let cardEntity = makeCardEntity(
         title: card.title,
@@ -2543,17 +2566,11 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
     }
   }
 
-  /// カードを地面に対してまっすぐ立てた向き（左右の向きだけ残す）。カードの表は +Z
-  private static func uprightRotation(of transform: simd_float4x4) -> simd_quatf {
-    var facing = SIMD3<Float>(transform.columns.2.x, 0, transform.columns.2.z)
-    if simd_length(facing) < 0.1 {
-      // 真上・真下を向いて置かれたカードは、横向き（X 軸）から決める
-      let side = SIMD3<Float>(transform.columns.0.x, 0, transform.columns.0.z)
-      facing = SIMD3<Float>(-side.z, 0, side.x)
-    }
-    guard simd_length(facing) > 0.0001 else { return simd_quatf(angle: 0, axis: SIMD3<Float>(0, 1, 0)) }
-    facing = simd_normalize(facing)
-    return simd_quatf(angle: atan2(facing.x, facing.z), axis: SIMD3<Float>(0, 1, 0))
+  /// position に立てたカードの表（+Z）を target の方へ向けた向き（左右の向きだけ。地面に対してまっすぐ）
+  private static func yawFacing(from position: SIMD3<Float>, toward target: SIMD3<Float>) -> simd_quatf {
+    let d = target - position
+    guard d.x * d.x + d.z * d.z > 0.0001 else { return simd_quatf(angle: 0, axis: SIMD3<Float>(0, 1, 0)) }
+    return simd_quatf(angle: atan2(d.x, d.z), axis: SIMD3<Float>(0, 1, 0))
   }
 
   private func updateGeoTags() {
@@ -2997,9 +3014,9 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
         if simd_distance(currentPos, displayPos) > 0.02 {
           item.holder.setPosition(simd_mix(currentPos, displayPos, SIMD3<Float>(repeating: anchorFollow)), relativeTo: nil)
         }
-        // 向きは毎フレーム追いかけず、アンカーの向き（ヨーだけ）でピタッと固定する。
-        // 落ち着く前はまだ光しか見えないので最新の向きをそのまま使い、落ち着いた時点で固定する
-        let rotation = item.lockedRotation ?? Self.uprightRotation(of: liveAnchor.transform)
+        // 向きは地面に対してまっすぐ（左右の向きだけ）。カードが現れるまでは見ている人の方を向け、
+        // 現れた瞬間の向きで固定する（以後は追いかけない＝回り続けない）
+        let rotation = item.lockedRotation ?? Self.yawFacing(from: displayPos, toward: cameraPosition)
         item.holder.setOrientation(rotation, relativeTo: nil)
 
         if !item.isSettled {
@@ -3009,7 +3026,6 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
               // 暗い間は位置が信用できないので、明るくなるまでカードを出さない
               if now.timeIntervalSince(since) >= Self.anchorSettleDuration, !isEnvironmentTooDark {
                 item.isSettled = true
-                item.lockedRotation = Self.uprightRotation(of: liveAnchor.transform)
               }
             } else {
               item.stableSince = now
@@ -3055,6 +3071,8 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
       if canShow && !item.hasMaterialized {
         if isInView(item.card.position(relativeTo: nil), frame: frame) {
           item.hasMaterialized = true
+          // 現れた瞬間の向き（見ている人の方）で固定する
+          item.lockedRotation = item.holder.orientation(relativeTo: nil)
           playDiscoveryEffect(holder: item.holder)
         } else {
           canShow = false
@@ -3833,6 +3851,285 @@ final class LocaGeocoder: NSObject {
       }
       let parts = [placemark.locality, placemark.subLocality].compactMap { $0 }
       resolve(parts.isEmpty ? nil : parts.joined())
+    }
+  }
+}
+
+// MARK: - アイコンの動物の色変え
+
+// AVATAR_RECOLOR_CORE_BEGIN（UIKit を使わない部分。scripts/avatar-animals/recolor-test.sh で Mac でも試せる）
+/**
+ * アバターの動物の絵の「オレンジ・黄色」の部分だけを、選んだ色に変える。
+ * - どこを変えるかは、キャラクターごとのマスク画像（Images.xcassets の AnimalCatMask など。
+ *   scripts/avatar-animals/build-masks.swift で元の絵から作る）で決める。白＝変える、黒＝変えない、間＝境目でなめらかに混ぜる
+ * - 色の変え方は、画素の色だけで決まる変換（Core Image の 3D LUT、CIColorCubeWithColorSpace）。
+ *   絵のいちばん多いオレンジ（基準）からのずれを、選んだ色でも同じだけ保つ → 質感が残る
+ *   （基準より淡い＝リングなどは、選んだ色を同じ割合だけ白に近づける。基準より暗い＝陰は、同じ割合だけ暗くする）
+ * - 変えた絵と元の絵を、マスクで重ねる（CIBlendWithMask）。画素の位置は一切動かさないので、形・輪郭・模様はそのまま
+ */
+enum AvatarRecolorCore {
+  /// 元の絵のオレンジ（src/config/avatarColors.ts の ORIGINAL_ACCENT_HEX と同じ）。この色を選んだときは元の絵をそのまま使う
+  static let originalAccentHex = "#F9B837"
+  static let cubeSize = 32
+
+  struct HSV { var h: Double; var s: Double; var v: Double }  // h は 0〜1
+
+  static func parseHex(_ hex: String) -> (Double, Double, Double)? {
+    var text = hex.trimmingCharacters(in: .whitespaces)
+    if text.hasPrefix("#") { text.removeFirst() }
+    guard text.count == 6, let value = UInt32(text, radix: 16) else { return nil }
+    return (Double((value >> 16) & 0xFF) / 255, Double((value >> 8) & 0xFF) / 255, Double(value & 0xFF) / 255)
+  }
+
+  static func isOriginal(_ hex: String) -> Bool {
+    hex.trimmingCharacters(in: .whitespaces).lowercased() == originalAccentHex.lowercased()
+  }
+
+  static func hsv(_ r: Double, _ g: Double, _ b: Double) -> HSV {
+    let maxC = max(r, g, b), minC = min(r, g, b), d = maxC - minC
+    var h = 0.0
+    if d > 0 {
+      if maxC == r { h = (g - b) / d } else if maxC == g { h = (b - r) / d + 2 } else { h = (r - g) / d + 4 }
+      h /= 6
+      if h < 0 { h += 1 }
+    }
+    return HSV(h: h, s: maxC > 0 ? d / maxC : 0, v: maxC)
+  }
+
+  static func rgb(_ c: HSV) -> (Double, Double, Double) {
+    let h = (c.h - floor(c.h)) * 6, i = Int(h) % 6, f = h - floor(h)
+    let p = c.v * (1 - c.s), q = c.v * (1 - c.s * f), t = c.v * (1 - c.s * (1 - f))
+    switch i {
+    case 0: return (c.v, t, p)
+    case 1: return (q, c.v, p)
+    case 2: return (p, c.v, t)
+    case 3: return (p, q, c.v)
+    case 4: return (t, p, c.v)
+    default: return (c.v, p, q)
+    }
+  }
+
+  private static func pixels(_ image: CGImage, width w: Int, height h: Int, gray: Bool) -> [UInt8]? {
+    var data = [UInt8](repeating: 0, count: w * h * (gray ? 1 : 4))
+    let ok: Bool = data.withUnsafeMutableBytes { buffer in
+      guard let ctx = CGContext(data: buffer.baseAddress, width: w, height: h, bitsPerComponent: 8,
+                                bytesPerRow: w * (gray ? 1 : 4),
+                                space: gray ? CGColorSpaceCreateDeviceGray() : CGColorSpace(name: CGColorSpace.sRGB)!,
+                                bitmapInfo: gray ? CGImageAlphaInfo.none.rawValue : CGImageAlphaInfo.noneSkipLast.rawValue)
+      else { return false }
+      ctx.interpolationQuality = .medium
+      ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+      return true
+    }
+    return ok ? data : nil
+  }
+
+  /// 絵のいちばん多いオレンジ：マスクの中の、濃いオレンジの画素の平均。無ければ元のオレンジ
+  static func referenceAccent(_ image: CGImage, mask: CGImage) -> HSV {
+    let fallback: HSV = { let c = parseHex(originalAccentHex)!; return hsv(c.0, c.1, c.2) }()
+    let w = 128, h = max(1, Int(Double(image.height) * 128 / Double(max(image.width, 1))))
+    guard let color = pixels(image, width: w, height: h, gray: false),
+          let weight = pixels(mask, width: w, height: h, gray: true) else { return fallback }
+    var total = 0.0, sumS = 0.0, sumV = 0.0, sumX = 0.0, sumY = 0.0
+    for i in 0..<(w * h) where weight[i] > 240 {
+      let c = hsv(Double(color[i * 4]) / 255, Double(color[i * 4 + 1]) / 255, Double(color[i * 4 + 2]) / 255)
+      guard c.s > 0.5, c.v > 0.5 else { continue }
+      total += 1
+      sumS += c.s
+      sumV += c.v
+      sumX += cos(c.h * 2 * .pi)
+      sumY += sin(c.h * 2 * .pi)
+    }
+    guard total > 4 else { return fallback }
+    var hue = atan2(sumY, sumX) / (2 * .pi)
+    if hue < 0 { hue += 1 }
+    return HSV(h: hue, s: sumS / total, v: sumV / total)
+  }
+
+  /// 元の色 → 変えた後の色の表（RGBA の float、r が一番速く回る）。マスクの中だけに使うので、全部の色を変換する
+  static func cubeData(reference ref: HSV, target: (Double, Double, Double)) -> Data {
+    let n = cubeSize
+    let goal = hsv(target.0, target.1, target.2)
+    var values = [Float](repeating: 0, count: n * n * n * 4)
+    for b in 0..<n {
+      for g in 0..<n {
+        for r in 0..<n {
+          let c = hsv(Double(r) / Double(n - 1), Double(g) / Double(n - 1), Double(b) / Double(n - 1))
+          // 基準のオレンジからの色相のずれ（-0.5〜0.5）は半分だけ残す（黄色とオレンジの描き分けが、選んだ色の濃淡として残る）
+          var dh = c.h - ref.h
+          dh -= dh.rounded()
+          let hue = rgb(HSV(h: goal.h + dh * 0.5, s: goal.s, v: goal.v))
+          // 淡さ：基準より彩度の低い画素（淡い黄色のリング・クリームとの境目）は、選んだ色を同じ割合だけ白に近づける
+          let tint = min(c.s / max(ref.s, 0.01), 1)
+          // 陰：基準より暗い画素（陰・黒い輪郭との境目）は、同じ割合だけ暗くする
+          let shade = c.v / max(ref.v, 0.01)
+          let out = (min((1 - tint + hue.0 * tint) * shade, 1), min((1 - tint + hue.1 * tint) * shade, 1),
+                     min((1 - tint + hue.2 * tint) * shade, 1))
+          let i = ((b * n + g) * n + r) * 4
+          values[i] = Float(out.0)
+          values[i + 1] = Float(out.1)
+          values[i + 2] = Float(out.2)
+          values[i + 3] = 1
+        }
+      }
+    }
+    return values.withUnsafeBufferPointer { Data(buffer: $0) }
+  }
+
+  private static let context = CIContext(options: [.cacheIntermediates: false])
+
+  /// 絵のマスクの部分（オレンジ・黄色）を hex の色に変えた絵（hex が元のオレンジ・読めない値なら元の絵のまま）
+  static func recolor(_ image: CGImage, mask: CGImage, hex: String) -> CGImage {
+    guard !isOriginal(hex), let target = parseHex(hex),
+          let cube = CIFilter(name: "CIColorCubeWithColorSpace"),
+          let blend = CIFilter(name: "CIBlendWithMask") else { return image }
+    let input = CIImage(cgImage: image)
+    // マスクは色の値そのもの（0〜255）を使う。色空間の変換をさせない（させると境目の混ぜ方がずれる）
+    var maskImage = CIImage(cgImage: mask, options: [.colorSpace: NSNull()])
+    if maskImage.extent.size != input.extent.size {
+      maskImage = maskImage.transformed(by: CGAffineTransform(scaleX: input.extent.width / maskImage.extent.width,
+                                                              y: input.extent.height / maskImage.extent.height))
+    }
+    cube.setValue(cubeSize, forKey: "inputCubeDimension")
+    cube.setValue(cubeData(reference: referenceAccent(image, mask: mask), target: target), forKey: "inputCubeData")
+    cube.setValue(CGColorSpace(name: CGColorSpace.sRGB)!, forKey: "inputColorSpace")
+    cube.setValue(input, forKey: kCIInputImageKey)
+    blend.setValue(cube.outputImage, forKey: kCIInputImageKey)
+    blend.setValue(input, forKey: kCIInputBackgroundImageKey)
+    blend.setValue(maskImage, forKey: kCIInputMaskImageKey)
+    guard let output = blend.outputImage,
+          let result = context.createCGImage(output.cropped(to: input.extent), from: input.extent, format: .RGBA8,
+                                             colorSpace: CGColorSpace(name: CGColorSpace.sRGB))
+    else { return image }
+    return result
+  }
+}
+// AVATAR_RECOLOR_CORE_END
+
+/// 動物の絵（Images.xcassets の AnimalCat など）を色を変えて出す。同じ組み合わせは覚えておく
+enum AvatarRecolor {
+  private static let memory = NSCache<NSString, UIImage>()
+  private static let lock = NSLock()
+  private static var didResetDiskCache = false
+
+  static func assetName(for animal: String) -> String {
+    "Animal" + animal.prefix(1).uppercased() + animal.dropFirst()
+  }
+
+  /// AR のカードなどで使う絵
+  static func image(animal: String, hex: String) -> UIImage? {
+    let key = "\(animal):\(hex.lowercased())" as NSString
+    if let cached = memory.object(forKey: key) { return cached }
+    guard let original = UIImage(named: assetName(for: animal)), let cg = original.cgImage else { return nil }
+    // マスクが無いキャラクターは、色を変えずに元の絵のまま
+    guard !AvatarRecolorCore.isOriginal(hex), let mask = UIImage(named: assetName(for: animal) + "Mask")?.cgImage else {
+      memory.setObject(original, forKey: key)
+      return original
+    }
+    let result = UIImage(cgImage: AvatarRecolorCore.recolor(cg, mask: mask, hex: hex), scale: original.scale,
+                         orientation: original.imageOrientation)
+    memory.setObject(result, forKey: key)
+    return result
+  }
+
+  /// RN の画面で使う、色を変えた絵の PNG ファイル（アプリのキャッシュに置く）
+  static func fileURL(animal: String, hex: String) -> URL? {
+    let fm = FileManager.default
+    guard let caches = fm.urls(for: .cachesDirectory, in: .userDomainMask).first else { return nil }
+    let dir = caches.appendingPathComponent("avatar-recolor", isDirectory: true)
+    lock.lock()
+    // 絵を差し替えたときに古い色の絵が残らないよう、起動ごとに作り直す（1 枚 数 ms なので）
+    if !didResetDiskCache {
+      try? fm.removeItem(at: dir)
+      didResetDiskCache = true
+    }
+    lock.unlock()
+    try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+    let name = "\(animal)-\(hex.lowercased().replacingOccurrences(of: "#", with: "")).png"
+    let url = dir.appendingPathComponent(name)
+    if fm.fileExists(atPath: url.path) { return url }
+    guard let data = image(animal: animal, hex: hex)?.pngData() else { return nil }
+    do {
+      try data.write(to: url, options: .atomic)
+      return url
+    } catch {
+      return nil
+    }
+  }
+}
+
+@objc(LocaAvatar)
+final class LocaAvatar: NSObject {
+  private let queue = DispatchQueue(label: "loca.avatar.recolor", qos: .userInitiated)
+
+  @objc static func requiresMainQueueSetup() -> Bool {
+    return false
+  }
+
+  /// 動物 animal（cat など）のオレンジ・黄色を hex（#RRGGBB）に変えた絵の file:// URL
+  @objc(render:hex:resolver:rejecter:)
+  func render(
+    _ animal: String,
+    hex: String,
+    resolver resolve: @escaping RCTPromiseResolveBlock,
+    rejecter reject: @escaping RCTPromiseRejectBlock
+  ) {
+    queue.async {
+      guard AvatarRecolorCore.parseHex(hex) != nil, let url = AvatarRecolor.fileURL(animal: animal, hex: hex) else {
+        reject("avatar_render_failed", "アイコンの絵を作れませんでした", nil)
+        return
+      }
+      resolve(url.absoluteString)
+    }
+  }
+}
+
+/**
+ * アバターのアタッチメント（リボン・帽子・メガネ）を、キャラクターの絵の上に重ねて描く。
+ * 装着位置の表は Images.xcassets の AvatarAttachmentLayout（src/config/avatarAttachmentLayout.json と同じもの）、
+ * 絵は Attachment<名前>（Ribbon01 など）。計算は RN の attachmentFrame と同じ：
+ * 絵がある範囲の中心を表の (x, y) に置き、範囲の幅を表の幅にして、その中心で回す（単位はキャラクターの絵 512px）
+ */
+enum AvatarAttachments {
+  private struct Layout: Decodable {
+    struct Box: Decodable { let x: Double; let y: Double; let width: Double; let height: Double }
+    struct Item: Decodable { let box: Box; let imageSize: Double }
+    struct Placement: Decodable {
+      let x: Double; let y: Double; let width: Double; let height: Double; let rotation: Double; let zIndex: Double
+    }
+    let canvasSize: Double
+    let items: [String: Item]
+    let layout: [String: [String: Placement]]
+  }
+
+  private static let layout: Layout? = {
+    guard let data = NSDataAsset(name: "AvatarAttachmentLayout")?.data else { return nil }
+    return try? JSONDecoder().decode(Layout.self, from: data)
+  }()
+
+  private static func assetName(for key: String) -> String {
+    // ribbon_01 → AttachmentRibbon01
+    let parts = key.split(separator: "_")
+    guard parts.count == 2 else { return "" }
+    return "Attachment" + parts[0].prefix(1).uppercased() + parts[0].dropFirst() + parts[1]
+  }
+
+  /// rect：キャラクターの絵を描いた範囲（左上原点の UIKit の座標）
+  static func draw(_ keys: [String], animal: String, in rect: CGRect, context: CGContext) {
+    guard !keys.isEmpty, let layout, let placements = layout.layout[animal] else { return }
+    let unit = rect.width / layout.canvasSize
+    let sorted = keys.compactMap { key in placements[key].map { (key, $0) } }.sorted { $0.1.zIndex < $1.1.zIndex }
+    for (key, place) in sorted {
+      guard let meta = layout.items[key], let image = UIImage(named: assetName(for: key)) else { continue }
+      let scale = place.width / meta.box.width
+      let boxCx = meta.box.x + meta.box.width / 2
+      let boxCy = meta.box.y + meta.box.height / 2
+      context.saveGState()
+      context.translateBy(x: rect.minX + place.x * unit, y: rect.minY + place.y * unit)
+      context.rotate(by: place.rotation * .pi / 180)
+      context.scaleBy(x: scale * unit, y: scale * unit)
+      image.draw(in: CGRect(x: -boxCx, y: -boxCy, width: meta.imageSize, height: meta.imageSize))
+      context.restoreGState()
     }
   }
 }

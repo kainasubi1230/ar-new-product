@@ -47,3 +47,7 @@ RCT_EXTERN_METHOD(getHistory:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromis
 @interface RCT_EXTERN_MODULE(LocaGeocoder, NSObject)
 RCT_EXTERN_METHOD(reverseGeocode:(double)latitude longitude:(double)longitude resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject)
 @end
+
+@interface RCT_EXTERN_MODULE(LocaAvatar, NSObject)
+RCT_EXTERN_METHOD(render:(NSString *)animal hex:(NSString *)hex resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject)
+@end
