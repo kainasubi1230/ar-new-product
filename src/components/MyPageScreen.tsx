@@ -19,6 +19,7 @@ import { styles } from './mypage/styles';
 import { AuthForm } from './mypage/AuthForm';
 import { AvatarPickerModal } from './mypage/AvatarPickerModal';
 import { BlockedUsersModal } from './mypage/BlockedUsersModal';
+import { AvatarStudioModal, AvatarSvg, useAvatarConfig } from '../features/avatar';
 import { InterestSettingsTab } from './mypage/InterestSettingsTab';
 import { deleteMyPost, fillPostPlaceName, updateMyPostsAuthor } from '../services/postService';
 import { usePreferences } from '../services/preferencesStore';
@@ -109,6 +110,9 @@ export function MyPageScreen({
   const avatarAnimal = resolveAvatarAnimal(savedAvatarAnimal, user?.id);
 
   const [isAvatarModalVisible, setIsAvatarModalVisible] = useState(false);
+  // 全身のアバター（キャラクターと 5 色）を作る画面。アイコン（動物の顔と丸の色）とは別に保存する
+  const [isAvatarStudioVisible, setIsAvatarStudioVisible] = useState(false);
+  const { config: avatarConfig } = useAvatarConfig();
   const [isBlockedListVisible, setIsBlockedListVisible] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
 
@@ -390,6 +394,19 @@ export function MyPageScreen({
           <Text style={styles.userName}>{displayName}</Text>
           <Text style={styles.userBio}>{user.email}</Text>
 
+          <TouchableOpacity
+            style={styles.avatarStudioBtn}
+            onPress={() => setIsAvatarStudioVisible(true)}
+            activeOpacity={0.8}
+          >
+            <AvatarSvg
+              character={avatarConfig.character}
+              colors={avatarConfig.colorsByCharacter[avatarConfig.character]}
+              width={28}
+            />
+            <Text style={styles.avatarStudioBtnText}>アバターをつくる</Text>
+          </TouchableOpacity>
+
           {/* Footprint Count Summary */}
           <View style={styles.statsRow}>
             <TouchableOpacity
@@ -565,6 +582,7 @@ export function MyPageScreen({
           await onUnblock?.(userId);
         }}
       />
+      <AvatarStudioModal visible={isAvatarStudioVisible} onClose={() => setIsAvatarStudioVisible(false)} />
       <AvatarPickerModal
         visible={isAvatarModalVisible}
         onClose={() => setIsAvatarModalVisible(false)}

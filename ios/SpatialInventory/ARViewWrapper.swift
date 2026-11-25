@@ -283,6 +283,23 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
   // WorldMapのアンカーが現実世界の景色と照合されたか（未照合のまま今いる場所に出すのを防止）
   private var hasRelocalizedToWorldMap = false
   private var didObserveRelocalizingState = false
+  // 照合完了の候補になった時刻。暗い・トラッキングが不安定な間は確定させず、
+  // 明るさが足りて normal が relocalizationConfirmDuration 続いたら確定する（暗所での誤照合で床下に出るのを防ぐ）
+  private var relocalizationCandidateSince: Date?
+  private static let relocalizationConfirmDuration: TimeInterval = 0.6
+
+  // MARK: 明るさの見張り
+  // ARKit の環境光推定（ルーメン。1000 がふつうの室内）。暗いと特徴点が減って照合がずれやすい
+  private var isEnvironmentTooDark = false
+  private var latestAmbientIntensity: CGFloat = -1
+  private var latestFeaturePointCount = -1
+  private static let darkEnterIntensity: CGFloat = 250
+  private static let darkExitIntensity: CGFloat = 400
+  private static let minFeaturePointsForConfirm = 60
+  private var isShowingLowLightGuide = false
+
+  // 端末の回転速度（ジャイロ、rad/s）。座標の飛びと「端末を実際に振った」を見分ける
+  private var latestGyroRate: Double = 0
 
   private struct MapGrowth {
     let mapPostId: String
@@ -349,7 +366,18 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
     var hasMaterialized = false
     // 現れる途中の大きさ・位置の変化を終えたか（終えたら毎フレーム書き換えない＝タップのふくらみを邪魔しない）
     var isTransformAtRest = false
+    // 落ち着いた時点の向きで固定する（以後は毎フレーム向きを追いかけない＝回り続けない）
+    var lockedRotation: simd_quatf?
+    // 床より下に出てしまうときに持ち上げる量（m）。上にだけ補正する
+    var heightOffset: Float = 0
+    var lastFloorCheckAt = Date.distantPast
   }
+  // カードの高さの半分（m）。床に置いたカードは床 + 0.15m に出す
+  private static let cardHalfHeight: Float = 0.12
+  private static let floorClearance: Float = 0.15
+  // 地面が見つからないとき、カメラからこれより下は床下とみなす（スマホは床から 1〜1.6m くらいで構える）
+  private static let maxDropBelowCamera: Float = 1.9
+  private static let fallbackDropBelowCamera: Float = 1.2
   // アンカーの位置がこの距離（m）以内の揺れに収まっていれば「落ち着いた」とみなす
   private static let anchorSettleTolerance: Float = 0.015
   // その状態がこの時間続いたらカードを出す
@@ -635,6 +663,8 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
   private func setupPreviewSubscription() {
     updateCancellable = arView.scene.subscribe(to: SceneEvents.Update.self) { [weak self] _ in
       self?.compensateWorldJumpIfNeeded()
+      self?.updateLightCondition()
+      self?.confirmRelocalizationIfReady()
       self?.updatePreview()
       self?.checkWorldMappingProgress()
       self?.checkMapGrowth()
@@ -1903,7 +1933,7 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
           let hadNone = self.relocalization?.loadedSnapshots.isEmpty ?? true
           self.relocalization?.snapshotSlots[index].image = image
           // もう照合が始まっていて、まだ写真を出していなければ、写真付きの案内に差し替える
-          if hadNone, self.isRunningWithWorldMap, self.relocalization?.didFindAnchor == false {
+          if hadNone, self.isRunningWithWorldMap, self.relocalization?.didFindAnchor == false, !self.isShowingLowLightGuide {
             self.relocalization?.snapshotIndex = 0
             self.relocalization?.snapshotShownAt = Date()
             self.showGuide(self.relocalizationGuide(postId: postId))
@@ -1955,6 +1985,7 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
     isRunningWithWorldMap = true
     hasRelocalizedToWorldMap = false
     didObserveRelocalizingState = false
+    relocalizationCandidateSince = nil
 
     debugRelocalizationStartedAt = Date()
     debugLoadedMapPostId = postId
@@ -1972,6 +2003,8 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
       self.isRunningWithWorldMap = false
       self.hasRelocalizedToWorldMap = false
       self.didObserveRelocalizingState = false
+      self.relocalizationCandidateSince = nil
+      self.setLowLightGuide(false)
       self.mapGrowth = nil
       self.preciseCardPostIds.removeAll()
       self.northOffset = nil
@@ -1989,12 +2022,14 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
       isRunningWithWorldMap = false
       hasRelocalizedToWorldMap = false
       didObserveRelocalizingState = false
+      relocalizationCandidateSince = nil
       mapGrowth = nil
       preciseCardPostIds.removeAll()
       northOffset = nil
       pendingRelocalizedAnchors.removeAll()
       arView.session.run(makeTrackingConfiguration(), options: [.resetTracking, .removeExistingAnchors])
     }
+    setLowLightGuide(false)
     emitRelocalizationStatus("cancelled", postId: target.postId)
   }
 
@@ -2028,6 +2063,25 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
     guard isRunningWithWorldMap, relocalization != nil, !hasRelocalizedToWorldMap else { return }
     guard anchors.contains(where: { $0.name?.hasPrefix("post:") == true }),
           Self.isNormal(session.currentFrame?.camera.trackingState) else { return }
+    if relocalizationCandidateSince == nil { relocalizationCandidateSince = Date() }
+  }
+
+  // 照合完了の候補を、明るさとトラッキングが安定してから確定する
+  private func confirmRelocalizationIfReady() {
+    guard isRunningWithWorldMap, !hasRelocalizedToWorldMap, let since = relocalizationCandidateSince else { return }
+    guard Self.isNormal(arView.session.currentFrame?.camera.trackingState) else {
+      relocalizationCandidateSince = nil
+      return
+    }
+    // 暗い・特徴点が少ない間は、ARKit が normal と言っても確定しない（誤照合で床下・空中に出るため）
+    // 特徴点の少なさは、薄暗いときだけ見る（明るい無地の壁の前で永遠に確定しないのを避ける）
+    let isDim = latestAmbientIntensity >= 0 && latestAmbientIntensity < Self.darkExitIntensity * 1.5
+    let tooFewFeatures = latestFeaturePointCount >= 0 && latestFeaturePointCount < Self.minFeaturePointsForConfirm
+    guard !isEnvironmentTooDark, !(isDim && tooFewFeatures) else {
+      relocalizationCandidateSince = Date()
+      return
+    }
+    guard Date().timeIntervalSince(since) >= Self.relocalizationConfirmDuration else { return }
     markRelocalized()
   }
 
@@ -2122,15 +2176,18 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
       // .relocalizing を経て .normal に戻ったら照合完了。
       // 保留中のアンカーが無くてもフラグは立てる（ARKit が normal の後でアンカーを渡してくる場合に、didAdd ですぐ出せるように）
       if case .normal = camera.trackingState, didObserveRelocalizingState, !hasRelocalizedToWorldMap {
-        markRelocalized()
+        if relocalizationCandidateSince == nil { relocalizationCandidateSince = Date() }
+      } else if !Self.isNormal(camera.trackingState) {
+        relocalizationCandidateSince = nil
       }
     }
     guard isRunningWithWorldMap, case .normal = camera.trackingState,
           let target = relocalization, !target.didReportRelocalized else { return }
     relocalization?.didReportRelocalized = true
     DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+      // 暗くて照合をまだ確定していない間は「アンカーが無い」とは言わない（暗い案内を出している）
       guard let self, let current = self.relocalization, current.postId == target.postId,
-            !current.didFindAnchor else { return }
+            !current.didFindAnchor, self.hasRelocalizedToWorldMap else { return }
       let anchorNames = self.arView.session.currentFrame?.anchors.compactMap(\.name) ?? []
       self.emitRelocalizationStatus("relocalizedWithoutCard", postId: target.postId, extra: [
         "message": "位置合わせはできましたが、カードのアンカーが見つかりません（\(anchorNames.joined(separator: ", "))）",
@@ -2244,6 +2301,8 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
     motionManager.deviceMotionUpdateInterval = 1.0 / 30
     motionManager.startDeviceMotionUpdates(using: reference, to: .main) { [weak self] motion, _ in
       guard let self, let motion else { return }
+      let r = motion.rotationRate
+      self.latestGyroRate = (r.x * r.x + r.y * r.y + r.z * r.z).squareRoot()
       self.updateNorthOffset(with: motion)
     }
 
@@ -2346,7 +2405,13 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
 
     let moved = simd_distance(Self.translation(of: current), Self.translation(of: previous))
     let turned = Self.angleBetween(simd_quatf(current), simd_quatf(previous))
-    guard moved > Self.worldJumpTranslation || turned > Self.worldJumpRotation else { return }
+    // 端末を実際に振った分（ジャイロ × 経過時間）は座標の飛びではない。
+    // これを除かないと、フレームが落ちたときに素早く見回すだけで「飛び」と誤判定され、
+    // 空間のもの全部が端末の回転と一緒に回される（タグが回り込み、カードが横回転し続ける原因）
+    let gap = Float(frame.timestamp - lastCameraTimestamp)
+    let deviceTurn = Float(latestGyroRate) * gap * 1.5
+    let isRotationJump = turned > Self.worldJumpRotation + deviceTurn
+    guard moved > Self.worldJumpTranslation || isRotationJump else { return }
 
     // 前の座標 → 今の座標への変換（端末はこの 1 フレームでほぼ動いていない前提）
     let delta = current * previous.inverse
@@ -2381,11 +2446,8 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
       geoTagEntities[postId] = tag
     }
 
-    // 照合で出したカードの入れ物（ワールド座標）
-    for item in revealCards {
-      let moved = delta * item.holder.transformMatrix(relativeTo: nil)
-      item.holder.setTransformMatrix(moved, relativeTo: nil)
-    }
+    // 照合で出したカードは ARAnchor（ARKit が座標の切り替えに合わせて直す）を追いかけているので、ここでは動かさない。
+    // 動かすと、アンカーへ戻ろうとする追従と打ち消し合って、カードが横に回り続ける
   }
 
   private static func translation(of m: simd_float4x4) -> SIMD3<Float> {
@@ -2402,6 +2464,83 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
     let forward = -SIMD3<Float>(0, 0, 1)
     let rotated = simd_quatf(m).act(forward)
     return atan2(rotated.x, -rotated.z) - atan2(forward.x, -forward.z)
+  }
+
+  /// アンカー位置のカードが床にめり込む・床下に出るとき、持ち上げる量（m）。問題なければ 0
+  private func floorLift(forAnchorAt position: SIMD3<Float>, cameraPosition: SIMD3<Float>, frame: ARFrame) -> Float {
+    let cardBottom = position.y - Self.cardHalfHeight
+    if let floorY = floorHeight(below: position, cameraPosition: cameraPosition, frame: frame) {
+      guard cardBottom < floorY - 0.02 else { return 0 }
+      return floorY + Self.floorClearance - position.y
+    }
+    // 床が見つからない（暗い・平面検出前）：スマホを構える高さから考えてあり得ないほど低ければ、床の上あたりに上げる
+    guard position.y < cameraPosition.y - Self.maxDropBelowCamera else { return 0 }
+    return (cameraPosition.y - Self.fallbackDropBelowCamera) - position.y
+  }
+
+  /// カードの真下あたりの床の高さ。床と分類された平面 → 真下への raycast で見つかる一番低い水平面、の順に探す
+  private func floorHeight(below position: SIMD3<Float>, cameraPosition: SIMD3<Float>, frame: ARFrame) -> Float? {
+    let horizontalPlanes = frame.anchors.compactMap { $0 as? ARPlaneAnchor }.filter { $0.alignment == .horizontal }
+    // カメラより 0.5m 以上下にある平面だけ（机の上を床と取り違えにくくする）
+    let candidates = horizontalPlanes
+      .map { $0.transform.columns.3.y }
+      .filter { $0 < cameraPosition.y - 0.5 }
+    if ARPlaneAnchor.isClassificationSupported {
+      let floors = horizontalPlanes
+        .filter { if case .floor = $0.classification { return true } else { return false } }
+        .map { $0.transform.columns.3.y }
+      if let floor = floors.min() { return floor }
+    }
+    let origin = SIMD3<Float>(position.x, max(position.y, cameraPosition.y) + 0.1, position.z)
+    let query = ARRaycastQuery(
+      origin: origin,
+      direction: SIMD3<Float>(0, -1, 0),
+      allowing: .existingPlaneInfinite,
+      alignment: .horizontal
+    )
+    let hits = arView.session.raycast(query)
+      .map { $0.worldTransform.columns.3.y }
+      .filter { $0 < cameraPosition.y - 0.5 }
+    if let lowest = hits.min() { return lowest }
+    return candidates.min()
+  }
+
+  /// 環境光と特徴点の数から、暗すぎて照合が信用できないかを判定し、案内を出す（行ったり来たりしないよう幅を持たせる）
+  private func updateLightCondition() {
+    guard let frame = arView.session.currentFrame else { return }
+    if let intensity = frame.lightEstimate?.ambientIntensity {
+      latestAmbientIntensity = intensity
+      if isEnvironmentTooDark {
+        if intensity >= Self.darkExitIntensity { isEnvironmentTooDark = false }
+      } else if intensity < Self.darkEnterIntensity {
+        isEnvironmentTooDark = true
+      }
+    }
+    latestFeaturePointCount = frame.rawFeaturePoints?.points.count ?? -1
+
+    // 照合中、または照合したカードがまだ出ていない間だけ案内する
+    let isWaitingForCards = isRunningWithWorldMap && relocalization != nil
+      && (!hasRelocalizedToWorldMap || revealCards.contains { !$0.isSettled })
+    setLowLightGuide(isEnvironmentTooDark && isWaitingForCards)
+  }
+
+  private static let lowLightGuide = ARGuideHUDView.Guide(
+    symbol: "lightbulb",
+    title: "少し暗いようです",
+    subtitle: "暗いと位置がずれて、言葉が床にうもれることがあります。照明をつけるか、明るい所を映してください",
+    sways: false
+  )
+
+  private func setLowLightGuide(_ show: Bool) {
+    guard show != isShowingLowLightGuide else { return }
+    isShowingLowLightGuide = show
+    if show {
+      showGuide(Self.lowLightGuide)
+    } else if let target = relocalization, isRunningWithWorldMap, !target.didFindAnchor {
+      showGuide(relocalizationGuide(postId: target.postId))
+    } else {
+      hideGuide()
+    }
   }
 
   /// カードを地面に対してまっすぐ立てた向き（左右の向きだけ残す）。カードの表は +Z
@@ -2802,7 +2941,7 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
 
   // 照合中、地図に入っている投稿の写真が複数あれば、近い順に 4 秒ごとに切り替えて見せる
   private func cycleRelocalizationSnapshot() {
-    guard isRunningWithWorldMap, debugRelocalizationPhase == "relocalizing",
+    guard isRunningWithWorldMap, debugRelocalizationPhase == "relocalizing", !isShowingLowLightGuide,
           let target = relocalization, !target.didFindAnchor,
           target.loadedSnapshots.count > 1,
           Date().timeIntervalSince(target.snapshotShownAt) >= 4 else { return }
@@ -2846,21 +2985,31 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
           liveAnchor.transform.columns.3.y,
           liveAnchor.transform.columns.3.z
         )
-        let targetRot = Self.uprightRotation(of: liveAnchor.transform)
-        let currentPos = item.holder.position(relativeTo: nil)
-        let currentRot = item.holder.orientation(relativeTo: nil)
-
-        if simd_distance(currentPos, targetPos) > 0.02 {
-          item.holder.setPosition(simd_mix(currentPos, targetPos, SIMD3<Float>(repeating: anchorFollow)), relativeTo: nil)
+        // 床より下に出ていないか（地面は暗いと遅れて見つかるので、しばらく調べ直す）
+        if now.timeIntervalSince(item.lastFloorCheckAt) >= 1 {
+          item.lastFloorCheckAt = now
+          item.heightOffset = max(item.heightOffset, floorLift(forAnchorAt: targetPos, cameraPosition: cameraPosition, frame: frame))
         }
-        item.holder.setOrientation(simd_slerp(currentRot, targetRot, anchorFollow), relativeTo: nil)
+        var displayPos = targetPos
+        displayPos.y += item.heightOffset
+        let currentPos = item.holder.position(relativeTo: nil)
+
+        if simd_distance(currentPos, displayPos) > 0.02 {
+          item.holder.setPosition(simd_mix(currentPos, displayPos, SIMD3<Float>(repeating: anchorFollow)), relativeTo: nil)
+        }
+        // 向きは毎フレーム追いかけず、アンカーの向き（ヨーだけ）でピタッと固定する。
+        // 落ち着く前はまだ光しか見えないので最新の向きをそのまま使い、落ち着いた時点で固定する
+        let rotation = item.lockedRotation ?? Self.uprightRotation(of: liveAnchor.transform)
+        item.holder.setOrientation(rotation, relativeTo: nil)
 
         if !item.isSettled {
           if let prevPos = item.lastAnchorPosition,
              simd_distance(prevPos, targetPos) <= Self.anchorSettleTolerance {
             if let since = item.stableSince {
-              if now.timeIntervalSince(since) >= Self.anchorSettleDuration {
+              // 暗い間は位置が信用できないので、明るくなるまでカードを出さない
+              if now.timeIntervalSince(since) >= Self.anchorSettleDuration, !isEnvironmentTooDark {
                 item.isSettled = true
+                item.lockedRotation = Self.uprightRotation(of: liveAnchor.transform)
               }
             } else {
               item.stableSince = now
@@ -2873,7 +3022,7 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
       } else if !item.isSettled {
         // セッションからアンカーがまだ取得できない場合は経過時間でフォールバック
         if let since = item.stableSince {
-          if now.timeIntervalSince(since) >= 1.5 {
+          if now.timeIntervalSince(since) >= 1.5, !isEnvironmentTooDark {
             item.isSettled = true
           }
         } else {
@@ -3084,6 +3233,9 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
       "northReady": northOffset != nil,
       "lastWorldJump": debugLastWorldJump ?? NSNull(),
       "headingAccuracy": latestHeadingAccuracy,
+      "ambientIntensity": latestAmbientIntensity,
+      "featurePoints": latestFeaturePointCount,
+      "tooDark": isEnvironmentTooDark,
       // 障害物で隠す判定（照合で出したカードごと）
       "lidar": ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh),
       "planes": (frame?.anchors ?? []).compactMap { $0 as? ARPlaneAnchor }.map { $0.alignment == .vertical ? "縦" : "横" },
@@ -3094,6 +3246,7 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
           "occluded": item.isOccluded,
           "reason": item.occlusionReason,
           "reveal": item.reveal,
+          "heightOffset": item.heightOffset,
         ] as [String: Any]
       },
     ])
@@ -3130,7 +3283,12 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
     case "mapExtended", "seen":
       break
     default:
-      hideGuide()
+      // 見つかった後もカードが暗さで出せていない間は、暗い案内を残す
+      if isShowingLowLightGuide && phase == "found" {
+        showGuide(Self.lowLightGuide)
+      } else {
+        hideGuide()
+      }
     }
 
     var payload: [String: Any] = ["phase": phase, "postId": postId]
