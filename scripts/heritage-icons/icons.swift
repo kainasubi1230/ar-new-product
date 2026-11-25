@@ -1,5 +1,5 @@
 // 文化遺産の種類アイコン（黒一色・透明背景、192px）を描く
-// swift scripts/heritage-icons/icons.swift src/assets/icons
+// swift scripts/heritage-icons/icons.swift assets/icons/heritage
 import CoreGraphics
 import Foundation
 import ImageIO
@@ -25,7 +25,7 @@ func render(_ name: String, _ draw: (CGContext) -> Void) {
 }
 
 // 寺社の建物（国宝・重要文化財）
-render("heritage_temple") { c in
+render("temple") { c in
     // 屋根（両端が反り上がる）
     let roof = CGMutablePath()
     roof.move(to: CGPoint(x: 6, y: 86))
@@ -48,7 +48,7 @@ render("heritage_temple") { c in
 }
 
 // 地球（世界遺産）
-render("heritage_world") { c in
+render("world") { c in
     let center = CGPoint(x: 96, y: 96)
     c.fillEllipse(in: CGRect(x: 14, y: 14, width: 164, height: 164))
     c.setBlendMode(.clear)
@@ -81,7 +81,7 @@ func kofun(_ grow: CGFloat) -> CGPath {
     p.closeSubpath()
     return p
 }
-render("heritage_kofun") { c in
+render("kofun") { c in
     // 斜めに回してから、全体（堀の線の太さも込み）が真ん中に収まるように置く
     let rot = CGAffineTransform(rotationAngle: .pi / 4)
     let outer = kofun(20).copy(using: [rot])!
@@ -97,7 +97,7 @@ render("heritage_kofun") { c in
 }
 
 // 山と日（名勝）
-render("heritage_scenic") { c in
+render("scenic") { c in
     c.fillEllipse(in: CGRect(x: 30, y: 26, width: 38, height: 38))
     let back = CGMutablePath()
     back.addLines(between: [CGPoint(x: 4, y: 166), CGPoint(x: 62, y: 82), CGPoint(x: 120, y: 166)])

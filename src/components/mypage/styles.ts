@@ -179,33 +179,6 @@ export const styles = StyleSheet.create({
   drawerTitleAlone: {
     marginBottom: 16,
   },
-  mutedChipWrap: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    justifyContent: 'center',
-    gap: 10,
-  },
-  mutedChip: {
-    backgroundColor: '#FFFFFF',
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: 18,
-    borderWidth: 1,
-    borderColor: '#A7F3D0',
-  },
-  mutedChipSelected: {
-    backgroundColor: '#059669',
-    borderColor: '#059669',
-  },
-  mutedChipText: {
-    color: '#047857',
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  mutedChipTextSelected: {
-    color: '#FFFFFF',
-    fontWeight: '700',
-  },
   mutedSelectedLabel: {
     color: '#065F46',
     fontSize: 11,

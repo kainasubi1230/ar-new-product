@@ -1,4 +1,4 @@
-// アバターの動物の絵（avatar_animals_png/*.png）から、オレンジ・黄色の部分だけを選ぶマスクを作る。
+// アバターの動物の絵（assets/raw/avatar-animals/*.png）から、オレンジ・黄色の部分だけを選ぶマスクを作る。
 //   swift scripts/avatar-animals/build-masks.swift <元の絵のフォルダ> <マスクの出力先> [確認用画像の出力先] [名前...]
 // 出力: <名前>_mask.png（8bit グレー。白＝色を変える、黒＝変えない、間の値＝境目でなめらかに混ぜる）
 // 確認用: <名前>_check.png（左：元の絵、右：マスクの部分を赤紫で重ねたもの）

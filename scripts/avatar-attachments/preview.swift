@@ -1,4 +1,4 @@
-// アタッチメントの装着位置を確かめる画像を作る（src/config/avatarAttachmentLayout.json と、アプリに入れた絵 Images.xcassets/Attachment* をそのまま使う。アプリと同じ計算）
+// アタッチメントの装着位置を確かめる画像を作る（src/config/avatarAttachmentLayout.json と、アプリに入れた絵 Images.xcassets/Attachments/Attachment* をそのまま使う。アプリと同じ計算）
 //   swift scripts/avatar-attachments/preview.swift <出力フォルダ> [キャラクター...]
 // <キャラクター>.png：上の段がリボン 4 つ、中が帽子 4 つ、下がメガネ 4 つ。最後の列に 3 つ全部を付けたもの
 import CoreGraphics
@@ -14,11 +14,11 @@ let items = json["items"] as! [String: [String: Any]]
 let layout = json["layout"] as! [String: [String: [String: Double]]]
 let animals = args.count > 1 ? Array(args[1...]) : layout.keys.sorted()
 
-/// アプリに入れたアイテムの絵（Images.xcassets/Attachment<名前>.imageset/<名前>.png）
+/// アプリに入れたアイテムの絵（Images.xcassets/Attachments/Attachment<名前>.imageset/<名前>.png）
 func itemImagePath(_ item: String) -> String {
   let parts = item.split(separator: "_")
   let asset = "Attachment" + parts[0].prefix(1).uppercased() + parts[0].dropFirst() + parts[1]
-  return "\(root)/ios/SpatialInventory/Images.xcassets/\(asset).imageset/\(item).png"
+  return "\(root)/ios/SpatialInventory/Images.xcassets/Attachments/\(asset).imageset/\(item).png"
 }
 
 func load(_ path: String) -> CGImage {
@@ -49,7 +49,7 @@ func drawItem(_ ctx: CGContext, item: String, place p: [String: Double]) {
 try? FileManager.default.createDirectory(atPath: outDir, withIntermediateDirectories: true)
 let cell = Double(ProcessInfo.processInfo.environment["CELL"] ?? "256") ?? 256
 for animal in animals {
-  let base = load("\(root)/avatar_animals_png/\(animal).png")
+  let base = load("\(root)/assets/raw/avatar-animals/\(animal).png")
   let rows = ["ribbon", "hat", "glasses"]
   let cols = 5
   let ctx = CGContext(data: nil, width: Int(cell) * cols, height: Int(cell) * rows.count, bitsPerComponent: 8, bytesPerRow: 0,

@@ -1,4 +1,4 @@
-// アタッチメントの絵（avatar_attachments_png/*.png）を測って JSON で出す。絵には手を加えない。
+// アタッチメントの絵（assets/raw/avatar-attachments/*.png）を測って JSON で出す。絵には手を加えない。
 //   swift scripts/avatar-attachments/measure-items.swift <フォルダ>
 // - box：絵がある範囲（透明でない部分。512px の絵の中の px）
 // - lens：メガネのレンズの中心と直径（縦に長い列＝レンズの部分から求める）

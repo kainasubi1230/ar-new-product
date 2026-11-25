@@ -7,7 +7,20 @@ import { DEFAULT_MUTED_TAG_PRESETS, normalizeTag } from '../../services/interest
 import { styles } from './styles';
 
 // 関心タグのジャンル
-export type InterestTag = {
+export /** 安心フィルターの見たくないジャンルと、その絵（DEFAULT_MUTED_TAG_PRESETS と同じ並び） */
+const MUTED_GENRE_ICONS: Record<string, ImageSourcePropType> = {
+  '#愚痴': Icons.mutedComplaining,
+  '#憂鬱': Icons.mutedMelancholy,
+  '#騒音': Icons.mutedNoise,
+  '#危険': Icons.mutedDanger,
+  '#タバコ': Icons.mutedTobacco,
+  '#クレーム': Icons.mutedClaim,
+  '#トラブル': Icons.mutedTrouble,
+  '#迷惑': Icons.mutedBothersome,
+};
+const MUTED_GENRES = DEFAULT_MUTED_TAG_PRESETS.map((tag) => ({ tag, icon: MUTED_GENRE_ICONS[tag] ?? Icons.herb }));
+
+type InterestTag = {
   id: string;
   name: string;
   icon: ImageSourcePropType;
@@ -283,20 +296,32 @@ export function InterestSettingsTab(): React.JSX.Element {
           <View style={styles.mutedConfigDivider} />
           <Text style={[styles.mutedConfigTitle, styles.drawerTitleAlone]}>見たくないジャンルの選択</Text>
 
-          {/* プリセット候補 */}
-          <View style={styles.mutedChipWrap}>
-            {DEFAULT_MUTED_TAG_PRESETS.map((tag) => {
-              const isMuted = mutedTags.includes(tag);
+          {/* 見たくないジャンル（関心タグの「見たいジャンルの選択」と同じ、絵の付いたカード） */}
+          <View style={styles.tagGrid}>
+            {MUTED_GENRES.map((genre) => {
+              const isMuted = mutedTags.includes(genre.tag);
               return (
                 <TouchableOpacity
-                  key={tag}
-                  style={[styles.mutedChip, isMuted && styles.mutedChipSelected]}
-                  onPress={() => toggleMutedTag(tag)}
-                  activeOpacity={0.7}
+                  key={genre.tag}
+                  style={[styles.tagToggleCard, isMuted && styles.tagToggleCardActive]}
+                  onPress={() => toggleMutedTag(genre.tag)}
+                  activeOpacity={0.8}
                 >
-                  <Text style={[styles.mutedChipText, isMuted && styles.mutedChipTextSelected]}>
-                    {tag}
-                  </Text>
+                  <View style={styles.tagCardTopRow}>
+                    <View style={[styles.tagIconWrapper, isMuted && styles.tagIconWrapperActive]}>
+                      <Image
+                        source={genre.icon}
+                        style={[styles.tagCardIconImage, isMuted && styles.tagCardIconImageActive]}
+                        resizeMode="contain"
+                      />
+                    </View>
+                    <Text style={[styles.tagCardName, isMuted && styles.tagCardNameActive]} numberOfLines={1}>
+                      {genre.tag}
+                    </Text>
+                    <View style={[styles.tagCheckCircle, isMuted && styles.tagCheckCircleActive]}>
+                      <Text style={styles.tagCheckSymbol}>{isMuted ? '✓' : '+'}</Text>
+                    </View>
+                  </View>
                 </TouchableOpacity>
               );
             })}

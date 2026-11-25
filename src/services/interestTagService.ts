@@ -12,12 +12,13 @@ export interface InterestTagPreset {
 
 export const DEFAULT_MUTED_TAG_PRESETS = [
   '#愚痴',
-  '#混雑',
+  '#憂鬱',
   '#騒音',
   '#危険',
   '#タバコ',
   '#クレーム',
   '#トラブル',
+  '#迷惑',
 ];
 
 export const INTEREST_TAG_PRESETS: InterestTagPreset[] = [
@@ -119,12 +120,13 @@ export const INTEREST_TAG_PRESETS: InterestTagPreset[] = [
 
 export const MUTED_TOPIC_SYNONYMS: Record<string, string[]> = {
   '#愚痴': ['愚痴', 'ぐち', '最悪', 'むかつく', 'イライラ', '嫌い', 'だるい', 'しんどい', 'つらい', 'うざい', '最低', 'ありえない'],
-  '#混雑': ['混雑', '混んで', '満員', '行列', 'ぎゅうぎゅう', '人混み', '待ち時間', '激混み', '入れない', '満席'],
+  '#憂鬱': ['憂鬱', 'ゆううつ', '落ち込', '気が重い', '気分が沈', 'やる気が出ない', '虚しい', 'むなしい', 'どんより', '鬱々'],
   '#騒音': ['騒音', 'うるさい', '爆音', '工事音', '騒がしい', '叫び声', '鳴り響く', 'やかましい'],
   '#危険': ['危険', '危ない', '事故', '不審者', '立ち入り禁止', '怪我', '落下', 'スリ', '痴漢', '注意喚起'],
   '#タバコ': ['タバコ', 'たばこ', '煙草', '喫煙', '副流煙', 'ヤニ', '煙たい'],
   '#クレーム': ['クレーム', '苦情', '態度悪い', '接客最悪', '二度と行かない', '返金'],
   '#トラブル': ['トラブル', '揉め事', '喧嘩', '警察', '通報', '破損', '故障'],
+  '#迷惑': ['迷惑', 'めいわく', 'マナー違反', 'ポイ捨て', '路上駐車', '違法駐車', '割り込み', '横入り', '騒ぎ立て'],
 };
 
 /**
@@ -270,7 +272,7 @@ export function isBlockedBySafetyFilter(
       const rawWord = mt.replace(/^#+/, '').toLowerCase();
       if (rawWord && messageLower.includes(rawWord)) return true;
 
-      // 除外トピックのシノニム（例: #愚痴 → 最悪, むかつく / #混雑 → 満員, 行列）が本文に含まれる場合
+      // 除外トピックのシノニム（例: #愚痴 → 最悪, むかつく / #憂鬱 → 落ち込, 気が重い）が本文に含まれる場合
       const synonyms = MUTED_TOPIC_SYNONYMS[mt];
       if (synonyms) {
         for (const syn of synonyms) {

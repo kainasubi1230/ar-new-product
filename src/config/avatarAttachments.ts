@@ -3,8 +3,8 @@ import layoutData from './avatarAttachmentLayout.json';
 import type { AvatarAnimal } from './avatarColors';
 
 /**
- * アバターのアタッチメント（リボン・帽子・メガネ）。絵は avatar_attachments_png/*.png を使い、
- * ios の Images.xcassets/Attachment* に入れてある（画面にはネイティブが色を変えた絵を出す。JS に絵は同梱しない）。
+ * アバターのアタッチメント（リボン・帽子・メガネ）。絵は assets/raw/avatar-attachments/*.png を使い、
+ * ios の Images.xcassets/Attachments/Attachment* に入れてある（画面にはネイティブが色を変えた絵を出す。JS に絵は同梱しない）。
  * image は、色を変えた絵を作れないとき（iOS 以外）の代わりで、Images.xcassets の名前で読む
  * 装着位置は avatarAttachmentLayout.json（scripts/avatar-attachments/build-assets.sh で作る）：
  * キャラクター × アイテムごとに x・y（絵がある範囲の中心）・幅・高さ（絵がある範囲の大きさ）・回転・重なり順。

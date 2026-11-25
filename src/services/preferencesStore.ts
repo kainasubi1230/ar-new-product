@@ -39,7 +39,7 @@ const DEFAULT_PREFERENCES: Preferences = {
   pocketNoticeEnabled: true,
   onlyInterestTags: false,
   hideNegativePosts: true,
-  mutedTags: ['#愚痴', '#混雑', '#騒音', '#危険'],
+  mutedTags: ['#愚痴', '#憂鬱', '#騒音', '#危険'],
   showHeritagePins: true,
   avatarColor: DEFAULT_AVATAR_COLOR,
 };
@@ -64,6 +64,13 @@ const load = (() => {
           // 前のバージョンのアイコン（絵・写真の userAvatarIcon）は使わなくなったので捨てる（写真は十数万文字ある）
           if ('userAvatarIcon' in current) {
             delete (current as Partial<Preferences> & { userAvatarIcon?: string }).userAvatarIcon;
+            AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(current)).catch(() => {});
+          }
+          // 安心フィルターのジャンル「#混雑」は「#憂鬱」に置き換えた（前の版で選んでいた人も、#憂鬱 にする）
+          if (current.mutedTags.includes('#混雑')) {
+            current.mutedTags = Array.from(
+              new Set(current.mutedTags.map((t) => (t === '#混雑' ? '#憂鬱' : t)))
+            );
             AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(current)).catch(() => {});
           }
           if (!/^#[0-9A-Fa-f]{6}$/.test(current.avatarColor)) {

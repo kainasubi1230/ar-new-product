@@ -79,10 +79,6 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
     }
   }
 
-  @objc var selectedModelUrl: NSString = "" {
-    didSet { currentModelUrl = selectedModelUrl as String }
-  }
-
   // { requestId, postId, anchorId, supabase } 配置済みカードのアンカーを投稿IDで確定し、地図を保存する
   @objc var worldMapSaveRequest: NSDictionary? {
     didSet {
@@ -103,51 +99,7 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
     }
   }
 
-  // [{ postId, cardTitle, cardDescription, cardIcon, cardColor, cardTags, level, prominence, highlighted, uncertaintyM, distanceM, bearingDeg }]
-  // 照合できていない投稿を、その方角に浮かべる。level: "presence"（すぐ近く：文字のない光の気配）/
-  // "message"（本文も出すタグ）/ "summary"（タグと距離だけ）。prominence: 0〜1（近いほど濃く）、highlighted: 少し強調する、
-  // uncertaintyM: 位置の不確かさ（m、気配のぼかしの大きさ）
-  @objc var geoTags: NSArray? {
-    didSet {
-      let tags: [GeoTagData] = (geoTags ?? []).compactMap { item in
-        guard let dict = item as? NSDictionary,
-              let postId = Self.stringValue(dict["postId"]),
-              let distance = (dict["distanceM"] as? NSNumber)?.doubleValue,
-              let bearing = (dict["bearingDeg"] as? NSNumber)?.doubleValue else { return nil }
-        return GeoTagData(
-          postId: postId,
-          title: dict["cardTitle"] as? String ?? "",
-          description: dict["cardDescription"] as? String ?? "",
-          color: dict["cardColor"] as? String ?? "",
-          tags: Self.stringArray(dict["cardTags"]),
-          // どの段階で見せるかは JS が距離から決める（src/config/distanceTiers.ts）
-          level: GeoTagLevel(rawValue: dict["level"] as? String ?? "") ?? .message,
-          prominence: (dict["prominence"] as? NSNumber)?.floatValue ?? 1,
-          highlighted: (dict["highlighted"] as? NSNumber)?.boolValue ?? false,
-          uncertaintyM: (dict["uncertaintyM"] as? NSNumber)?.floatValue ?? 10,
-          distance: distance,
-          bearing: bearing
-        )
-      }
-      DispatchQueue.main.async { [weak self] in
-        guard let self else { return }
-        self.geoTagData = tags
-        let isRelocalizingActive = self.isRunningWithWorldMap
-          && self.relocalization != nil
-          && !(self.relocalization?.didFindAnchor ?? false)
-        // 再取得中（照合中）はモヤが動かないよう、既存の基準位置を保持する
-        if !isRelocalizingActive || self.geoOriginCameraPosition == nil,
-           let transform = self.arView.session.currentFrame?.camera.transform {
-          self.geoOriginCameraPosition = SIMD3<Float>(transform.columns.3.x, transform.columns.3.y, transform.columns.3.z)
-        }
-        self.lastGeoLayoutAt = .distantPast
-      }
-    }
-  }
-
   @objc var onScreenTapped: RCTDirectEventBlock?
-  // { postId } 気配（照合できていない近くの投稿の光）がタップされた
-  @objc var onPresenceTapped: RCTDirectEventBlock?
 
   // ログイン中のアクセストークン。更新されるたびに JS が送ってくるので、Storage には常に最新のものを使う
   @objc var supabaseAccessToken: NSString? {
@@ -175,10 +127,9 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
     }
   }
   @objc var onCardPlaced: RCTDirectEventBlock?
-  @objc var onModelPlaced: RCTDirectEventBlock?
   @objc var onWorldMapStatus: RCTDirectEventBlock?
   @objc var onRelocalizationStatus: RCTDirectEventBlock?
-  // { fullAccuracy } 位置情報が「正確な位置情報」で許可されているか（オフだと方角タグが大きくずれる）
+  // { fullAccuracy } 位置情報が「正確な位置情報」で許可されているか（オフだと置いた言葉の位置が大きくずれる）
   @objc var onLocationAccuracyStatus: RCTDirectEventBlock? {
     didSet {
       // 許可の状態は作成直後に一度だけ届くので、受け口がつながった時点でも今の状態を送る
@@ -188,8 +139,6 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
       }
     }
   }
-  // { needsCalibration, headingAccuracy } コンパスの精度が悪く、8 の字の補正が必要か
-  @objc var onCompassStatus: RCTDirectEventBlock?
 
   // デバッグ表示（原因の切り分け用）。true の間だけ、0.5 秒ごとに AR の状態を onDebugInfo で送る
   @objc var debugEnabled: Bool = false
@@ -215,9 +164,6 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
   private var currentCardColor: String = "#29B6F6"
   private var currentCardIcon: String = "@ken_loca"
   private var currentCardTags: [String] = []
-  private var currentModelUrl: String = ""
-  // 原点に固定した、変換なしのアンカー。照合で出したカードの入れ物をこの子にする（ワールド座標＝この中の座標）
-  private var rootAnchor = AnchorEntity(world: .zero)
   private var previewAnchor = AnchorEntity(world: .zero)
   private var reticleEntity: ModelEntity?
   private var ghostCardEntity: ModelEntity?
@@ -271,8 +217,6 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
   // 投稿 ID が決まったら snapshots/<postId>.jpg に上げる
   private var pendingSnapshots: [String: Data] = [:]
   private var pendingSnapshotPostInfo: [String: (postId: String, storage: SupabaseStorage)] = [:]
-  // 写真を撮る一瞬だけ方角タグを隠す（照合の手がかりにならないので写さない）
-  private var isCapturingSnapshot = false
 
   private var lastSaveRequestId: Double?
   // 投稿IDが決まる前の仮アンカー（anchorId → アンカー）
@@ -315,32 +259,6 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
   }
   private var mapGrowth: MapGrowth?
 
-  // MARK: 方角タグ（セカイカメラ風）
-  private enum GeoTagLevel: String {
-    // すぐ近く（照合できていない）：位置が分からないので、文字のない光の「気配」だけ
-    case presence
-    // 本文も読めるタグ
-    case message
-    // タグと距離だけの小さいタグ
-    case summary
-  }
-  private struct GeoTagData {
-    let postId: String
-    let title: String
-    let description: String
-    let color: String
-    let tags: [String]
-    let level: GeoTagLevel
-    // 0〜1。近いほど 1 で、濃く出す
-    let prominence: Float
-    // 関心タグに合う投稿など、少し強調して出すか
-    let highlighted: Bool
-    // 位置の不確かさ（m）。気配のぼかしの大きさに使う
-    let uncertaintyM: Float
-    let distance: Double
-    let bearing: Double
-    var showsMessage: Bool { level == .message }
-  }
   // 照合で出したカード。カメラとの間に壁や物があれば薄れて、正確な位置にごく薄い光だけが残る
   private struct RevealCard {
     let postId: String
@@ -356,9 +274,17 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
     // 画面に現れたことを JS に知らせたか（拾った言葉の記録は 1 回だけ）
     var hasBeenSeen = false
     var distance: Float = 0
-    // カードを乗せている入れ物。変換なしの rootAnchor の子で、ワールド座標で位置・向きを決める。
-    // ARAnchor の位置へ毎フレーム滑らかに寄せる
+    // 照合で届いた ARAnchor そのものに付けた RealityKit のアンカー。
+    // ARKit が座標を地図の座標に切り替えても、ARAnchor ごと正しい場所に付いていく
+    let base: AnchorEntity
+    // カードを乗せている入れ物（base の子）。位置・向きはワールド座標で決め、
+    // 「ARAnchor の変換の逆 × 決めた変換」を base からの相対の変換として入れる（placeHolder）
     let holder: Entity
+    // 最後に分かった ARAnchor の変換（ワールド座標）
+    var anchorTransform: simd_float4x4
+    // 入れ物のワールド座標での位置・向き（ARAnchor の位置へ毎フレーム滑らかに寄せる）
+    var worldPosition: SIMD3<Float>
+    var worldRotation: simd_quatf
     // 追いかける ARAnchor（照合後も ARKit が位置を細かく直し続ける）
     let anchorIdentifier: UUID
     // アンカーの位置が落ち着いたか。落ち着くまではカードを出さない（出てから跳ねるのを防ぐ）
@@ -398,12 +324,9 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
   private var lastRevealFrameAt: Date?
   private var lastOcclusionCheckAt = Date.distantPast
 
-  // タグを空間に固定するときの基準（GPS の位置が届いたときのカメラ位置）
-  private var geoOriginCameraPosition: SIMD3<Float>?
-
   // MARK: 座標の飛び（照合の成功など）の打ち消し
   // 地図との照合に成功した瞬間、ARKit は AR 座標そのものを記録したときの座標へ切り替える（カメラの位置・向きの値が 1 フレームで飛ぶ）。
-  // 自前でワールド座標に置いているもの（方角タグ・気配の光・照合カードの入れ物・北の向き）は、そのままだと前の座標のまま残り、
+  // 自前でワールド座標に置いているもの（北の向きとその測定値）は、そのままだと前の座標のまま残り、
   // なめらかに寄せる処理のせいで数秒かけて回り込む（「空間が斜めにくるくる回る」）。
   // 1 フレームでの飛びを測り、同じだけ動かして、見た目は止まったままにする
   private var lastCameraTransform: simd_float4x4?
@@ -413,11 +336,7 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
   private static let worldJumpRotation: Float = 12 * .pi / 180
   // デバッグ表示用：最後に打ち消した飛び
   private var debugLastWorldJump: String?
-  // これより遠いタグは、この距離に置く（遠すぎると描画されないおそれがある）。見かけの大きさは本当の距離で決める
-  private static let geoTagMaxRenderDistance: Float = 40
-  // 気配（光）の濃さ。くっきり見せない
-  private static let presenceOpacity: Float = 0.85
-  // 光（気配・隠れたカードの光）の見かけの大きさの上限：カメラからの距離 1m あたりの幅（0.5 ≒ 画角の 1/3 くらい）
+  // 隠れたカードの光の見かけの大きさの上限：カメラからの距離 1m あたりの幅（0.5 ≒ 画角の 1/3 くらい）
   private static let glowMaxApparentSize: Float = 0.5
   // 光にこの距離（m）まで近づくと見えなくなり、glowFadeEnd まで離れると元の濃さに戻る
   private static let glowFadeStart: Float = 0.8
@@ -427,37 +346,6 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
   private static func glowNearFade(_ distance: Float) -> Float {
     return min(max((distance - glowFadeStart) / (glowFadeEnd - glowFadeStart), 0), 1)
   }
-  private let geoTagRoot = AnchorEntity(world: .zero)
-  private var geoTagData: [GeoTagData] = []
-  // postId → (エンティティ, テクスチャの内容キー, 目標位置)
-  // 方角タグ 1 つ分の表示状態。位置・大きさ・濃さは、目標値へ毎フレームなめらかに寄せる（パッと飛ばさない）
-  private struct GeoTagEntity {
-    let entity: ModelEntity
-    var textureKey: String
-    var target: SIMD3<Float>
-    var targetScale: Float
-    var targetOpacity: Float
-    var scale: Float
-    var opacity: Float
-    // 0→1 でふわっと現れる。appearAt までは 0 のまま。消すときは 1→0 にしてから取り除く
-    var appearance: Float = 0
-    var appearAt: Date
-    var isRemoving = false
-    // 気配（光）なら、ゆっくり呼吸するように明るさを揺らす
-    var isPresence = false
-  }
-  private static let geoTagFadeDuration: Float = 0.6
-  // 近い順に、この間隔ずつ遅らせて現れる
-  private static let geoTagStaggerDelay: TimeInterval = 0.07
-  // 目標値へ寄せる速さ（1 秒あたり。大きいほど速い）
-  private static let geoTagFollowRate: Float = 4
-  private var geoTagEntities: [String: GeoTagEntity] = [:]
-  private var lastGeoLayoutAt = Date.distantPast
-  private var lastGeoFrameAt: Date?
-  // 北が分からなくなった（セッションのやり直しなど）後は座標がずれるので、次の配置では飛ばさず置き直す
-  private var needsGeoTagSnap = true
-  // 地図の照合などで正確な位置に出ている投稿。方角タグは出さない
-  private var preciseCardPostIds: Set<String> = []
   private let motionManager = CMMotionManager()
   // AR 座標での「北」の向き（ヨー角の cos, sin を、直近数秒の平均で求めたもの）
   private var northOffset: SIMD2<Float>? {
@@ -477,21 +365,11 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
   // コンパスの精度（headingAccuracy、度）。CoreMotion では取れないので CLLocationManager の方位から読む
   private let locationManager = CLLocationManager()
   private var latestHeadingAccuracy: Double = -1
-  private var poorHeadingSince: Date?
-  private var compassNeedsCalibration = false
-  // この精度（度）より悪いと北の測定値に使わない。悪い状態が続いたら 8 の字の補正を案内する
+  // この精度（度）より悪いと北の測定値に使わない
   private static let headingAccuracyUsable: Double = 25
-  private static let headingAccuracyGood: Double = 15
-  private static let poorHeadingDurationBeforeGuide: TimeInterval = 2
   // CMAttitude.rotationMatrix の向き（基準座標→端末座標か）を、重力の向きから判定してキャッシュする
   private var motionMatrixIsReferenceToDevice: Bool?
-  private static let geoTagMessageSize = SIMD2<Float>(0.64, 0.24)
-  private static let geoTagSummarySize = SIMD2<Float>(0.5, 0.11)
-  private lazy var geoTagMessageMesh = MeshResource.generateBox(
-    size: SIMD3<Float>(Self.geoTagMessageSize.x, Self.geoTagMessageSize.y, 0.001), cornerRadius: 0.02)
-  private lazy var geoTagSummaryMesh = MeshResource.generateBox(
-    size: SIMD3<Float>(Self.geoTagSummarySize.x, Self.geoTagSummarySize.y, 0.001), cornerRadius: 0.02)
-  // 気配は 1m 四方の板に、ふちが透明になる光の絵を貼り、不確かさに合わせて拡大する
+  // 光（置いたときの粒・隠れたカードの光）は 1m 四方の板に、ふちが透明になる光の絵を貼って拡大する
   private lazy var presenceMesh = MeshResource.generatePlane(width: 1, height: 1)
   private lazy var presenceMaterial: UnlitMaterial = {
     var material = UnlitMaterial()
@@ -563,9 +441,7 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
     arView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
     // セッションは自前で設定する（RealityKit に設定し直されると initialWorldMap が外れる）
     arView.automaticallyConfigureSession = false
-    arView.scene.addAnchor(rootAnchor)
     arView.scene.addAnchor(previewAnchor)
-    arView.scene.addAnchor(geoTagRoot)
     startHeadingUpdates()
 
     if ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh) {
@@ -636,6 +512,21 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
     previewAnchor.isEnabled = false
   }
 
+  // AR の座標が切り替わった（照合の成功など）あとは、前の座標で作ったワールドのアンカーが同じ場所に付いていかないことがあるので、
+  // 配置プレビューのアンカーを今の座標で作り直す（照合カードと同じずれを、プレビューで起こさない）
+  private func resetPreviewAnchor() {
+    let fresh = AnchorEntity(world: .zero)
+    for child in Array(previewAnchor.children) {
+      fresh.addChild(child)
+    }
+    arView.scene.removeAnchor(previewAnchor)
+    arView.scene.addAnchor(fresh)
+    fresh.isEnabled = false
+    previewAnchor = fresh
+    lastValidPreviewPosition = nil
+    lastValidPreviewOrientation = nil
+  }
+
   private func handlePreviewActiveChanged() {
     if isPreviewActive {
       lastValidPreviewPosition = nil
@@ -671,7 +562,6 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
       self?.updatePreview()
       self?.checkWorldMappingProgress()
       self?.checkMapGrowth()
-      self?.updateGeoTags()
       self?.emitDebugInfoIfNeeded()
       self?.cycleRelocalizationSnapshot()
       self?.updateCardReveal()
@@ -968,11 +858,6 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
       onCardTapped?(["postId": card.postId, "x": location.x, "y": location.y])
       return
     }
-    // 気配（光）をタップしたら、投稿を始めずに「このあたりにメッセージがあります」の案内を出す
-    if let postId = presencePostId(at: location) {
-      onPresenceTapped?(["postId": postId])
-      return
-    }
     onScreenTapped?(["x": location.x, "y": location.y])
   }
 
@@ -1124,13 +1009,6 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
     }
   }
 
-  private func presencePostId(at location: CGPoint) -> String? {
-    guard geoTagRoot.isEnabled, let hit = arView.entity(at: location) else { return nil }
-    return geoTagEntities.first { _, tag in
-      tag.isPresence && !tag.isRemoving && tag.appearance > 0 && tag.entity === hit
-    }?.key
-  }
-
   private func placeCard(atScreenPoint location: CGPoint) {
     // 1. Raycast with hierarchical precision fallback:
     // a. Existing plane geometry (highest accuracy, within detected plane bounds)
@@ -1236,7 +1114,6 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
       "cardDescription": currentCardDescription,
       "cardColor": currentCardColor,
       "cardIcon": currentCardIcon,
-      "modelUrl": currentCardTitle,
       "anchorId": anchorId,
       "x": position.x,
       "y": position.y,
@@ -1252,7 +1129,6 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
     }
 
     onCardPlaced?(eventData)
-    onModelPlaced?(eventData)
   }
 
   // カメラからカードまでのずれ（東・北・上の m）と、カードの面が向いている方位（北=0°、時計回り）
@@ -1707,7 +1583,6 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
       return
     }
 
-    preciseCardPostIds.insert(postId)
 
     // ARAnchor の名前は変更できないので、同じ位置に投稿IDの名前で作り直してカードを付け替える
     let namedAnchor = ARAnchor(name: Self.postAnchorName(postId), transform: pending.arAnchor.transform)
@@ -1842,14 +1717,12 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
   }
 
   private func captureSnapshot(anchorId: String) {
-    // 置いたカードが描かれ、方角タグが消えたフレームを撮るため、少しだけ待つ
-    isCapturingSnapshot = true
+    // 置いたカードが描かれたフレームを撮るため、少しだけ待つ
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
       guard let self else { return }
       self.arView.snapshot(saveToHDR: false) { [weak self] image in
         DispatchQueue.main.async {
           guard let self else { return }
-          self.isCapturingSnapshot = false
           guard let image, let data = Self.downscaled(image, maxWidth: 720).jpegData(compressionQuality: 0.7) else { return }
           self.pendingSnapshots[anchorId] = data
           self.uploadSnapshotIfReady(anchorId: anchorId)
@@ -2006,9 +1879,8 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
     // セッションをやり直すので、このセッションで置いたカードは片付ける
     placedCardEntities.forEach { arView.scene.removeAnchor($0) }
     placedCardEntities.removeAll()
-    revealCards.forEach { $0.holder.removeFromParent() }
+    revealCards.forEach { arView.scene.removeAnchor($0.base) }
     revealCards.removeAll()
-    preciseCardPostIds.removeAll()
     mapGrowth = nil
     northOffset = nil
     pendingCardAnchors.removeAll()
@@ -2041,7 +1913,6 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
       self.relocalizationCandidateSince = nil
       self.setLowLightGuide(false)
       self.mapGrowth = nil
-      self.preciseCardPostIds.removeAll()
       self.northOffset = nil
       self.pendingRelocalizedAnchors.removeAll()
       self.arView.session.run(self.makeTrackingConfiguration(), options: [.resetTracking, .removeExistingAnchors])
@@ -2059,7 +1930,6 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
       didObserveRelocalizingState = false
       relocalizationCandidateSince = nil
       mapGrowth = nil
-      preciseCardPostIds.removeAll()
       northOffset = nil
       pendingRelocalizedAnchors.removeAll()
       arView.session.run(makeTrackingConfiguration(), options: [.resetTracking, .removeExistingAnchors])
@@ -2123,6 +1993,7 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
   // 照合完了として、保留していたアンカーを最新の位置でカードにする
   private func markRelocalized() {
     hasRelocalizedToWorldMap = true
+    resetPreviewAnchor()
     guard !pendingRelocalizedAnchors.isEmpty else { return }
     let pending = pendingRelocalizedAnchors
     pendingRelocalizedAnchors.removeAll()
@@ -2159,24 +2030,20 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
         startMapGrowth(for: target)
       }
       target.foundPostIds.insert(postId)
-      preciseCardPostIds.insert(postId)
-      // ARAnchor に直接ぶら下げると、照合直後に ARKit が位置を直すたびカードが跳ねる。
-      // ワールド座標の入れ物に乗せ、updateCardReveal で ARAnchor の最新位置へ滑らかに寄せる。
+      // カードは照合で届いた ARAnchor に付ける（AnchorEntity(anchor:)）。ARKit は座標を地図の座標に切り替えるとき
+      // ARAnchor も一緒に直すので、カードも正しい場所に付いていく。
+      // （以前は起動時に作った原点のアンカーの子にしていたが、照合の瞬間の座標の切り替えに付いていかず、
+      //   見つけた判定の場所とは全然違う所に描かれていた）
       // 向きはアンカーの向きを使わず、地面に対してまっすぐ立てて見ている人の方へ向ける（現れた瞬間に固定する）。
-      // アンカーの向きを使うと、置いた人とは別の方向から来たとき横を向いて見え、古い投稿では横倒しになることがある
-      // 入れ物は、変換なしの rootAnchor（原点に固定）の子のふつうの Entity にする。
-      // 以前は AnchorEntity(world: 向き付きの変換) を毎フレーム setOrientation(relativeTo: nil) で動かしていたが、
-      // アンカーの固定の変換とあとから設定した向きが二重にかかり、作った瞬間の向きのぶんだけ余分に回って
-      // （90° や 45° など、そのときのカメラの向きしだいで）斜めに見えていた
+      // アンカーの向きを使うと、置いた人とは別の方向から来たとき横を向いて見え、古い投稿では横倒しになることがある。
+      // 位置・向きはワールド座標で決め、アンカーの変換を打ち消して入れる（setOrientation(relativeTo: nil) は使わない。
+      // アンカーの変換と二重にかかって 90° や 45° 斜めに見えていた）
       let position = Self.translation(of: anchor.transform)
       let cameraPosition = arView.session.currentFrame.map { Self.translation(of: $0.camera.transform) } ?? position
+      let base = AnchorEntity(anchor: anchor)
+      arView.scene.addAnchor(base)
       let holder = Entity()
-      rootAnchor.addChild(holder)
-      holder.setTransformMatrix(Transform(
-        scale: .one,
-        rotation: Self.yawFacing(from: position, toward: cameraPosition),
-        translation: position
-      ).matrix, relativeTo: nil)
+      base.addChild(holder)
       let cardEntity = makeCardEntity(
         title: card.title,
         description: card.description,
@@ -2197,9 +2064,14 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
         postId: postId,
         card: cardEntity,
         glow: glowEntity,
+        base: base,
         holder: holder,
+        anchorTransform: anchor.transform,
+        worldPosition: position,
+        worldRotation: Self.yawFacing(from: position, toward: cameraPosition),
         anchorIdentifier: anchor.identifier
       ))
+      Self.placeHolder(&revealCards[revealCards.count - 1])
       emitRelocalizationStatus("found", postId: postId)
     }
     relocalization = target
@@ -2330,9 +2202,8 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
     }
   }
 
-  // MARK: - 方角タグ（セカイカメラ風）
-  // GPS の距離・方角（JS で計算）と、コンパスで求めた AR 座標の「北」から、タグをその方向に浮かべる。
-  // 位置はざっくり（GPS 数m〜・コンパス 10°前後の誤差）なので、正確な位置に出せた投稿のタグは消す
+  // MARK: - 北の向き
+  // コンパスで AR 座標の「北」を求める。置いた言葉の緯度・経度（カメラからのずれを東・北に直す）に使う
 
   private func startHeadingUpdates() {
     guard motionManager.isDeviceMotionAvailable else { return }
@@ -2365,29 +2236,9 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
   func locationManager(_ manager: CLLocationManager, didUpdateHeading newHeading: CLHeading) {
     // 負の値は「方位が無効」（未補正）
     latestHeadingAccuracy = newHeading.headingAccuracy
-    let isPoor = latestHeadingAccuracy < 0 || latestHeadingAccuracy > Self.headingAccuracyUsable
-    let isGood = latestHeadingAccuracy >= 0 && latestHeadingAccuracy <= Self.headingAccuracyGood
-
-    // 一瞬悪くなっただけでは案内しない。良くなったら（少し余裕を持って）すぐ消す
-    if isPoor {
-      poorHeadingSince = poorHeadingSince ?? Date()
-    } else {
-      poorHeadingSince = nil
-    }
-    let shouldGuide: Bool
-    if let since = poorHeadingSince, Date().timeIntervalSince(since) >= Self.poorHeadingDurationBeforeGuide {
-      shouldGuide = true
-    } else if isGood {
-      shouldGuide = false
-    } else {
-      shouldGuide = compassNeedsCalibration
-    }
-    guard shouldGuide != compassNeedsCalibration else { return }
-    compassNeedsCalibration = shouldGuide
-    onCompassStatus?(["needsCalibration": shouldGuide, "headingAccuracy": latestHeadingAccuracy])
   }
 
-  // iOS 標準の補正画面は出さない（アプリ側で穏やかに案内する）
+  // iOS 標準の補正画面は出さない
   func locationManagerShouldDisplayHeadingCalibration(_ manager: CLLocationManager) -> Bool {
     return false
   }
@@ -2458,6 +2309,7 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
     // 前の座標 → 今の座標への変換（端末はこの 1 フレームでほぼ動いていない前提）
     let delta = current * previous.inverse
     applyWorldCorrection(delta)
+    resetPreviewAnchor()
     debugLastWorldJump = String(format: "%.2fm %.0f° (%.1fs)", moved, turned * 180 / .pi, frame.timestamp)
   }
 
@@ -2476,16 +2328,6 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
       let samples = northSamples
       self.northOffset = rotateNorth(northOffset)
       northSamples = samples.map { ($0.time, rotateNorth($0.value)) }
-    }
-
-    // 方角タグ・気配の光（geoTagRoot は原点にあるので、位置はそのままワールド座標）
-    if let origin = geoOriginCameraPosition {
-      geoOriginCameraPosition = transformPoint(origin)
-    }
-    for (postId, var tag) in geoTagEntities {
-      tag.entity.position = transformPoint(tag.entity.position)
-      tag.target = transformPoint(tag.target)
-      geoTagEntities[postId] = tag
     }
 
     // 照合で出したカードは ARAnchor（ARKit が座標の切り替えに合わせて直す）を追いかけているので、ここでは動かさない。
@@ -2585,85 +2427,18 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
     }
   }
 
+  /// 照合カードの入れ物を、ワールド座標の worldPosition・worldRotation に置く。
+  /// 入れ物は ARAnchor に付いた base の子なので、アンカーの変換の逆をかけた相対の変換を入れる
+  private static func placeHolder(_ item: inout RevealCard) {
+    let desired = Transform(scale: .one, rotation: item.worldRotation, translation: item.worldPosition).matrix
+    item.holder.transform = Transform(matrix: item.anchorTransform.inverse * desired)
+  }
+
   /// position に立てたカードの表（+Z）を target の方へ向けた向き（左右の向きだけ。地面に対してまっすぐ）
   private static func yawFacing(from position: SIMD3<Float>, toward target: SIMD3<Float>) -> simd_quatf {
     let d = target - position
     guard d.x * d.x + d.z * d.z > 0.0001 else { return simd_quatf(angle: 0, axis: SIMD3<Float>(0, 1, 0)) }
     return simd_quatf(angle: atan2(d.x, d.z), axis: SIMD3<Float>(0, 1, 0))
-  }
-
-  private func updateGeoTags() {
-    let now = Date()
-    // フレームの間隔（時間ベースで動かし、フレームレートに左右されないようにする）
-    let dt = Float(min(now.timeIntervalSince(lastGeoFrameAt ?? now), 0.1))
-    lastGeoFrameAt = now
-
-    guard let northOffset, !isPreviewActive, !isCapturingSnapshot,
-          let cameraTransform = arView.session.currentFrame?.camera.transform else {
-      geoTagRoot.isEnabled = false
-      if northOffset == nil {
-        needsGeoTagSnap = true
-      }
-      return
-    }
-    geoTagRoot.isEnabled = true
-    let cameraPosition = SIMD3<Float>(cameraTransform.columns.3.x, cameraTransform.columns.3.y, cameraTransform.columns.3.z)
-
-    if now.timeIntervalSince(lastGeoLayoutAt) > 0.5 {
-      lastGeoLayoutAt = now
-      layoutGeoTags(northYaw: atan2(northOffset.y, northOffset.x), cameraPosition: cameraPosition, now: now)
-    }
-
-    let follow = 1 - exp(-Self.geoTagFollowRate * dt)
-    let fadeStep = dt / Self.geoTagFadeDuration
-    for (postId, var tag) in geoTagEntities {
-      if tag.isRemoving {
-        tag.appearance = max(0, tag.appearance - fadeStep)
-        if tag.appearance <= 0 {
-          tag.entity.removeFromParent()
-          geoTagEntities[postId] = nil
-          continue
-        }
-      } else if now >= tag.appearAt {
-        tag.appearance = min(1, tag.appearance + fadeStep)
-      }
-
-      // 目標の位置・大きさ・濃さへなめらかに寄せる
-      tag.entity.position = simd_mix(tag.entity.position, tag.target, SIMD3<Float>(repeating: follow))
-      tag.scale += (tag.targetScale - tag.scale) * follow
-      tag.opacity += (tag.targetOpacity - tag.opacity) * follow
-
-      // ふわっと：少し小さい状態から、透明度と一緒に元の大きさへ
-      let eased = 1 - pow(1 - tag.appearance, 3)
-      var displayScale = tag.scale * (0.85 + 0.15 * eased)
-      var nearFade: Float = 1
-      if tag.isPresence {
-        // 気配の光は大きいので、近づくと画面いっぱいを覆ってしまう。
-        // 見かけの大きさに上限を付け、近づくほど薄く、すぐそばでは見えなくする
-        let distanceToCamera = simd_distance(tag.entity.position, cameraPosition)
-        displayScale = min(displayScale, distanceToCamera * Self.glowMaxApparentSize)
-        nearFade = Self.glowNearFade(distanceToCamera)
-      }
-      tag.entity.scale = SIMD3<Float>(repeating: displayScale)
-      // 気配は 4 秒周期でゆっくり明るさを揺らす（投稿ごとに揺れのタイミングをずらす）
-      let breathing: Float = tag.isPresence
-        ? 0.85 + 0.15 * Float(sin(now.timeIntervalSince1970 * 2 * .pi / 4 + Double(abs(postId.hashValue % 628)) / 100))
-        : 1
-      Self.setOpacity(tag.opacity * eased * breathing * nearFade, of: tag.entity)
-      // 透明度を変えられない iOS（17 以下）では、近すぎるときは消す
-      let hiddenByNearness: Bool
-      if #available(iOS 18.0, *) {
-        hiddenByNearness = nearFade <= 0.01
-      } else {
-        hiddenByNearness = nearFade < 0.5
-      }
-      tag.entity.isEnabled = tag.appearance > 0 && !hiddenByNearness
-
-      // カメラの方を向かせる（ヨーだけ）
-      let toCamera = cameraPosition - tag.entity.position
-      tag.entity.orientation = simd_quatf(angle: atan2(toCamera.x, toCamera.z), axis: SIMD3<Float>(0, 1, 0))
-      geoTagEntities[postId] = tag
-    }
   }
 
   private static func setOpacity(_ opacity: Float, of entity: Entity) {
@@ -2673,141 +2448,7 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
     // iOS 17 以前は透明度を変えられないので、大きさの変化だけで現れる
   }
 
-  private func layoutGeoTags(northYaw: Float, cameraPosition: SIMD3<Float>, now: Date) {
-    // 近い順に並べる（現れる順番・重なったときに下に来る順番）
-    let visible = geoTagData
-      .filter { !preciseCardPostIds.contains($0.postId) }
-      .sorted { $0.distance < $1.distance }
-    let visibleIds = Set(visible.map(\.postId))
-    for (postId, tag) in geoTagEntities where !visibleIds.contains(postId) && !tag.isRemoving {
-      // 範囲外になった・正確な位置にカードが出た投稿は、ふわっと消す
-      geoTagEntities[postId]?.isRemoving = true
-    }
-
-    let snap = needsGeoTagSnap
-    needsGeoTagSnap = false
-    // 位置の基準は「GPS の位置が届いたときのカメラ位置」。北を求め直した直後は AR の座標が変わっているので、今のカメラで置き直す
-    if snap || geoOriginCameraPosition == nil {
-      geoOriginCameraPosition = cameraPosition
-    }
-    let origin = geoOriginCameraPosition ?? cameraPosition
-
-    var newcomerCount = 0
-    // 重なりの判定は角度で行う（距離がばらばらなので m では比べられない）。bottom / top は仰角（ラジアン）
-    var placed: [(bearing: Double, top: Float, bottom: Float)] = []
-    for (rank, tag) in visible.enumerated() {
-      let distance = Float(tag.distance)
-      // 実際の距離に置く（近づけば本当に近づき、通り過ぎれば後ろに回る）。遠すぎるものだけ geoTagMaxRenderDistance に置く
-      let renderDistance = min(max(distance, 1), Self.geoTagMaxRenderDistance)
-      let yaw = northYaw + Float(tag.bearing * .pi / 180)
-      let direction = SIMD3<Float>(sin(yaw), 0, -cos(yaw))
-
-      let scale: Float
-      let opacity: Float
-      let target: SIMD3<Float>
-      if tag.level == .presence {
-        // 位置がはっきりしないので、GPS の不確かさの分だけ大きくぼかした光にする（文字は出さない）
-        scale = min(max(tag.uncertaintyM * 0.5, 1.0), 4)
-        opacity = Self.presenceOpacity * (0.6 + 0.4 * tag.prominence)
-        target = origin + direction * renderDistance + SIMD3<Float>(0, -0.1, 0)
-      } else {
-        // 見かけの幅（角度）は本当の距離で決める。近い（30m）ほど大きく、遠い（300m）ほど小さい。強調する投稿は少し大きく
-        let t = min(max((distance - 30) / 270, 0), 1)
-        let angularWidth: Float = 0.17 - 0.07 * t
-        scale = angularWidth * renderDistance / Self.geoTagMessageSize.x * (tag.highlighted ? 1.15 : 1)
-        // 近いほど濃く、遠いほど薄く
-        opacity = min(1, 0.4 + 0.6 * tag.prominence + (tag.highlighted ? 0.15 : 0))
-        let angularHeight = (tag.showsMessage ? Self.geoTagMessageSize.y : Self.geoTagSummarySize.y) * scale / renderDistance
-        // 遠いものほど少し上に。方角が近いタグ同士は重ならないよう上に積む
-        var bottom = (3 + 3 * t) * .pi / 180
-        while placed.contains(where: {
-          abs(Self.angleDifference($0.bearing, tag.bearing)) < 12 && bottom < $0.top && bottom + angularHeight > $0.bottom
-        }) {
-          bottom += angularHeight * 1.15
-        }
-        placed.append((tag.bearing, bottom + angularHeight, bottom))
-        target = origin + direction * renderDistance + SIMD3<Float>(0, renderDistance * tan(bottom), 0)
-      }
-
-      let distanceText = Self.distanceText(tag.distance)
-      let mesh: MeshResource
-      switch tag.level {
-      case .presence: mesh = presenceMesh
-      case .message: mesh = geoTagMessageMesh
-      case .summary: mesh = geoTagSummaryMesh
-      }
-      let textureKey = "\(tag.level.rawValue)|\(tag.title)|\(tag.description)|\(tag.tags.joined(separator: ","))|\(distanceText)"
-      let isRelocalizingActive = isRunningWithWorldMap
-        && relocalization != nil
-        && !(relocalization?.didFindAnchor ?? false)
-      if var existing = geoTagEntities[tag.postId] {
-        if existing.textureKey != textureKey {
-          // 近づいて段階が変わったら、形も描く内容も切り替える
-          existing.entity.model?.mesh = mesh
-          existing.entity.model?.materials = [makeGeoTagMaterial(tag, distanceText: distanceText)]
-          existing.entity.generateCollisionShapes(recursive: false)
-          existing.textureKey = textureKey
-          existing.isPresence = tag.level == .presence
-        }
-        // 再取得中（照合中）は既に置かれたモヤの位置を固定し、GPSやコンパスの揺れでモヤが移動しないようにする
-        if !(isRelocalizingActive && existing.isPresence) {
-          existing.target = target
-          existing.targetScale = scale
-          existing.targetOpacity = opacity
-          if snap {
-            // 北を求め直した直後は前の座標が当てにならないので、飛ばさずに置き直して、もう一度ふわっと出す
-            existing.entity.position = target
-            existing.scale = scale
-            existing.opacity = opacity
-            existing.appearance = 0
-            existing.appearAt = now + Double(rank) * Self.geoTagStaggerDelay
-          }
-        }
-        if existing.isRemoving {
-          // 消えかけていた投稿が範囲に戻ってきた
-          existing.isRemoving = false
-          existing.appearAt = now
-        }
-        geoTagEntities[tag.postId] = existing
-      } else {
-        let entity = ModelEntity(mesh: mesh, materials: [makeGeoTagMaterial(tag, distanceText: distanceText)])
-        entity.position = target
-        entity.isEnabled = false
-        // タップを受け取れるように（気配をタップすると案内を出す）
-        entity.generateCollisionShapes(recursive: false)
-        Self.setOpacity(0, of: entity)
-        geoTagRoot.addChild(entity)
-        // 新しく出るタグは、近い順に少しずつ時間差で現れる
-        geoTagEntities[tag.postId] = GeoTagEntity(
-          entity: entity,
-          textureKey: textureKey,
-          target: target,
-          targetScale: scale,
-          targetOpacity: opacity,
-          scale: scale,
-          opacity: opacity,
-          appearAt: now + Double(newcomerCount) * Self.geoTagStaggerDelay,
-          isPresence: tag.level == .presence
-        )
-        newcomerCount += 1
-      }
-    }
-  }
-
-  private static func angleDifference(_ a: Double, _ b: Double) -> Double {
-    var d = (a - b).truncatingRemainder(dividingBy: 360)
-    if d > 180 { d -= 360 }
-    if d < -180 { d += 360 }
-    return d
-  }
-
-  private static func distanceText(_ meters: Double) -> String {
-    if meters >= 1000 { return String(format: "%.1fkm", meters / 1000) }
-    let step: Double = meters < 100 ? 5 : 10
-    return "\(Int(max(step, (meters / step).rounded() * step)))m"
-  }
-
-  // 気配の光の絵：真ん中がほんのり白く、ふちに向かって透明になる
+  // 光の絵：真ん中がほんのり白く、ふちに向かって透明になる
   private static func presenceGlowImage() -> CGImage? {
     let size = CGSize(width: 256, height: 256)
     let image = UIGraphicsImageRenderer(size: size).image { context in
@@ -2823,156 +2464,6 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
       )
     }
     return image.cgImage
-  }
-
-  private func makeGeoTagMaterial(_ tag: GeoTagData, distanceText: String) -> UnlitMaterial {
-    if tag.level == .presence {
-      return presenceMaterial
-    }
-    var material = UnlitMaterial()
-    if #available(iOS 15.0, *) {
-      material.blending = .transparent(opacity: .init(scale: 1.0))
-    }
-    let image = tag.showsMessage
-      ? createGeoTagImage(tag, distanceText: distanceText)
-      : createGeoTagSummaryImage(tag, distanceText: distanceText)
-    if let cgImage = image.cgImage,
-       let texture = try? TextureResource.generate(from: cgImage, options: .init(semantic: .color)) {
-      material.color = .init(tint: .white, texture: .init(texture))
-    }
-    return material
-  }
-
-  // 遠い投稿用：本文は出さず、タグと距離だけの小さいタグ（例「#カフェ  ピン180m」）
-  private func createGeoTagSummaryImage(_ tag: GeoTagData, distanceText: String) -> UIImage {
-    // メッシュと同じ縦横比にする
-    let size = CGSize(width: 640, height: CGFloat(640 * Self.geoTagSummarySize.y / Self.geoTagSummarySize.x))
-    return UIGraphicsImageRenderer(size: size).image { _ in
-      let accent = parseHexColor(tag.color.isEmpty ? "#10B981" : tag.color)
-      let rect = CGRect(origin: .zero, size: size).insetBy(dx: 6, dy: 6)
-      let path = UIBezierPath(roundedRect: rect, cornerRadius: rect.height / 2)
-      UIColor(white: 1.0, alpha: 0.88).setFill()
-      path.fill()
-      accent.withAlphaComponent(0.9).setStroke()
-      path.lineWidth = 4
-      path.stroke()
-
-      let distanceAttrs: [NSAttributedString.Key: Any] = [
-        .font: UIFont.systemFont(ofSize: 34, weight: .bold),
-        .foregroundColor: UIColor(red: 71/255.0, green: 85/255.0, blue: 105/255.0, alpha: 1.0),
-      ]
-      let pinSize = Self.distanceLabelSize(distanceText, attributes: distanceAttrs)
-      let padding: CGFloat = 36
-
-      guard let tagLine = Self.tagLine(tag.tags) else {
-        // タグが無ければ距離だけを真ん中に
-        Self.drawDistanceLabel(distanceText, at: CGPoint(x: (size.width - pinSize.width) / 2, y: (size.height - pinSize.height) / 2), attributes: distanceAttrs)
-        return
-      }
-
-      Self.drawDistanceLabel(distanceText, at: CGPoint(x: size.width - padding - pinSize.width, y: (size.height - pinSize.height) / 2), attributes: distanceAttrs)
-      let tagAttrs: [NSAttributedString.Key: Any] = [
-        .font: UIFont.systemFont(ofSize: 34, weight: .bold),
-        .foregroundColor: accent,
-        .paragraphStyle: Self.truncatingParagraphStyle,
-      ]
-      let tagHeight = (tagLine as NSString).size(withAttributes: tagAttrs).height
-      tagLine.draw(
-        with: CGRect(x: padding, y: (size.height - tagHeight) / 2, width: size.width - padding * 2 - pinSize.width - 16, height: tagHeight),
-        options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine],
-        attributes: tagAttrs,
-        context: nil
-      )
-    }
-  }
-
-  // 近い投稿用：本文・タグ・投稿者・距離
-  private func createGeoTagImage(_ tag: GeoTagData, distanceText: String) -> UIImage {
-    let size = CGSize(width: 640, height: 240)
-    return UIGraphicsImageRenderer(size: size).image { _ in
-      let accent = parseHexColor(tag.color.isEmpty ? "#10B981" : tag.color)
-      let rect = CGRect(origin: .zero, size: size).insetBy(dx: 8, dy: 8)
-      let path = UIBezierPath(roundedRect: rect, cornerRadius: 28)
-      UIColor(white: 1.0, alpha: 0.88).setFill()
-      path.fill()
-      accent.withAlphaComponent(0.9).setStroke()
-      path.lineWidth = 5
-      path.stroke()
-
-      // 本文（タグがあれば 2 行まで、無ければその分も本文に使う）
-      let message = tag.description.isEmpty ? "（メッセージ）" : tag.description
-      let tagLine = Self.tagLine(tag.tags)
-      message.draw(
-        with: CGRect(x: 36, y: 28, width: size.width - 72, height: tagLine == nil ? 130 : 96),
-        options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine],
-        attributes: [
-          .font: UIFont.systemFont(ofSize: tagLine == nil ? 40 : 38, weight: .bold),
-          .foregroundColor: UIColor(red: 30/255.0, green: 41/255.0, blue: 59/255.0, alpha: 1.0),
-          .paragraphStyle: Self.truncatingParagraphStyle,
-        ],
-        context: nil
-      )
-
-      if let tagLine {
-        tagLine.draw(
-          with: CGRect(x: 36, y: 128, width: size.width - 72, height: 34),
-          options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine],
-          attributes: [
-            .font: UIFont.systemFont(ofSize: 26, weight: .semibold),
-            .foregroundColor: accent,
-            .paragraphStyle: Self.truncatingParagraphStyle,
-          ],
-          context: nil
-        )
-      }
-
-      let footerAttrs: [NSAttributedString.Key: Any] = [
-        .font: UIFont.systemFont(ofSize: 28, weight: .semibold),
-        .foregroundColor: UIColor(red: 100/255.0, green: 116/255.0, blue: 139/255.0, alpha: 1.0),
-      ]
-      (tag.title.isEmpty ? "guest" : tag.title).draw(
-        in: CGRect(x: 36, y: 170, width: 360, height: 40), withAttributes: footerAttrs)
-
-      let distanceAttrs: [NSAttributedString.Key: Any] = [
-        .font: UIFont.systemFont(ofSize: 30, weight: .bold),
-        .foregroundColor: accent,
-      ]
-      let pinSize = Self.distanceLabelSize(distanceText, attributes: distanceAttrs)
-      Self.drawDistanceLabel(distanceText, at: CGPoint(x: size.width - 36 - pinSize.width, y: 168), attributes: distanceAttrs)
-    }
-  }
-
-  // 距離の表示（アプリのピンのイラスト＋「180m」）。絵文字は使わず、Images.xcassets の Pin を文字と同じ色で描く
-  private static let distancePinGap: CGFloat = 6
-
-  private static func distancePinSize(for font: UIFont) -> CGSize {
-    guard let pin = UIImage(named: "Pin"), pin.size.height > 0 else { return .zero }
-    let height = font.capHeight * 1.25
-    return CGSize(width: height * pin.size.width / pin.size.height, height: height)
-  }
-
-  private static func distanceLabelSize(_ text: String, attributes: [NSAttributedString.Key: Any]) -> CGSize {
-    let textSize = (text as NSString).size(withAttributes: attributes)
-    guard let font = attributes[.font] as? UIFont else { return textSize }
-    let pinSize = distancePinSize(for: font)
-    guard pinSize.width > 0 else { return textSize }
-    return CGSize(width: pinSize.width + distancePinGap + textSize.width, height: textSize.height)
-  }
-
-  private static func drawDistanceLabel(_ text: String, at origin: CGPoint, attributes: [NSAttributedString.Key: Any]) {
-    var x = origin.x
-    if let font = attributes[.font] as? UIFont,
-       let color = attributes[.foregroundColor] as? UIColor,
-       let pin = UIImage(named: "Pin")?.withTintColor(color, renderingMode: .alwaysOriginal) {
-      let pinSize = distancePinSize(for: font)
-      // 文字の大文字の高さの真ん中に、ピンの真ん中を合わせる
-      let textHeight = (text as NSString).size(withAttributes: attributes).height
-      let baselineY = origin.y + (textHeight - font.lineHeight) / 2 + font.ascender
-      let centerY = baselineY - font.capHeight / 2
-      pin.draw(in: CGRect(x: x, y: centerY - pinSize.height / 2, width: pinSize.width, height: pinSize.height))
-      x += pinSize.width + distancePinGap
-    }
-    (text as NSString).draw(at: CGPoint(x: x, y: origin.y), withAttributes: attributes)
   }
 
   // 照合中、地図に入っている投稿の写真が複数あれば、近い順に 4 秒ごとに切り替えて見せる
@@ -3028,15 +2519,15 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
         }
         var displayPos = targetPos
         displayPos.y += item.heightOffset
-        let currentPos = item.holder.position(relativeTo: nil)
+        item.anchorTransform = liveAnchor.transform
 
-        if simd_distance(currentPos, displayPos) > 0.02 {
-          item.holder.setPosition(simd_mix(currentPos, displayPos, SIMD3<Float>(repeating: anchorFollow)), relativeTo: nil)
+        if simd_distance(item.worldPosition, displayPos) > 0.02 {
+          item.worldPosition = simd_mix(item.worldPosition, displayPos, SIMD3<Float>(repeating: anchorFollow))
         }
         // 向きは地面に対してまっすぐ（左右の向きだけ）。カードが現れるまでは見ている人の方を向け、
         // 現れた瞬間の向きで固定する（以後は追いかけない＝回り続けない）
-        let rotation = item.lockedRotation ?? Self.yawFacing(from: displayPos, toward: cameraPosition)
-        item.holder.setOrientation(rotation, relativeTo: nil)
+        item.worldRotation = item.lockedRotation ?? Self.yawFacing(from: item.worldPosition, toward: cameraPosition)
+        Self.placeHolder(&item)
 
         if !item.isSettled {
           if let prevPos = item.lastAnchorPosition,
@@ -3066,7 +2557,7 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
       }
 
       if shouldCheckOcclusion {
-        let position = item.card.position(relativeTo: nil)
+        let position = item.worldPosition
         item.distance = simd_distance(position, cameraPosition)
         if isInView(position, frame: frame) {
           let result = isOccluded(position, from: cameraPosition, frame: frame)
@@ -3088,10 +2579,10 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
       // 初めて現れるときは、画面に映るまで待つ（見ていない所で出てしまうと「見つけた」瞬間が無くなる）
       var canShow = item.isSettled && !item.isOccluded
       if canShow && !item.hasMaterialized {
-        if isInView(item.card.position(relativeTo: nil), frame: frame) {
+        if isInView(item.worldPosition, frame: frame) {
           item.hasMaterialized = true
           // 現れた瞬間の向き（見ている人の方）で固定する
-          item.lockedRotation = item.holder.orientation(relativeTo: nil)
+          item.lockedRotation = item.worldRotation
           playDiscoveryEffect(holder: item.holder)
         } else {
           canShow = false
@@ -3112,7 +2603,7 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
       }
 
       // 隠れているカードの光も、すぐそばを通ると画面を覆うので、近づくほど薄くする
-      let glowDistance = simd_distance(item.glow.position(relativeTo: nil), cameraPosition)
+      let glowDistance = simd_distance(item.worldPosition, cameraPosition)
       let glowFade = Self.glowNearFade(glowDistance)
       item.glow.scale = SIMD3<Float>(
         repeating: min(Self.revealGlowSize, glowDistance * Self.glowMaxApparentSize) * (1 - 0.6 * eased))
@@ -3130,14 +2621,16 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
 
       // 隠れずに、画面に映る所でしっかり現れたら「目にした（拾った）」と知らせる（1 回だけ）
       if !item.hasBeenSeen, item.reveal >= 0.9, let frame = arView.session.currentFrame,
-         isInView(item.card.position(relativeTo: nil), frame: frame) {
+         isInView(item.worldPosition, frame: frame) {
         item.hasBeenSeen = true
         emitRelocalizationStatus("seen", postId: item.postId)
       }
 
       // 光はどこから見ても丸く見えるよう、カメラの方を向かせる
-      let toCamera = cameraPosition - item.glow.position(relativeTo: nil)
-      item.glow.setOrientation(simd_quatf(angle: atan2(toCamera.x, toCamera.z), axis: SIMD3<Float>(0, 1, 0)), relativeTo: nil)
+      // （入れ物の向きを打ち消した、入れ物からの相対の向きで入れる）
+      let toCamera = cameraPosition - item.worldPosition
+      let glowYaw = simd_quatf(angle: atan2(toCamera.x, toCamera.z), axis: SIMD3<Float>(0, 1, 0))
+      item.glow.orientation = item.worldRotation.inverse * glowYaw
       revealCards[index] = item
     }
   }

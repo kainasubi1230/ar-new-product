@@ -8,8 +8,8 @@ import {
 } from './avatarAttachments';
 
 /**
- * アバター（＝アイコン）は、8 種類の動物の絵（avatar_animals_png/*.png をそのまま使う。
- * ios の Images.xcassets/Animal*.imageset。JS に絵は同梱しない）の「オレンジ・黄色」の部分だけを、選んだ色に変えたもの。
+ * アバター（＝アイコン）は、8 種類の動物の絵（assets/raw/avatar-animals/*.png をそのまま使う。
+ * ios の Images.xcassets/Animals/Animal*.imageset。JS に絵は同梱しない）の「オレンジ・黄色」の部分だけを、選んだ色に変えたもの。
  * どこを変えるかはキャラクターごとのマスク（Animal*Mask.imageset、scripts/avatar-animals/build-assets.sh で作る）、
  * 色変えはネイティブの AvatarRecolor（形・模様・質感はそのまま）。
  * 投稿の handle に `animal:cat:#3B82F6` として入れ、他の人の言葉カード・AR のカードでも同じアイコンで出す。

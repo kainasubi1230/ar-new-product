@@ -1,7 +1,7 @@
 #!/bin/sh
-# アバターのアタッチメント（avatar_attachments_png/*.png、512×512 の透明 PNG）をアプリに入れる。
+# アバターのアタッチメント（assets/raw/avatar-attachments/*.png、512×512 の透明 PNG）をアプリに入れる。
 #   sh scripts/avatar-attachments/build-assets.sh
-# 1. 素材の背景抜きの残りだけを直した絵を作る（線・色・形・模様は変えない。元の素材 avatar_attachments_png/ は変えない）：
+# 1. 素材の背景抜きの残りだけを直した絵を作る（線・色・形・模様は変えない。元の素材 assets/raw/avatar-attachments/ は変えない）：
 #    - メガネのレンズの内側に残った不透明なクリーム色を透明に（clear-lens.swift。glasses_01・03）
 #    - リボンとメガネの紙の縁取りのでこぼこ・はみ出し・垂れの間の紙を、形から幅 5px にそろえる（clean-edges.swift）
 #    帽子は縁取りがきれいなので、そのまま。外側の線（clean-edges の 5 つ目の引数）は引かない
@@ -9,17 +9,17 @@
 #    黄色の部分を選ぶマスクも作る（キャラクターと同じ scripts/avatar-animals/build-masks.swift。アイテムの色変えに使う）
 # 3. 装着位置の表を作る（build-layout.py → src/config/avatarAttachmentLayout.json）
 # 4. 絵をコピーする（縮めない）：
-#      ios/SpatialInventory/Images.xcassets/Attachment<名前>.imageset（AR のカードのアイコン）
-#      ios/SpatialInventory/Images.xcassets/Attachment<名前>Mask.imageset（黄色の部分のマスク。色変えはネイティブ）
-#    表は Images.xcassets/AvatarAttachmentLayout.dataset にも入れる（ネイティブも同じ表で描く）
+#      ios/SpatialInventory/Images.xcassets/Attachments/Attachment<名前>.imageset（AR のカードのアイコン）
+#      ios/SpatialInventory/Images.xcassets/Attachments/Attachment<名前>Mask.imageset（黄色の部分のマスク。色変えはネイティブ）
+#    表は Images.xcassets/Attachments/AvatarAttachmentLayout.dataset にも入れる（ネイティブも同じ表で描く）
 # 5. 確認用の画像を scripts/avatar-attachments/out/<キャラクター>.png（装着位置）と out/masks/<名前>_check.png（マスク）に作る（git には入れない）
 set -e
 DIR=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$DIR/../.." && pwd)
-SRC="$ROOT/avatar_attachments_png"
-ASSETS="$ROOT/ios/SpatialInventory/Images.xcassets"
+SRC="$ROOT/assets/raw/avatar-attachments"
+ASSETS="$ROOT/ios/SpatialInventory/Images.xcassets/Attachments"
 WORK=$(mktemp -d)
-mkdir -p "$WORK/items"
+mkdir -p "$WORK/items" "$ASSETS"
 
 swiftc -O -o "$WORK/measure" "$DIR/measure-items.swift"
 swiftc -O -o "$WORK/clear-lens" "$DIR/clear-lens.swift"
