@@ -32,9 +32,9 @@ import { Icons } from './src/assets/icons';
 import { insertPostWithCurrentLocation } from './src/services/postService';
 import { deleteMyAccount, displayNameOf, signOut } from './src/services/authService';
 import {
-  avatarHandleFor,
+  avatarHandleOf,
   cleanAttachmentsByAnimal,
-  currentAttachmentsOf,
+  cleanAvatarBackground,
   isAvatarAnimal,
   resolveAvatarAnimal,
 } from './src/config/avatarColors';
@@ -186,19 +186,17 @@ function MainApp(): React.JSX.Element {
     avatarColor,
     avatarAnimal: savedAvatarAnimal,
     avatarAttachments: savedAvatarAttachments,
+    avatarBackground: savedAvatarBackground,
   } = usePreferences();
   // アイコンの動物（まだ選んでいなければ、アカウントごとに決まった動物）
   const avatarAnimal = resolveAvatarAnimal(savedAvatarAnimal, user?.id);
   // 投稿・AR のカードに入れるアイコン（キャラクター・色・そのキャラクターのアタッチメント）
-  const avatarHandle = avatarHandleFor(
-    avatarColor,
-    avatarAnimal,
-    currentAttachmentsOf({
-      character: avatarAnimal,
-      color: avatarColor,
-      attachments: cleanAttachmentsByAnimal(savedAvatarAttachments),
-    })
-  );
+  const avatarHandle = avatarHandleOf({
+    character: avatarAnimal,
+    color: avatarColor,
+    attachments: cleanAttachmentsByAnimal(savedAvatarAttachments),
+    background: cleanAvatarBackground(savedAvatarBackground),
+  });
   // 表示の設定（関心タグのみ表示・安心フィルター）で、AR・地図に出すか。自分の投稿はいつも出す
   // 通報した言葉と、ブロックした人（その人のアプリでは AR・地図・通知に出さない）
   const [blockedUserIds, setBlockedUserIds] = useState<string[]>([]);
@@ -280,9 +278,13 @@ function MainApp(): React.JSX.Element {
         const savedAvatarColor = session.user.user_metadata?.avatar_color;
         const savedAnimal = session.user.user_metadata?.avatar_animal;
         const savedAttachments = cleanAttachmentsByAnimal(session.user.user_metadata?.avatar_attachments);
+        const savedBackground = session.user.user_metadata?.avatar_background;
         adoptPreferencesForUser(session.user.id).then(() => {
           if (Object.keys(savedAttachments).length > 0) {
             updatePreferences({ avatarAttachments: savedAttachments });
+          }
+          if (typeof savedBackground === 'string' && /^#[0-9A-Fa-f]{6}$/.test(savedBackground)) {
+            updatePreferences({ avatarBackground: savedBackground });
           }
           if (typeof savedAvatarColor === 'string' && /^#[0-9A-Fa-f]{6}$/.test(savedAvatarColor)) {
             updatePreferences({ avatarColor: savedAvatarColor });

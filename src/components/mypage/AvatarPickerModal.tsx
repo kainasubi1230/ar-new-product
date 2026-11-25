@@ -1,42 +1,45 @@
 import React, { useEffect, useState } from 'react';
-import { Image, Modal, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Modal, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import {
   AVATAR_ANIMALS,
   AVATAR_CANVAS_COLOR,
   AVATAR_COLOR_PRESETS,
   ORIGINAL_ACCENT_HEX,
+  AVATAR_BACKGROUND_PRESETS,
   isOriginalAccent,
   type AvatarConfig,
+  currentAttachmentColorsOf,
   currentAttachmentsOf,
 } from '../../config/avatarColors';
 import {
   ATTACHMENT_CATEGORIES,
   AVATAR_ATTACHMENTS,
-  attachmentKeysOf,
   attachmentOf,
   type AttachmentCategory,
 } from '../../config/avatarAttachments';
 import { AnimalAvatarImage } from '../AnimalAvatarImage';
+import { RecoloredImage } from '../RecoloredImage';
 import { ColorPicker } from './ColorPicker';
 
 type Props = {
   visible: boolean;
   onClose: () => void;
-  /** 今のアバター（キャラクター・色・キャラクターごとのアタッチメント） */
+  /** 今のアバター（キャラクター・色・キャラクターごとのアタッチメント・背景色） */
   avatarConfig: AvatarConfig;
   /** 最後の段で「このアバターにする」を押したとき。作ったアバターがそのままアイコンになる */
   onSelect: (config: AvatarConfig) => void;
 };
 
 /**
- * 作る段の並び。1 段ずつ進む（キャラクター → 色 → アイテム → 確認）。
- * 背景などを足すときは、ここに 1 行足し、下の StepBody に、その段の中身を足す
+ * 作る段の並び。1 段ずつ進む（キャラクター → 色 → アイテム → 背景 → 完成）。
+ * 段を足すときは、ここに 1 行足し、下の StepBody に、その段の中身を足す
  */
 const AVATAR_STEPS = [
-  { key: 'character', label: 'キャラクター', title: 'キャラクターをえらぶ' },
-  { key: 'color', label: '色', title: '色をえらぶ' },
-  { key: 'attachment', label: 'アイテム', title: 'アイテムをつける' },
-  { key: 'confirm', label: 'かんせい', title: 'これでいい？' },
+  { key: 'character', label: 'キャラクター', title: 'キャラクターを選ぶ' },
+  { key: 'color', label: '色', title: '色を選ぶ' },
+  { key: 'attachment', label: 'アイテム', title: 'アイテムを付ける' },
+  { key: 'background', label: '背景', title: '背景の色を選ぶ' },
+  { key: 'confirm', label: '完成', title: 'アバターの完成！！' },
 ] as const;
 
 type StepKey = (typeof AVATAR_STEPS)[number]['key'];
@@ -53,7 +56,7 @@ const GREEN = '#10B981';
 const GREEN_SOFT = '#ECFDF5';
 const GREEN_LINE = '#A7F3D0';
 
-/** アバターをつくる：キャラクター → 色 → アイテム → 確認 と、1 段ずつ進む。上のプレビューは、どの段でもすぐ変わる */
+/** アバターをつくる：キャラクター → 色 → アイテム → 背景 → 完成 と、1 段ずつ進む。上のプレビューは、どの段でもすぐ変わる */
 export function AvatarPickerModal({ visible, onClose, avatarConfig, onSelect }: Props): React.JSX.Element {
   const [config, setConfig] = useState<AvatarConfig>(avatarConfig);
   const [stepIndex, setStepIndex] = useState(0);
@@ -69,6 +72,9 @@ export function AvatarPickerModal({ visible, onClose, avatarConfig, onSelect }: 
   }, [visible]);
 
   const step = AVATAR_STEPS[stepIndex];
+  // アイテム・背景は、その段で決めるので、それより前の段では付けずに（初期の背景で）見せる
+  const showsAttachments = stepIndex >= AVATAR_STEPS.findIndex((s) => s.key === 'attachment');
+  const showsBackground = stepIndex >= AVATAR_STEPS.findIndex((s) => s.key === 'background');
   const isLast = stepIndex === AVATAR_STEPS.length - 1;
   const animalLabel = AVATAR_ANIMALS.find((a) => a.key === config.character)?.label ?? '';
 
@@ -122,7 +128,9 @@ export function AvatarPickerModal({ visible, onClose, avatarConfig, onSelect }: 
             <AnimalAvatarImage
               animal={config.character}
               color={config.color}
-              attachments={currentAttachmentsOf(config)}
+              attachments={showsAttachments ? currentAttachmentsOf(config) : []}
+              attachmentColors={currentAttachmentColorsOf(config)}
+              background={showsBackground ? config.background : AVATAR_CANVAS_COLOR}
               style={styles.previewImage}
             />
           </View>
@@ -139,10 +147,10 @@ export function AvatarPickerModal({ visible, onClose, avatarConfig, onSelect }: 
 
         <View style={styles.footer}>
           <TouchableOpacity style={styles.backBtn} onPress={goBack} activeOpacity={0.8}>
-            <Text style={styles.backText}>{stepIndex === 0 ? 'やめる' : 'もどる'}</Text>
+            <Text style={styles.backText}>{stepIndex === 0 ? '閉じる' : '戻る'}</Text>
           </TouchableOpacity>
           <TouchableOpacity style={styles.nextBtn} onPress={goNext} activeOpacity={0.85}>
-            <Text style={styles.nextText}>{isLast ? 'このアバターにする' : 'つぎへ'}</Text>
+            <Text style={styles.nextText}>{isLast ? 'このアバターにする' : '次へ'}</Text>
           </TouchableOpacity>
         </View>
       </View>
@@ -180,12 +188,8 @@ function StepBody({
               accessibilityState={{ selected: isSelected }}
             >
               <View style={[styles.gridItem, isSelected && styles.gridItemSelected]}>
-                <AnimalAvatarImage
-                  animal={opt.key}
-                  color={config.color}
-                  attachments={attachmentKeysOf(config.attachments[opt.key])}
-                  style={styles.gridImage}
-                />
+                {/* キャラクターの一覧は、アイテムを付けずに見せる */}
+                <AnimalAvatarImage animal={opt.key} color={config.color} style={styles.gridImage} />
               </View>
               <Text style={[styles.gridLabel, isSelected && styles.gridLabelSelected]}>{opt.label}</Text>
             </TouchableOpacity>
@@ -205,7 +209,7 @@ function StepBody({
           quickColors={PRESET_HEXES}
           onDraggingChange={onDraggingChange}
         />
-        {/* いちばん下に、はじめの色に戻すボタン */}
+        {/* いちばん下に、初期カラーに戻すボタン */}
         <TouchableOpacity
           style={[styles.resetBtn, isOriginalAccent(config.color) && styles.resetBtnDisabled]}
           onPress={() => setColor(ORIGINAL_ACCENT_HEX)}
@@ -219,7 +223,30 @@ function StepBody({
   }
 
   if (step === 'attachment') {
-    return <AttachmentStep config={config} onChange={onChange} />;
+    return <AttachmentStep config={config} onChange={onChange} onDraggingChange={onDraggingChange} />;
+  }
+
+  if (step === 'background') {
+    const setBackground = (hex: string) => onChange({ ...config, background: hex.toUpperCase() });
+    const isInitial = config.background.toLowerCase() === AVATAR_CANVAS_COLOR.toLowerCase();
+    return (
+      <View style={styles.colorCard}>
+        <ColorPicker
+          value={config.background}
+          onChange={setBackground}
+          quickColors={AVATAR_BACKGROUND_PRESETS}
+          onDraggingChange={onDraggingChange}
+        />
+        <TouchableOpacity
+          style={[styles.resetBtn, isInitial && styles.resetBtnDisabled]}
+          onPress={() => setBackground(AVATAR_CANVAS_COLOR)}
+          disabled={isInitial}
+          activeOpacity={0.7}
+        >
+          <Text style={styles.resetText}>初期カラーに戻す</Text>
+        </TouchableOpacity>
+      </View>
+    );
   }
 
   // 確認：選んだものの一覧
@@ -236,7 +263,7 @@ function StepBody({
         <View style={styles.summaryColor}>
           <View style={[styles.summarySwatch, { backgroundColor: config.color }]} />
           <Text style={styles.summaryValue}>
-            {isOriginalAccent(config.color) ? 'はじめのオレンジ' : config.color.toUpperCase()}
+            {isOriginalAccent(config.color) ? '初期カラー' : config.color.toUpperCase()}
           </Text>
         </View>
       </View>
@@ -247,24 +274,49 @@ function StepBody({
           {attachmentLabels.length > 0 ? attachmentLabels.join('・') : 'なし'}
         </Text>
       </View>
+      <View style={styles.summaryDivider} />
+      <View style={styles.summaryRow}>
+        <Text style={styles.summaryKey}>背景</Text>
+        <View style={styles.summaryColor}>
+          <View style={[styles.summarySwatch, { backgroundColor: config.background }]} />
+          <Text style={styles.summaryValue}>
+            {config.background.toLowerCase() === AVATAR_CANVAS_COLOR.toLowerCase()
+              ? '初期カラー'
+              : config.background.toUpperCase()}
+          </Text>
+        </View>
+      </View>
     </View>
   );
 }
 
 /**
  * アイテムの段：リボン・帽子・メガネのタブと、そのカテゴリのアイテム一覧（4 列）。
- * 押すと付く（同じカテゴリの前のものと入れ替わる）、付いているものをもう一度押すと外れる。装着は今のキャラクターごと
+ * カテゴリごとに 1 つまで付けられる（リボン・帽子・メガネを重ねて付けられる）。
+ * 押すと付く（同じカテゴリの前のものと入れ替わる）、付いているものをもう一度押すと外れる。
+ * 色はカテゴリごと（今開いているタブのアイテムの色を変える）。装着は今のキャラクターごと
  */
 function AttachmentStep({
   config,
   onChange,
+  onDraggingChange,
 }: {
   config: AvatarConfig;
   onChange: (config: AvatarConfig) => void;
+  onDraggingChange: (isDragging: boolean) => void;
 }): React.JSX.Element {
-  const [category, setCategory] = useState<AttachmentCategory>('ribbon');
   const selection = config.attachments[config.character] ?? {};
+  // 付けているアイテムがあれば、そのカテゴリのタブから始める
+  const [category, setCategory] = useState<AttachmentCategory>(
+    () => ATTACHMENT_CATEGORIES.find((c) => selection[c.key])?.key ?? 'ribbon'
+  );
 
+  const itemColor = selection.colors?.[category] ?? ORIGINAL_ACCENT_HEX;
+  const isWearing = !!selection[category];
+  const update = (next: typeof selection) =>
+    onChange({ ...config, attachments: { ...config.attachments, [config.character]: next } });
+
+  // カテゴリごとに 1 つ。別のものを押すと入れ替わり、付いているものをもう一度押すと外れる（色は覚えておく）
   const toggle = (key: (typeof AVATAR_ATTACHMENTS)[number]['key']) => {
     const next = { ...selection };
     if (next[category] === key) {
@@ -272,8 +324,11 @@ function AttachmentStep({
     } else {
       next[category] = key;
     }
-    onChange({ ...config, attachments: { ...config.attachments, [config.character]: next } });
+    update(next);
   };
+  const setItemColor = (hex: string) =>
+    update({ ...selection, colors: { ...selection.colors, [category]: hex.toUpperCase() } });
+  const categoryLabel = ATTACHMENT_CATEGORIES.find((c) => c.key === category)?.label ?? '';
 
   return (
     <View>
@@ -290,7 +345,7 @@ function AttachmentStep({
               accessibilityState={{ selected: isActive }}
             >
               <Text style={[styles.tabText, isActive && styles.tabTextActive]}>{c.label}</Text>
-              {/* 付けているカテゴリには小さな点 */}
+              {/* 付けているカテゴリに小さな点 */}
               {isWorn && <View style={[styles.tabDot, isActive && styles.tabDotActive]} />}
             </TouchableOpacity>
           );
@@ -310,7 +365,13 @@ function AttachmentStep({
               accessibilityState={{ selected: isSelected }}
             >
               <View style={[styles.itemTile, isSelected && styles.gridItemSelected]}>
-                <Image source={item.image} style={styles.itemImage} resizeMode="contain" />
+                <RecoloredImage
+                  kind="attachment"
+                  asset={item.key}
+                  color={itemColor}
+                  fallback={item.image}
+                  style={styles.itemImage}
+                />
                 {isSelected && (
                   <View style={styles.itemCheck}>
                     <Text style={styles.itemCheckText}>✓</Text>
@@ -324,7 +385,27 @@ function AttachmentStep({
           );
         })}
       </View>
-      <Text style={styles.itemHint}>もう一度押すと外せます</Text>
+
+      {/* 今のタブのアイテムの色（付けているときだけ）。キャラクターの色と同じ選び方 */}
+      {isWearing && (
+        <View style={[styles.colorCard, styles.itemColorCard]}>
+          <Text style={styles.itemColorTitle}>{categoryLabel}の色</Text>
+          <ColorPicker
+            value={itemColor}
+            onChange={setItemColor}
+            quickColors={PRESET_HEXES}
+            onDraggingChange={onDraggingChange}
+          />
+          <TouchableOpacity
+            style={[styles.resetBtn, isOriginalAccent(itemColor) && styles.resetBtnDisabled]}
+            onPress={() => setItemColor(ORIGINAL_ACCENT_HEX)}
+            disabled={isOriginalAccent(itemColor)}
+            activeOpacity={0.7}
+          >
+            <Text style={styles.resetText}>初期カラーに戻す</Text>
+          </TouchableOpacity>
+        </View>
+      )}
     </View>
   );
 }
@@ -368,7 +449,7 @@ const styles = StyleSheet.create({
     paddingTop: 8,
     paddingBottom: 6,
   },
-  stepItem: { alignItems: 'center', gap: 4, width: 66 },
+  stepItem: { alignItems: 'center', gap: 4, width: 58 },
   stepDot: {
     width: 26,
     height: 26,
@@ -384,7 +465,7 @@ const styles = StyleSheet.create({
   stepNumberActive: { color: '#FFFFFF' },
   stepLabel: { fontSize: 11, fontWeight: '600', color: '#94A3B8' },
   stepLabelCurrent: { color: '#059669', fontWeight: '800' },
-  stepLine: { flex: 1, height: 2, borderRadius: 1, backgroundColor: CARD_BORDER, marginTop: 12, marginHorizontal: -18 },
+  stepLine: { flex: 1, height: 2, borderRadius: 1, backgroundColor: CARD_BORDER, marginTop: 12, marginHorizontal: -14 },
   stepLineDone: { backgroundColor: GREEN },
   content: { paddingHorizontal: 20, paddingBottom: 28 },
   previewCard: {
@@ -501,7 +582,8 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   itemCheckText: { color: '#FFFFFF', fontSize: 11, fontWeight: '900' },
-  itemHint: { fontSize: 12, color: '#94A3B8', textAlign: 'center', marginTop: 14 },
+  itemColorCard: { marginTop: 20 },
+  itemColorTitle: { fontSize: 14, fontWeight: '800', color: TEXT, marginBottom: 14 },
   footer: {
     flexDirection: 'row',
     gap: 10,

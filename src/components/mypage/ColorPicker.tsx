@@ -1,6 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { PanResponder, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
-import Svg, { Defs, LinearGradient, Rect, Stop } from 'react-native-svg';
 import { hexToHsv, hsvToHex, normalizeHexInput, type Hsv } from '../../utils/color';
 
 type Props = {
@@ -47,7 +46,6 @@ export function ColorPicker({ value, onChange, quickColors = QUICK_COLORS, onDra
   return (
     <View style={styles.container}>
       <GradientSlider
-        id="hue"
         label="色相"
         value={hsv.h / 360}
         stops={['#FF0000', '#FFFF00', '#00FF00', '#00FFFF', '#0000FF', '#FF00FF', '#FF0000']}
@@ -56,7 +54,6 @@ export function ColorPicker({ value, onChange, quickColors = QUICK_COLORS, onDra
         onChange={(x) => update({ ...hsv, h: Math.min(359.9, x * 360) })}
       />
       <GradientSlider
-        id="saturation"
         label="彩度"
         value={hsv.s}
         stops={[gray, hsvToHex({ h: hsv.h, s: 1, v: hsv.v })]}
@@ -65,7 +62,6 @@ export function ColorPicker({ value, onChange, quickColors = QUICK_COLORS, onDra
         onChange={(x) => update({ ...hsv, s: x })}
       />
       <GradientSlider
-        id="brightness"
         label="明度"
         value={hsv.v}
         stops={['#000000', full]}
@@ -128,8 +124,6 @@ export function ColorPicker({ value, onChange, quickColors = QUICK_COLORS, onDra
 }
 
 type SliderProps = {
-  /** グラデーションの id（英数字） */
-  id: string;
   label: string;
   /** 0〜1 */
   value: number;
@@ -143,7 +137,7 @@ const TRACK_HEIGHT = 22;
 const THUMB = 30;
 
 /** グラデーションの帯の上をつまんで動かすスライダー（触った所にすぐ飛ぶ） */
-function GradientSlider({ id, label, value, stops, thumbColor, onChange, onDraggingChange }: SliderProps): React.JSX.Element {
+function GradientSlider({ label, value, stops, thumbColor, onChange, onDraggingChange }: SliderProps): React.JSX.Element {
   const [width, setWidth] = useState(0);
   const widthRef = useRef(0);
   const onChangeRef = useRef(onChange);
@@ -172,7 +166,6 @@ function GradientSlider({ id, label, value, stops, thumbColor, onChange, onDragg
     })
   ).current;
 
-  const gradientId = `avatar-slider-${id}`;
   return (
     <View style={styles.sliderBlock}>
       <Text style={styles.sliderLabel}>{label}</Text>
@@ -185,18 +178,15 @@ function GradientSlider({ id, label, value, stops, thumbColor, onChange, onDragg
         {...responder.panHandlers}
       >
         <View style={styles.track} pointerEvents="none">
-          {width > 0 && (
-            <Svg width={width} height={TRACK_HEIGHT}>
-              <Defs>
-                <LinearGradient id={gradientId} x1="0" y1="0" x2="1" y2="0">
-                  {stops.map((c, i) => (
-                    <Stop key={i} offset={stops.length === 1 ? 0 : i / (stops.length - 1)} stopColor={c} />
-                  ))}
-                </LinearGradient>
-              </Defs>
-              <Rect x={0} y={0} width={width} height={TRACK_HEIGHT} rx={TRACK_HEIGHT / 2} fill={`url(#${gradientId})`} />
-            </Svg>
-          )}
+          {/* グラデーションは React Native の標準機能で描く（ライブラリを使わない） */}
+          <View
+            style={[
+              StyleSheet.absoluteFill,
+              stops.length > 1
+                ? { experimental_backgroundImage: `linear-gradient(to right, ${stops.join(', ')})` }
+                : { backgroundColor: stops[0] },
+            ]}
+          />
         </View>
         <View
           pointerEvents="none"

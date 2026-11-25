@@ -4,10 +4,10 @@
     "glasses_01": {
       "category": "glasses",
       "box": {
-        "height": 124,
-        "width": 254,
-        "x": 129,
-        "y": 194
+        "height": 112,
+        "width": 248,
+        "x": 133,
+        "y": 200
       },
       "imageSize": 512
     },
@@ -34,8 +34,8 @@
     "glasses_04": {
       "category": "glasses",
       "box": {
-        "height": 119,
-        "width": 268,
+        "height": 118,
+        "width": 266,
         "x": 122,
         "y": 197
       },
@@ -85,8 +85,8 @@
       "category": "ribbon",
       "box": {
         "height": 157,
-        "width": 226,
-        "x": 143,
+        "width": 221,
+        "x": 145,
         "y": 178
       },
       "imageSize": 512
@@ -95,8 +95,8 @@
       "category": "ribbon",
       "box": {
         "height": 209,
-        "width": 225,
-        "x": 143,
+        "width": 220,
+        "x": 147,
         "y": 152
       },
       "imageSize": 512
@@ -105,8 +105,8 @@
       "category": "ribbon",
       "box": {
         "height": 223,
-        "width": 223,
-        "x": 144,
+        "width": 221,
+        "x": 145,
         "y": 145
       },
       "imageSize": 512
@@ -115,8 +115,8 @@
       "category": "ribbon",
       "box": {
         "height": 230,
-        "width": 240,
-        "x": 136,
+        "width": 238,
+        "x": 138,
         "y": 141
       },
       "imageSize": 512
@@ -125,10 +125,10 @@
   "layout": {
     "cat": {
       "glasses_01": {
-        "x": 246.4,
-        "y": 234.3,
-        "width": 128.0,
-        "height": 62.5,
+        "x": 250.5,
+        "y": 234.1,
+        "width": 138.5,
+        "height": 62.6,
         "rotation": -4,
         "zIndex": 3
       },
@@ -149,83 +149,83 @@
         "zIndex": 3
       },
       "glasses_04": {
-        "x": 257.3,
+        "x": 257.1,
         "y": 233.6,
-        "width": 140.8,
+        "width": 141.0,
         "height": 62.5,
         "rotation": -4,
         "zIndex": 3
       },
       "hat_01": {
-        "x": 261.5,
-        "y": 159.0,
-        "width": 113.9,
-        "height": 72.9,
+        "x": 249.3,
+        "y": 146.6,
+        "width": 161.8,
+        "height": 103.5,
         "rotation": -8,
         "zIndex": 1
       },
       "hat_02": {
-        "x": 233.9,
-        "y": 156.6,
-        "width": 143.5,
-        "height": 85.3,
+        "x": 249.1,
+        "y": 148.4,
+        "width": 203.8,
+        "height": 121.2,
         "rotation": -8,
         "zIndex": 1
       },
       "hat_03": {
-        "x": 257.4,
-        "y": 155.0,
-        "width": 124.8,
-        "height": 80.8,
+        "x": 243.5,
+        "y": 141.0,
+        "width": 177.3,
+        "height": 114.8,
         "rotation": -8,
         "zIndex": 1
       },
       "hat_04": {
-        "x": 256.8,
-        "y": 149.2,
-        "width": 105.2,
-        "height": 95.2,
+        "x": 246.1,
+        "y": 157.4,
+        "width": 159.8,
+        "height": 144.6,
         "rotation": -8,
         "zIndex": 1
       },
       "ribbon_01": {
-        "x": 270.0,
-        "y": 178.1,
-        "width": 64.0,
-        "height": 44.5,
-        "rotation": 14,
+        "x": 289.8,
+        "y": 170.3,
+        "width": 115.2,
+        "height": 81.8,
+        "rotation": -10,
         "zIndex": 2
       },
       "ribbon_02": {
-        "x": 262.1,
-        "y": 192.6,
-        "width": 64.0,
-        "height": 59.4,
-        "rotation": 14,
+        "x": 288.4,
+        "y": 200.3,
+        "width": 115.2,
+        "height": 109.4,
+        "rotation": -10,
         "zIndex": 2
       },
       "ribbon_03": {
-        "x": 265.9,
-        "y": 196.1,
-        "width": 64.0,
-        "height": 64.0,
-        "rotation": 14,
+        "x": 296.6,
+        "y": 203.0,
+        "width": 115.2,
+        "height": 116.2,
+        "rotation": -10,
         "zIndex": 2
       },
       "ribbon_04": {
-        "x": 263.7,
-        "y": 194.6,
-        "width": 64.0,
-        "height": 61.3,
-        "rotation": 14,
+        "x": 292.2,
+        "y": 202.0,
+        "width": 115.2,
+        "height": 111.3,
+        "rotation": -10,
         "zIndex": 2
       }
     },
     "dog": {
       "glasses_01": {
-        "x": 236.7,
-        "y": 230.4,
-        "width": 119.8,
+        "x": 240.5,
+        "y": 230.2,
+        "width": 129.6,
         "height": 58.5,
         "rotation": -4,
         "zIndex": 3
@@ -247,83 +247,83 @@
         "zIndex": 3
       },
       "glasses_04": {
-        "x": 246.8,
-        "y": 229.7,
-        "width": 131.7,
+        "x": 246.6,
+        "y": 229.8,
+        "width": 131.9,
         "height": 58.5,
         "rotation": -4,
         "zIndex": 3
       },
       "hat_01": {
-        "x": 257.5,
-        "y": 143.8,
-        "width": 118.6,
-        "height": 75.9,
+        "x": 240.3,
+        "y": 138.4,
+        "width": 158.6,
+        "height": 101.5,
         "rotation": -8,
         "zIndex": 1
       },
       "hat_02": {
-        "x": 228.7,
-        "y": 141.3,
-        "width": 149.4,
-        "height": 88.9,
+        "x": 240.1,
+        "y": 140.1,
+        "width": 199.7,
+        "height": 118.8,
         "rotation": -8,
         "zIndex": 1
       },
       "hat_03": {
-        "x": 253.2,
-        "y": 139.7,
-        "width": 130.0,
-        "height": 84.2,
+        "x": 234.6,
+        "y": 132.9,
+        "width": 173.7,
+        "height": 112.5,
         "rotation": -8,
         "zIndex": 1
       },
       "hat_04": {
-        "x": 252.6,
-        "y": 133.7,
-        "width": 109.6,
-        "height": 99.1,
+        "x": 237.2,
+        "y": 148.9,
+        "width": 156.7,
+        "height": 141.7,
         "rotation": -8,
         "zIndex": 1
       },
       "ribbon_01": {
-        "x": 286.0,
-        "y": 166.1,
-        "width": 62.0,
-        "height": 43.1,
-        "rotation": 14,
+        "x": 295.8,
+        "y": 160.3,
+        "width": 111.6,
+        "height": 79.3,
+        "rotation": -10,
         "zIndex": 2
       },
       "ribbon_02": {
-        "x": 278.4,
-        "y": 180.1,
-        "width": 62.0,
-        "height": 57.6,
-        "rotation": 14,
+        "x": 294.5,
+        "y": 189.4,
+        "width": 111.6,
+        "height": 106.0,
+        "rotation": -10,
         "zIndex": 2
       },
       "ribbon_03": {
-        "x": 282.1,
-        "y": 183.5,
-        "width": 62.0,
-        "height": 62.0,
-        "rotation": 14,
+        "x": 302.4,
+        "y": 191.9,
+        "width": 111.6,
+        "height": 112.6,
+        "rotation": -10,
         "zIndex": 2
       },
       "ribbon_04": {
-        "x": 279.9,
-        "y": 182.0,
-        "width": 62.0,
-        "height": 59.4,
-        "rotation": 14,
+        "x": 298.1,
+        "y": 191.0,
+        "width": 111.6,
+        "height": 107.8,
+        "rotation": -10,
         "zIndex": 2
       }
     },
     "fox": {
       "glasses_01": {
-        "x": 247.5,
-        "y": 216.7,
-        "width": 119.8,
+        "x": 251.3,
+        "y": 216.1,
+        "width": 129.6,
         "height": 58.5,
         "rotation": -8,
         "zIndex": 3
@@ -345,83 +345,83 @@
         "zIndex": 3
       },
       "glasses_04": {
-        "x": 257.6,
-        "y": 215.2,
-        "width": 131.7,
+        "x": 257.4,
+        "y": 215.3,
+        "width": 131.9,
         "height": 58.5,
         "rotation": -8,
         "zIndex": 3
       },
       "hat_01": {
-        "x": 246.8,
-        "y": 138.3,
-        "width": 109.1,
-        "height": 69.8,
+        "x": 247.4,
+        "y": 123.6,
+        "width": 158.6,
+        "height": 101.5,
         "rotation": -14,
         "zIndex": 1
       },
       "hat_02": {
-        "x": 220.3,
-        "y": 138.8,
-        "width": 137.5,
-        "height": 81.8,
+        "x": 247.3,
+        "y": 125.4,
+        "width": 199.7,
+        "height": 118.8,
         "rotation": -14,
         "zIndex": 1
       },
       "hat_03": {
-        "x": 242.5,
-        "y": 134.9,
-        "width": 119.6,
-        "height": 77.5,
+        "x": 241.1,
+        "y": 118.8,
+        "width": 173.7,
+        "height": 112.5,
         "rotation": -14,
         "zIndex": 1
       },
       "hat_04": {
-        "x": 241.4,
-        "y": 129.5,
-        "width": 100.8,
-        "height": 91.2,
+        "x": 245.4,
+        "y": 134.5,
+        "width": 156.7,
+        "height": 141.7,
         "rotation": -14,
         "zIndex": 1
       },
       "ribbon_01": {
-        "x": 302.0,
-        "y": 158.1,
-        "width": 60.0,
-        "height": 41.7,
-        "rotation": 14,
+        "x": 309.8,
+        "y": 154.3,
+        "width": 108.0,
+        "height": 76.7,
+        "rotation": -10,
         "zIndex": 2
       },
       "ribbon_02": {
-        "x": 294.6,
-        "y": 171.7,
-        "width": 60.0,
-        "height": 55.7,
-        "rotation": 14,
+        "x": 308.5,
+        "y": 182.4,
+        "width": 108.0,
+        "height": 102.6,
+        "rotation": -10,
         "zIndex": 2
       },
       "ribbon_03": {
-        "x": 298.2,
-        "y": 174.9,
-        "width": 60.0,
-        "height": 60.0,
-        "rotation": 14,
+        "x": 316.2,
+        "y": 184.9,
+        "width": 108.0,
+        "height": 109.0,
+        "rotation": -10,
         "zIndex": 2
       },
       "ribbon_04": {
-        "x": 296.1,
-        "y": 173.5,
-        "width": 60.0,
-        "height": 57.5,
-        "rotation": 14,
+        "x": 312.1,
+        "y": 184.0,
+        "width": 108.0,
+        "height": 104.4,
+        "rotation": -10,
         "zIndex": 2
       }
     },
     "rabbit": {
       "glasses_01": {
-        "x": 218.8,
-        "y": 270.9,
-        "width": 115.6,
+        "x": 222.5,
+        "y": 270.8,
+        "width": 125.1,
         "height": 56.5,
         "rotation": -3,
         "zIndex": 3
@@ -443,84 +443,84 @@
         "zIndex": 3
       },
       "glasses_04": {
-        "x": 228.6,
+        "x": 228.4,
         "y": 270.4,
-        "width": 127.2,
+        "width": 127.3,
         "height": 56.5,
         "rotation": -3,
         "zIndex": 3
       },
       "hat_01": {
-        "x": 206.4,
-        "y": 209.2,
-        "width": 104.4,
-        "height": 66.8,
+        "x": 218.5,
+        "y": 201.3,
+        "width": 124.9,
+        "height": 79.9,
         "rotation": -6,
         "zIndex": 1
       },
       "hat_02": {
-        "x": 181.2,
-        "y": 206.1,
-        "width": 131.5,
-        "height": 78.2,
+        "x": 218.3,
+        "y": 202.7,
+        "width": 157.4,
+        "height": 93.6,
         "rotation": -6,
         "zIndex": 1
       },
       "hat_03": {
-        "x": 202.8,
-        "y": 205.5,
-        "width": 114.4,
-        "height": 74.1,
+        "x": 214.1,
+        "y": 196.9,
+        "width": 136.9,
+        "height": 88.7,
         "rotation": -6,
         "zIndex": 1
       },
       "hat_04": {
-        "x": 202.4,
-        "y": 200.1,
-        "width": 96.4,
-        "height": 87.2,
+        "x": 215.7,
+        "y": 209.6,
+        "width": 123.4,
+        "height": 111.7,
         "rotation": -6,
         "zIndex": 1
       },
       "ribbon_01": {
-        "x": 262.0,
-        "y": 224.1,
-        "width": 62.0,
-        "height": 43.1,
-        "rotation": 16,
+        "x": 261.8,
+        "y": 224.3,
+        "width": 111.6,
+        "height": 79.3,
+        "rotation": -10,
         "zIndex": 2
       },
       "ribbon_02": {
-        "x": 253.9,
-        "y": 237.9,
-        "width": 62.0,
-        "height": 57.6,
-        "rotation": 16,
+        "x": 260.5,
+        "y": 253.4,
+        "width": 111.6,
+        "height": 106.0,
+        "rotation": -10,
         "zIndex": 2
       },
       "ribbon_03": {
-        "x": 257.5,
-        "y": 241.4,
-        "width": 62.0,
-        "height": 62.0,
-        "rotation": 16,
+        "x": 268.4,
+        "y": 255.9,
+        "width": 111.6,
+        "height": 112.6,
+        "rotation": -10,
         "zIndex": 2
       },
       "ribbon_04": {
-        "x": 255.3,
-        "y": 239.8,
-        "width": 62.0,
-        "height": 59.4,
-        "rotation": 16,
+        "x": 264.1,
+        "y": 255.0,
+        "width": 111.6,
+        "height": 107.8,
+        "rotation": -10,
         "zIndex": 2
       }
     },
     "bear": {
       "glasses_01": {
-        "x": 236.4,
-        "y": 228.8,
-        "width": 128.0,
-        "height": 62.5,
+        "x": 240.5,
+        "y": 228.6,
+        "width": 138.5,
+        "height": 62.6,
         "rotation": -3,
         "zIndex": 3
       },
@@ -541,83 +541,83 @@
         "zIndex": 3
       },
       "glasses_04": {
-        "x": 247.3,
+        "x": 247.1,
         "y": 228.3,
-        "width": 140.8,
+        "width": 141.0,
         "height": 62.5,
         "rotation": -3,
         "zIndex": 3
       },
       "hat_01": {
-        "x": 216.6,
-        "y": 150.1,
-        "width": 109.1,
-        "height": 69.8,
-        "rotation": -10,
+        "x": 238.3,
+        "y": 137.4,
+        "width": 158.6,
+        "height": 101.5,
+        "rotation": -8,
         "zIndex": 1
       },
       "hat_02": {
-        "x": 190.1,
-        "y": 148.7,
-        "width": 137.5,
-        "height": 81.8,
-        "rotation": -10,
+        "x": 238.1,
+        "y": 139.1,
+        "width": 199.7,
+        "height": 118.8,
+        "rotation": -8,
         "zIndex": 1
       },
       "hat_03": {
-        "x": 212.5,
-        "y": 146.5,
-        "width": 119.6,
-        "height": 77.5,
-        "rotation": -10,
+        "x": 232.6,
+        "y": 131.9,
+        "width": 173.7,
+        "height": 112.5,
+        "rotation": -8,
         "zIndex": 1
       },
       "hat_04": {
-        "x": 211.8,
-        "y": 140.9,
-        "width": 100.8,
-        "height": 91.2,
-        "rotation": -10,
+        "x": 235.2,
+        "y": 147.9,
+        "width": 156.7,
+        "height": 141.7,
+        "rotation": -8,
         "zIndex": 1
       },
       "ribbon_01": {
-        "x": 306.0,
-        "y": 158.1,
-        "width": 62.0,
-        "height": 43.1,
-        "rotation": 14,
+        "x": 305.8,
+        "y": 158.3,
+        "width": 111.6,
+        "height": 79.3,
+        "rotation": -10,
         "zIndex": 2
       },
       "ribbon_02": {
-        "x": 298.4,
-        "y": 172.1,
-        "width": 62.0,
-        "height": 57.6,
-        "rotation": 14,
+        "x": 304.5,
+        "y": 187.4,
+        "width": 111.6,
+        "height": 106.0,
+        "rotation": -10,
         "zIndex": 2
       },
       "ribbon_03": {
-        "x": 302.1,
-        "y": 175.5,
-        "width": 62.0,
-        "height": 62.0,
-        "rotation": 14,
+        "x": 312.4,
+        "y": 189.9,
+        "width": 111.6,
+        "height": 112.6,
+        "rotation": -10,
         "zIndex": 2
       },
       "ribbon_04": {
-        "x": 299.9,
-        "y": 174.0,
-        "width": 62.0,
-        "height": 59.4,
-        "rotation": 14,
+        "x": 308.1,
+        "y": 189.0,
+        "width": 111.6,
+        "height": 107.8,
+        "rotation": -10,
         "zIndex": 2
       }
     },
     "panda": {
       "glasses_01": {
-        "x": 247.3,
-        "y": 201.6,
-        "width": 165.2,
+        "x": 252.5,
+        "y": 201.1,
+        "width": 178.7,
         "height": 80.7,
         "rotation": -6,
         "zIndex": 3
@@ -639,83 +639,83 @@
         "zIndex": 3
       },
       "glasses_04": {
-        "x": 261.3,
+        "x": 261.0,
         "y": 200.2,
-        "width": 181.7,
+        "width": 181.9,
         "height": 80.7,
         "rotation": -6,
         "zIndex": 3
       },
       "hat_01": {
-        "x": 195.9,
-        "y": 124.4,
-        "width": 109.1,
-        "height": 69.8,
-        "rotation": -16,
+        "x": 244.3,
+        "y": 88.0,
+        "width": 195.4,
+        "height": 125.0,
+        "rotation": -14,
         "zIndex": 1
       },
       "hat_02": {
-        "x": 169.4,
-        "y": 125.8,
-        "width": 137.5,
-        "height": 81.8,
-        "rotation": -16,
+        "x": 244.3,
+        "y": 90.2,
+        "width": 246.1,
+        "height": 146.4,
+        "rotation": -14,
         "zIndex": 1
       },
       "hat_03": {
-        "x": 191.5,
-        "y": 121.2,
-        "width": 119.6,
-        "height": 77.5,
-        "rotation": -16,
+        "x": 236.6,
+        "y": 82.0,
+        "width": 214.1,
+        "height": 138.7,
+        "rotation": -14,
         "zIndex": 1
       },
       "hat_04": {
-        "x": 190.2,
-        "y": 115.8,
-        "width": 100.8,
-        "height": 91.2,
-        "rotation": -16,
+        "x": 241.8,
+        "y": 101.3,
+        "width": 193.0,
+        "height": 174.7,
+        "rotation": -14,
         "zIndex": 1
       },
       "ribbon_01": {
-        "x": 298.0,
-        "y": 124.1,
-        "width": 62.0,
-        "height": 43.1,
-        "rotation": 14,
+        "x": 297.8,
+        "y": 124.3,
+        "width": 111.6,
+        "height": 79.3,
+        "rotation": -10,
         "zIndex": 2
       },
       "ribbon_02": {
-        "x": 290.4,
-        "y": 138.1,
-        "width": 62.0,
-        "height": 57.6,
-        "rotation": 14,
+        "x": 296.5,
+        "y": 153.4,
+        "width": 111.6,
+        "height": 106.0,
+        "rotation": -10,
         "zIndex": 2
       },
       "ribbon_03": {
-        "x": 294.1,
-        "y": 141.5,
-        "width": 62.0,
-        "height": 62.0,
-        "rotation": 14,
+        "x": 304.4,
+        "y": 155.9,
+        "width": 111.6,
+        "height": 112.6,
+        "rotation": -10,
         "zIndex": 2
       },
       "ribbon_04": {
-        "x": 291.9,
-        "y": 140.0,
-        "width": 62.0,
-        "height": 59.4,
-        "rotation": 14,
+        "x": 300.1,
+        "y": 155.0,
+        "width": 111.6,
+        "height": 107.8,
+        "rotation": -10,
         "zIndex": 2
       }
     },
     "penguin": {
       "glasses_01": {
-        "x": 255.7,
-        "y": 178.6,
-        "width": 115.6,
+        "x": 259.4,
+        "y": 178.3,
+        "width": 125.1,
         "height": 56.5,
         "rotation": -6,
         "zIndex": 3
@@ -737,83 +737,83 @@
         "zIndex": 3
       },
       "glasses_04": {
-        "x": 265.5,
+        "x": 265.3,
         "y": 177.6,
-        "width": 127.2,
+        "width": 127.3,
         "height": 56.5,
         "rotation": -6,
         "zIndex": 3
       },
       "hat_01": {
-        "x": 261.4,
-        "y": 97.0,
-        "width": 130.5,
-        "height": 83.5,
+        "x": 257.4,
+        "y": 84.5,
+        "width": 140.9,
+        "height": 90.2,
         "rotation": -8,
         "zIndex": 1
       },
       "hat_02": {
-        "x": 229.8,
-        "y": 94.3,
-        "width": 164.4,
-        "height": 97.8,
+        "x": 257.2,
+        "y": 86.1,
+        "width": 177.5,
+        "height": 105.6,
         "rotation": -8,
         "zIndex": 1
       },
       "hat_03": {
-        "x": 256.7,
-        "y": 92.5,
-        "width": 143.0,
-        "height": 92.6,
+        "x": 252.3,
+        "y": 79.7,
+        "width": 154.4,
+        "height": 100.0,
         "rotation": -8,
         "zIndex": 1
       },
       "hat_04": {
-        "x": 256.1,
-        "y": 85.8,
-        "width": 120.5,
-        "height": 109.0,
+        "x": 254.6,
+        "y": 93.9,
+        "width": 139.2,
+        "height": 126.0,
         "rotation": -8,
         "zIndex": 1
       },
       "ribbon_01": {
-        "x": 321.9,
-        "y": 132.1,
-        "width": 66.0,
-        "height": 45.8,
-        "rotation": 22,
+        "x": 321.8,
+        "y": 132.3,
+        "width": 118.8,
+        "height": 84.4,
+        "rotation": -10,
         "zIndex": 2
       },
       "ribbon_02": {
-        "x": 311.8,
-        "y": 145.8,
-        "width": 66.0,
-        "height": 61.3,
-        "rotation": 22,
+        "x": 320.4,
+        "y": 163.3,
+        "width": 118.8,
+        "height": 112.9,
+        "rotation": -10,
         "zIndex": 2
       },
       "ribbon_03": {
-        "x": 315.3,
-        "y": 149.9,
-        "width": 66.0,
-        "height": 66.0,
-        "rotation": 22,
+        "x": 328.8,
+        "y": 166.0,
+        "width": 118.8,
+        "height": 119.9,
+        "rotation": -10,
         "zIndex": 2
       },
       "ribbon_04": {
-        "x": 313.2,
-        "y": 148.0,
-        "width": 66.0,
-        "height": 63.3,
-        "rotation": 22,
+        "x": 324.3,
+        "y": 165.1,
+        "width": 118.8,
+        "height": 114.8,
+        "rotation": -10,
         "zIndex": 2
       }
     },
     "chick": {
       "glasses_01": {
-        "x": 251.8,
-        "y": 222.9,
-        "width": 115.6,
+        "x": 255.5,
+        "y": 222.8,
+        "width": 125.1,
         "height": 56.5,
         "rotation": -3,
         "zIndex": 3
@@ -835,75 +835,75 @@
         "zIndex": 3
       },
       "glasses_04": {
-        "x": 261.6,
+        "x": 261.4,
         "y": 222.4,
-        "width": 127.2,
+        "width": 127.3,
         "height": 56.5,
         "rotation": -3,
         "zIndex": 3
       },
       "hat_01": {
-        "x": 259.5,
-        "y": 148.8,
-        "width": 123.4,
-        "height": 78.9,
+        "x": 257.8,
+        "y": 140.3,
+        "width": 150.5,
+        "height": 96.3,
         "rotation": -4,
         "zIndex": 1
       },
       "hat_02": {
-        "x": 229.9,
-        "y": 144.1,
-        "width": 155.4,
-        "height": 92.4,
+        "x": 257.5,
+        "y": 142.0,
+        "width": 189.6,
+        "height": 112.8,
         "rotation": -4,
         "zIndex": 1
       },
       "hat_03": {
-        "x": 255.4,
-        "y": 144.2,
-        "width": 135.2,
-        "height": 87.6,
+        "x": 252.8,
+        "y": 134.7,
+        "width": 165.0,
+        "height": 106.9,
         "rotation": -4,
         "zIndex": 1
       },
       "hat_04": {
-        "x": 255.2,
-        "y": 137.9,
-        "width": 113.9,
-        "height": 103.1,
+        "x": 254.2,
+        "y": 150.1,
+        "width": 148.7,
+        "height": 134.6,
         "rotation": -4,
         "zIndex": 1
       },
       "ribbon_01": {
-        "x": 316.0,
-        "y": 182.1,
-        "width": 62.0,
-        "height": 43.1,
-        "rotation": 18,
+        "x": 315.8,
+        "y": 182.3,
+        "width": 111.6,
+        "height": 79.3,
+        "rotation": -10,
         "zIndex": 2
       },
       "ribbon_02": {
-        "x": 307.4,
-        "y": 195.6,
-        "width": 62.0,
-        "height": 57.6,
-        "rotation": 18,
+        "x": 314.5,
+        "y": 211.4,
+        "width": 111.6,
+        "height": 106.0,
+        "rotation": -10,
         "zIndex": 2
       },
       "ribbon_03": {
-        "x": 310.9,
-        "y": 199.2,
-        "width": 62.0,
-        "height": 62.0,
-        "rotation": 18,
+        "x": 322.4,
+        "y": 213.9,
+        "width": 111.6,
+        "height": 112.6,
+        "rotation": -10,
         "zIndex": 2
       },
       "ribbon_04": {
-        "x": 308.8,
-        "y": 197.6,
-        "width": 62.0,
-        "height": 59.4,
-        "rotation": 18,
+        "x": 318.1,
+        "y": 213.0,
+        "width": 111.6,
+        "height": 107.8,
+        "rotation": -10,
         "zIndex": 2
       }
     }

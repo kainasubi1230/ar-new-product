@@ -1,8 +1,8 @@
 #!/bin/sh
 # アバターの動物の絵（avatar_animals_png/*.png、512×512）を、アプリに入れる。
 #   sh scripts/avatar-animals/build-assets.sh
-# - 元の絵はそのまま（縮めず・描き直さず）コピーする：
-#     src/assets/animals/<名前>.png（RN の画面で、元の色のときに出す）
+# - 元の絵の背景（一色のクリームのキャンバス）だけを透明にして（cut-canvas.swift。キャラクターは縮めず・描き直さない）入れる。
+#   アバターの背景色を選べるようにするため（透明な所に、選んだ色を敷く）：
 #     ios/SpatialInventory/Images.xcassets/Animal<名前>.imageset/<名前>.png（色変え・AR のカード）
 # - オレンジ・黄色の部分を選ぶマスクを作る（build-masks.swift）：
 #     ios/SpatialInventory/Images.xcassets/Animal<名前>Mask.imageset/<名前>_mask.png
@@ -18,13 +18,13 @@ WORK=$(mktemp -d)
 mkdir -p "$OUT"
 
 swiftc -O -o "$WORK/build-masks" "$DIR/build-masks.swift"
+swiftc -O -o "$WORK/cut-canvas" "$DIR/cut-canvas.swift"
 "$WORK/build-masks" "$SRC" "$WORK/masks" "$OUT"
 
 pairs=""
 for name in cat dog bear rabbit panda fox penguin chick; do
   asset="Animal$(printf '%s' "$name" | cut -c1 | tr '[:lower:]' '[:upper:]')$(printf '%s' "$name" | cut -c2-)"
-  cp "$SRC/$name.png" "$ROOT/src/assets/animals/$name.png"
-  cp "$SRC/$name.png" "$ASSETS/$asset.imageset/$name.png"
+  "$WORK/cut-canvas" "$SRC/$name.png" "$ASSETS/$asset.imageset/$name.png"
   mkdir -p "$ASSETS/${asset}Mask.imageset"
   cp "$WORK/masks/${name}_mask.png" "$ASSETS/${asset}Mask.imageset/${name}_mask.png"
   cat > "$ASSETS/${asset}Mask.imageset/Contents.json" <<JSON

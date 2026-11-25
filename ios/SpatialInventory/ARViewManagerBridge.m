@@ -50,4 +50,5 @@ RCT_EXTERN_METHOD(reverseGeocode:(double)latitude longitude:(double)longitude re
 
 @interface RCT_EXTERN_MODULE(LocaAvatar, NSObject)
 RCT_EXTERN_METHOD(render:(NSString *)animal hex:(NSString *)hex resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject)
+RCT_EXTERN_METHOD(renderAttachment:(NSString *)key hex:(NSString *)hex resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject)
 @end

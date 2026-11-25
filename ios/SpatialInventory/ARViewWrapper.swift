@@ -216,6 +216,7 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
   private var currentCardIcon: String = "@ken_loca"
   private var currentCardTags: [String] = []
   private var currentModelUrl: String = ""
+  // 原点に固定した、変換なしのアンカー。照合で出したカードの入れ物をこの子にする（ワールド座標＝この中の座標）
   private var rootAnchor = AnchorEntity(world: .zero)
   private var previewAnchor = AnchorEntity(world: .zero)
   private var reticleEntity: ModelEntity?
@@ -355,8 +356,9 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
     // 画面に現れたことを JS に知らせたか（拾った言葉の記録は 1 回だけ）
     var hasBeenSeen = false
     var distance: Float = 0
-    // カードを乗せている入れ物（ワールド座標）。ARAnchor の位置へ毎フレーム滑らかに寄せる
-    let holder: AnchorEntity
+    // カードを乗せている入れ物。変換なしの rootAnchor の子で、ワールド座標で位置・向きを決める。
+    // ARAnchor の位置へ毎フレーム滑らかに寄せる
+    let holder: Entity
     // 追いかける ARAnchor（照合後も ARKit が位置を細かく直し続ける）
     let anchorIdentifier: UUID
     // アンカーの位置が落ち着いたか。落ち着くまではカードを出さない（出てから跳ねるのを防ぐ）
@@ -1398,19 +1400,31 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
       // 前の投稿（`color:#RRGGBB`）は色の丸に名前の頭文字、もっと古い投稿（絵のアイコンのキーなど）は淡い緑の丸
       var animalImage: UIImage?
       var animalKey = ""
-      var attachmentKeys: [String] = []
+      // アタッチメントと、その色（色を変えていなければ nil）
+      var attachmentItems: [(key: String, hex: String?)] = []
       var chosenAvatarColor: UIColor?
       var avatarBackground: UIColor?
       if handle.hasPrefix("animal:") {
-        // animal:cat:#RRGGBB、アタッチメントを付けていれば animal:cat:#RRGGBB:ribbon_01+hat_02
-        let parts = handle.split(separator: ":")
+        // animal:cat:#RRGGBB[:アイテム[:背景色]]。アイテムは ribbon_01#3B82F6+hat_02（色を変えたものは後ろに色）。
+        // アイテムが無くて背景色だけのときは animal:cat:#RRGGBB::#FDE2E4（空の区切りも残して読む）
+        let parts = handle.split(separator: ":", omittingEmptySubsequences: false)
         if parts.count >= 3, AvatarRecolorCore.parseHex(String(parts[2])) != nil {
           let hex = String(parts[2])
           animalKey = String(parts[1])
-          attachmentKeys = parts.count >= 4 ? parts[3].split(separator: "+").map(String.init) : []
+          if parts.count >= 4 {
+            attachmentItems = parts[3].split(separator: "+").map { part in
+              let pieces = part.split(separator: "#", maxSplits: 1)
+              return (String(pieces[0]), pieces.count > 1 ? "#" + pieces[1] : nil)
+            }
+          }
           animalImage = AvatarRecolor.image(animal: animalKey, hex: hex)
           chosenAvatarColor = parseHexColor(hex)
-          avatarBackground = UIColor(red: 0xFA / 255.0, green: 0xF7 / 255.0, blue: 0xEF / 255.0, alpha: 1)
+          // 背景色（キャラクターの絵は背景を抜いてあるので、丸に敷く）。無ければ初期のクリーム（AVATAR_CANVAS_COLOR）
+          if parts.count >= 5, AvatarRecolorCore.parseHex(String(parts[4])) != nil {
+            avatarBackground = parseHexColor(String(parts[4]))
+          } else {
+            avatarBackground = UIColor(red: 0xFA / 255.0, green: 0xF7 / 255.0, blue: 0xEF / 255.0, alpha: 1)
+          }
         }
       } else if handle.hasPrefix("color:#") {
         chosenAvatarColor = parseHexColor(String(handle.dropFirst("color:".count)))
@@ -1433,7 +1447,7 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
         let animalRect = CGRect(x: box.midX - drawSize.width / 2, y: box.midY - drawSize.height / 2,
                                 width: drawSize.width, height: drawSize.height)
         animalImage.draw(in: animalRect)
-        AvatarAttachments.draw(attachmentKeys, animal: animalKey, in: animalRect, context: cgContext)
+        AvatarAttachments.draw(attachmentItems, animal: animalKey, in: animalRect, context: cgContext)
         cgContext.restoreGState()
         drewIcon = true
       } else if chosenAvatarColor == nil {
@@ -1992,6 +2006,7 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
     // セッションをやり直すので、このセッションで置いたカードは片付ける
     placedCardEntities.forEach { arView.scene.removeAnchor($0) }
     placedCardEntities.removeAll()
+    revealCards.forEach { $0.holder.removeFromParent() }
     revealCards.removeAll()
     preciseCardPostIds.removeAll()
     mapGrowth = nil
@@ -2149,13 +2164,19 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
       // ワールド座標の入れ物に乗せ、updateCardReveal で ARAnchor の最新位置へ滑らかに寄せる。
       // 向きはアンカーの向きを使わず、地面に対してまっすぐ立てて見ている人の方へ向ける（現れた瞬間に固定する）。
       // アンカーの向きを使うと、置いた人とは別の方向から来たとき横を向いて見え、古い投稿では横倒しになることがある
+      // 入れ物は、変換なしの rootAnchor（原点に固定）の子のふつうの Entity にする。
+      // 以前は AnchorEntity(world: 向き付きの変換) を毎フレーム setOrientation(relativeTo: nil) で動かしていたが、
+      // アンカーの固定の変換とあとから設定した向きが二重にかかり、作った瞬間の向きのぶんだけ余分に回って
+      // （90° や 45° など、そのときのカメラの向きしだいで）斜めに見えていた
       let position = Self.translation(of: anchor.transform)
       let cameraPosition = arView.session.currentFrame.map { Self.translation(of: $0.camera.transform) } ?? position
-      let anchorEntity = AnchorEntity(world: Transform(
+      let holder = Entity()
+      rootAnchor.addChild(holder)
+      holder.setTransformMatrix(Transform(
         scale: .one,
         rotation: Self.yawFacing(from: position, toward: cameraPosition),
         translation: position
-      ).matrix)
+      ).matrix, relativeTo: nil)
       let cardEntity = makeCardEntity(
         title: card.title,
         description: card.description,
@@ -2170,15 +2191,13 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
       glowEntity.scale = SIMD3<Float>(repeating: Self.revealGlowSize)
       cardEntity.isEnabled = false
       Self.setOpacity(0, of: cardEntity)
-      anchorEntity.addChild(cardEntity)
-      anchorEntity.addChild(glowEntity)
-      arView.scene.addAnchor(anchorEntity)
-      placedCardEntities.append(anchorEntity)
+      holder.addChild(cardEntity)
+      holder.addChild(glowEntity)
       revealCards.append(RevealCard(
         postId: postId,
         card: cardEntity,
         glow: glowEntity,
-        holder: anchorEntity,
+        holder: holder,
         anchorIdentifier: anchor.identifier
       ))
       emitRelocalizationStatus("found", postId: postId)
@@ -4016,13 +4035,19 @@ enum AvatarRecolor {
     "Animal" + animal.prefix(1).uppercased() + animal.dropFirst()
   }
 
-  /// AR のカードなどで使う絵
+  /// AR のカードなどで使う動物の絵
   static func image(animal: String, hex: String) -> UIImage? {
-    let key = "\(animal):\(hex.lowercased())" as NSString
+    image(asset: assetName(for: animal), hex: hex)
+  }
+
+  /// Images.xcassets の絵 asset のオレンジ・黄色を hex に変えた絵（マスクは asset + "Mask"）。
+  /// キャラクターの絵（AnimalCat）にもアタッチメントの絵（AttachmentRibbon01）にも使う
+  static func image(asset: String, hex: String) -> UIImage? {
+    let key = "\(asset):\(hex.lowercased())" as NSString
     if let cached = memory.object(forKey: key) { return cached }
-    guard let original = UIImage(named: assetName(for: animal)), let cg = original.cgImage else { return nil }
-    // マスクが無いキャラクターは、色を変えずに元の絵のまま
-    guard !AvatarRecolorCore.isOriginal(hex), let mask = UIImage(named: assetName(for: animal) + "Mask")?.cgImage else {
+    guard let original = UIImage(named: asset), let cg = original.cgImage else { return nil }
+    // マスクが無い絵・元のオレンジのときは、色を変えずに元の絵のまま
+    guard !AvatarRecolorCore.isOriginal(hex), let mask = UIImage(named: asset + "Mask")?.cgImage else {
       memory.setObject(original, forKey: key)
       return original
     }
@@ -4033,7 +4058,7 @@ enum AvatarRecolor {
   }
 
   /// RN の画面で使う、色を変えた絵の PNG ファイル（アプリのキャッシュに置く）
-  static func fileURL(animal: String, hex: String) -> URL? {
+  static func fileURL(asset: String, hex: String) -> URL? {
     let fm = FileManager.default
     guard let caches = fm.urls(for: .cachesDirectory, in: .userDomainMask).first else { return nil }
     let dir = caches.appendingPathComponent("avatar-recolor", isDirectory: true)
@@ -4045,10 +4070,10 @@ enum AvatarRecolor {
     }
     lock.unlock()
     try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
-    let name = "\(animal)-\(hex.lowercased().replacingOccurrences(of: "#", with: "")).png"
+    let name = "\(asset)-\(hex.lowercased().replacingOccurrences(of: "#", with: "")).png"
     let url = dir.appendingPathComponent(name)
     if fm.fileExists(atPath: url.path) { return url }
-    guard let data = image(animal: animal, hex: hex)?.pngData() else { return nil }
+    guard let data = image(asset: asset, hex: hex)?.pngData() else { return nil }
     do {
       try data.write(to: url, options: .atomic)
       return url
@@ -4075,8 +4100,27 @@ final class LocaAvatar: NSObject {
     rejecter reject: @escaping RCTPromiseRejectBlock
   ) {
     queue.async {
-      guard AvatarRecolorCore.parseHex(hex) != nil, let url = AvatarRecolor.fileURL(animal: animal, hex: hex) else {
+      guard AvatarRecolorCore.parseHex(hex) != nil,
+            let url = AvatarRecolor.fileURL(asset: AvatarRecolor.assetName(for: animal), hex: hex) else {
         reject("avatar_render_failed", "アイコンの絵を作れませんでした", nil)
+        return
+      }
+      resolve(url.absoluteString)
+    }
+  }
+
+  /// アタッチメント key（ribbon_01 など）の黄色を hex（#RRGGBB）に変えた絵の file:// URL
+  @objc(renderAttachment:hex:resolver:rejecter:)
+  func renderAttachment(
+    _ key: String,
+    hex: String,
+    resolver resolve: @escaping RCTPromiseResolveBlock,
+    rejecter reject: @escaping RCTPromiseRejectBlock
+  ) {
+    queue.async {
+      guard AvatarRecolorCore.parseHex(hex) != nil,
+            let url = AvatarRecolor.fileURL(asset: AvatarAttachments.assetName(for: key), hex: hex) else {
+        reject("attachment_render_failed", "アイテムの絵を作れませんでした", nil)
         return
       }
       resolve(url.absoluteString)
@@ -4107,20 +4151,24 @@ enum AvatarAttachments {
     return try? JSONDecoder().decode(Layout.self, from: data)
   }()
 
-  private static func assetName(for key: String) -> String {
+  static func assetName(for key: String) -> String {
     // ribbon_01 → AttachmentRibbon01
     let parts = key.split(separator: "_")
     guard parts.count == 2 else { return "" }
     return "Attachment" + parts[0].prefix(1).uppercased() + parts[0].dropFirst() + parts[1]
   }
 
-  /// rect：キャラクターの絵を描いた範囲（左上原点の UIKit の座標）
-  static func draw(_ keys: [String], animal: String, in rect: CGRect, context: CGContext) {
-    guard !keys.isEmpty, let layout, let placements = layout.layout[animal] else { return }
+  /// rect：キャラクターの絵を描いた範囲（左上原点の UIKit の座標）。アイテムごとに hex があれば、黄色をその色に変えて描く
+  static func draw(_ items: [(key: String, hex: String?)], animal: String, in rect: CGRect, context: CGContext) {
+    guard !items.isEmpty, let layout, let placements = layout.layout[animal] else { return }
     let unit = rect.width / layout.canvasSize
-    let sorted = keys.compactMap { key in placements[key].map { (key, $0) } }.sorted { $0.1.zIndex < $1.1.zIndex }
-    for (key, place) in sorted {
-      guard let meta = layout.items[key], let image = UIImage(named: assetName(for: key)) else { continue }
+    let sorted = items.compactMap { item in placements[item.key].map { (item.key, item.hex, $0) } }
+      .sorted { $0.2.zIndex < $1.2.zIndex }
+    for (key, hex, place) in sorted {
+      let asset = assetName(for: key)
+      let image = hex.flatMap { AvatarRecolorCore.parseHex($0) != nil ? AvatarRecolor.image(asset: asset, hex: $0) : nil }
+        ?? UIImage(named: asset)
+      guard let meta = layout.items[key], let image else { continue }
       let scale = place.width / meta.box.width
       let boxCx = meta.box.x + meta.box.width / 2
       let boxCy = meta.box.y + meta.box.height / 2

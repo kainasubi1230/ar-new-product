@@ -3,8 +3,9 @@ import layoutData from './avatarAttachmentLayout.json';
 import type { AvatarAnimal } from './avatarColors';
 
 /**
- * アバターのアタッチメント（リボン・帽子・メガネ）。絵は avatar_attachments_png/*.png をそのまま使う
- * （src/assets/attachments と ios の Images.xcassets/Attachment*）。
+ * アバターのアタッチメント（リボン・帽子・メガネ）。絵は avatar_attachments_png/*.png を使い、
+ * ios の Images.xcassets/Attachment* に入れてある（画面にはネイティブが色を変えた絵を出す。JS に絵は同梱しない）。
+ * image は、色を変えた絵を作れないとき（iOS 以外）の代わりで、Images.xcassets の名前で読む
  * 装着位置は avatarAttachmentLayout.json（scripts/avatar-attachments/build-assets.sh で作る）：
  * キャラクター × アイテムごとに x・y（絵がある範囲の中心）・幅・高さ（絵がある範囲の大きさ）・回転・重なり順。
  * 単位はキャラクターの絵（512×512）の px。AR のカード（ARViewWrapper.swift）も同じ表を同じ計算で使う
@@ -19,18 +20,18 @@ export const ATTACHMENT_CATEGORIES = [
 export type AttachmentCategory = (typeof ATTACHMENT_CATEGORIES)[number]['key'];
 
 export const AVATAR_ATTACHMENTS = [
-  { key: 'ribbon_01', category: 'ribbon', label: 'ストライプ', image: require('../assets/attachments/ribbon_01.png') },
-  { key: 'ribbon_02', category: 'ribbon', label: 'ボタン', image: require('../assets/attachments/ribbon_02.png') },
-  { key: 'ribbon_03', category: 'ribbon', label: 'ドット', image: require('../assets/attachments/ribbon_03.png') },
-  { key: 'ribbon_04', category: 'ribbon', label: 'ロング', image: require('../assets/attachments/ribbon_04.png') },
-  { key: 'hat_01', category: 'hat', label: 'ベレー帽', image: require('../assets/attachments/hat_01.png') },
-  { key: 'hat_02', category: 'hat', label: 'キャップ', image: require('../assets/attachments/hat_02.png') },
-  { key: 'hat_03', category: 'hat', label: 'シルクハット', image: require('../assets/attachments/hat_03.png') },
-  { key: 'hat_04', category: 'hat', label: 'ニット帽', image: require('../assets/attachments/hat_04.png') },
-  { key: 'glasses_01', category: 'glasses', label: 'まる', image: require('../assets/attachments/glasses_01.png') },
-  { key: 'glasses_02', category: 'glasses', label: 'スクエア', image: require('../assets/attachments/glasses_02.png') },
-  { key: 'glasses_03', category: 'glasses', label: 'クラシック', image: require('../assets/attachments/glasses_03.png') },
-  { key: 'glasses_04', category: 'glasses', label: 'サングラス', image: require('../assets/attachments/glasses_04.png') },
+  { key: 'ribbon_01', category: 'ribbon', label: 'ストライプ', image: { uri: 'AttachmentRibbon01' } },
+  { key: 'ribbon_02', category: 'ribbon', label: 'ボタン', image: { uri: 'AttachmentRibbon02' } },
+  { key: 'ribbon_03', category: 'ribbon', label: 'ドット', image: { uri: 'AttachmentRibbon03' } },
+  { key: 'ribbon_04', category: 'ribbon', label: 'ロング', image: { uri: 'AttachmentRibbon04' } },
+  { key: 'hat_01', category: 'hat', label: 'ベレー帽', image: { uri: 'AttachmentHat01' } },
+  { key: 'hat_02', category: 'hat', label: 'キャップ', image: { uri: 'AttachmentHat02' } },
+  { key: 'hat_03', category: 'hat', label: 'シルクハット', image: { uri: 'AttachmentHat03' } },
+  { key: 'hat_04', category: 'hat', label: 'ニット帽', image: { uri: 'AttachmentHat04' } },
+  { key: 'glasses_01', category: 'glasses', label: 'まる', image: { uri: 'AttachmentGlasses01' } },
+  { key: 'glasses_02', category: 'glasses', label: 'スクエア', image: { uri: 'AttachmentGlasses02' } },
+  { key: 'glasses_03', category: 'glasses', label: 'クラシック', image: { uri: 'AttachmentGlasses03' } },
+  { key: 'glasses_04', category: 'glasses', label: 'サングラス', image: { uri: 'AttachmentGlasses04' } },
 ] as const satisfies readonly {
   key: string;
   category: AttachmentCategory;
@@ -40,8 +41,13 @@ export const AVATAR_ATTACHMENTS = [
 
 export type AttachmentKey = (typeof AVATAR_ATTACHMENTS)[number]['key'];
 
-/** 装着しているアタッチメント（カテゴリごとに 1 つまで） */
-export type AttachmentSelection = Partial<Record<AttachmentCategory, AttachmentKey>>;
+/**
+ * 装着しているアタッチメント（リボン・帽子・メガネから、それぞれ 1 つまで。重ねて付けられる）と、
+ * カテゴリごとのアイテムの色（黄色の部分を変える色。#RRGGBB、無ければ元の色。アイテムを付け替えても外しても覚えておく）
+ */
+export type AttachmentSelection = Partial<Record<AttachmentCategory, AttachmentKey>> & {
+  colors?: Partial<Record<AttachmentCategory, string>>;
+};
 
 /** キャラクターごとの装着（キャラクターを切り替えても、それぞれの装着を覚えておく） */
 export type AttachmentsByAnimal = Partial<Record<AvatarAnimal, AttachmentSelection>>;
@@ -98,17 +104,37 @@ export const attachmentFrame = (animal: AvatarAnimal, key: AttachmentKey) => {
   };
 };
 
-/** 装着の中から、知らないカテゴリ・アイテムを除く（保存されていた値を読むとき） */
+const HEX6 = /^#[0-9A-Fa-f]{6}$/;
+
+/** 装着の中から、知らないカテゴリ・アイテム・読めない色を除く（保存されていた値を読むとき） */
 export const cleanAttachmentSelection = (value: unknown): AttachmentSelection => {
   if (!value || typeof value !== 'object') return {};
+  const raw = value as Record<string, unknown>;
   const selection: AttachmentSelection = {};
+  const colors: Partial<Record<AttachmentCategory, string>> = {};
+  const rawColors = (raw.colors && typeof raw.colors === 'object' ? raw.colors : {}) as Record<string, unknown>;
   for (const category of ATTACHMENT_CATEGORIES) {
-    const key = (value as Record<string, unknown>)[category.key];
+    const key = raw[category.key];
     if (isAttachmentKey(key) && attachmentOf(key).category === category.key) selection[category.key] = key;
+    // 前の版（全部で 1 つ・色も 1 つ）の color は、付けていたアイテムのカテゴリの色にする
+    const hex = rawColors[category.key] ?? (selection[category.key] ? raw.color : undefined);
+    if (typeof hex === 'string' && HEX6.test(hex)) colors[category.key] = hex.toUpperCase();
   }
+  if (Object.keys(colors).length > 0) selection.colors = colors;
   return selection;
 };
 
 /** 装着しているアイテムの一覧（重ねる順。handle に入れる順でもある） */
 export const attachmentKeysOf = (selection: AttachmentSelection | undefined): AttachmentKey[] =>
   ATTACHMENT_CATEGORIES.map((c) => selection?.[c.key]).filter((k): k is AttachmentKey => !!k);
+
+/** 装着しているアイテムごとの色（色を変えていないアイテムは入れない） */
+export const attachmentColorsOf = (selection: AttachmentSelection | undefined): Partial<Record<AttachmentKey, string>> => {
+  const colors: Partial<Record<AttachmentKey, string>> = {};
+  for (const category of ATTACHMENT_CATEGORIES) {
+    const key = selection?.[category.key];
+    const hex = selection?.colors?.[category.key];
+    if (key && hex) colors[key] = hex;
+  }
+  return colors;
+};

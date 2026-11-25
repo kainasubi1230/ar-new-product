@@ -1,4 +1,4 @@
-// アタッチメントの装着位置を確かめる画像を作る（src/config/avatarAttachmentLayout.json をそのまま使う。アプリと同じ計算）
+// アタッチメントの装着位置を確かめる画像を作る（src/config/avatarAttachmentLayout.json と、アプリに入れた絵 Images.xcassets/Attachment* をそのまま使う。アプリと同じ計算）
 //   swift scripts/avatar-attachments/preview.swift <出力フォルダ> [キャラクター...]
 // <キャラクター>.png：上の段がリボン 4 つ、中が帽子 4 つ、下がメガネ 4 つ。最後の列に 3 つ全部を付けたもの
 import CoreGraphics
@@ -13,6 +13,13 @@ let json = try! JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLW
 let items = json["items"] as! [String: [String: Any]]
 let layout = json["layout"] as! [String: [String: [String: Double]]]
 let animals = args.count > 1 ? Array(args[1...]) : layout.keys.sorted()
+
+/// アプリに入れたアイテムの絵（Images.xcassets/Attachment<名前>.imageset/<名前>.png）
+func itemImagePath(_ item: String) -> String {
+  let parts = item.split(separator: "_")
+  let asset = "Attachment" + parts[0].prefix(1).uppercased() + parts[0].dropFirst() + parts[1]
+  return "\(root)/ios/SpatialInventory/Images.xcassets/\(asset).imageset/\(item).png"
+}
 
 func load(_ path: String) -> CGImage {
   let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: path) as CFURL, nil)!
@@ -35,7 +42,7 @@ func drawItem(_ ctx: CGContext, item: String, place p: [String: Double]) {
   // 左上原点なので、絵は上下を反転して描く
   ctx.translateBy(x: 0, y: size)
   ctx.scaleBy(x: 1, y: -1)
-  ctx.draw(load("\(root)/avatar_attachments_png/\(item).png"), in: CGRect(x: 0, y: 0, width: size, height: size))
+  ctx.draw(load(itemImagePath(item)), in: CGRect(x: 0, y: 0, width: size, height: size))
   ctx.restoreGState()
 }
 

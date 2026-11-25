@@ -8,7 +8,6 @@ import type { LocationCoords } from '../services/postService';
 import { DISTANCE_TIERS, geoTagLevelFor } from '../config/distanceTiers';
 import { useHeading } from '../hooks/useHeading';
 import { findMatchedInterestTag } from '../utils/interestTags';
-import { interestTagColor } from '../utils/tagIcon';
 import { fetchCollectedPostIds } from '../services/readService';
 import { usePreferences } from '../services/preferencesStore';
 import {
@@ -43,11 +42,19 @@ type Props = {
 const PIN_GREEN = '#10B981';
 // 拾った言葉：くすんだ緑（もう読んだので控えめに）
 const PIN_COLLECTED = '#9CC5B5';
+// 関心タグに関係する言葉のピン（どの関心タグでも同じ色。ふつうの緑・拾った淡い緑と見分けがつく色）
+const PIN_INTEREST = '#007BA7';
+
+const NO_TAGS: string[] = [];
+
+// 下のカードの高さ（どのカードも同じ。メッセージのカードの中身がいちばん多いとき：余白 32 + 見出し 40 + 本文 3 行 75 + タグ 25 + ボタン 60 + 枠 2）
+const CARD_HEIGHT = 236;
 
 type PinLook = { fill: string; border: string; kind: 'own' | 'collected' | 'interest' | 'default' };
 
 /**
- * ピンの見た目：自分の言葉 → 拾った言葉 → 関心タグに合う言葉（そのタグの色）→ ふつう（緑）の順で決める
+ * ピンの見た目：自分の言葉 → 拾った言葉 → 関心タグに関係する言葉（セルリアンブルー）→ ふつう（緑）の順で決める。
+ * interestTags は、マイページの「関心タグ」がオンのときだけ渡す（オフなら空＝色を付けない）
  */
 const pinLookOf = (
   post: NearbyPost,
@@ -58,7 +65,7 @@ const pinLookOf = (
   if (isOwn) return { fill: '#FFFFFF', border: PIN_GREEN, kind: 'own' };
   if (isCollected) return { fill: PIN_COLLECTED, border: '#FFFFFF', kind: 'collected' };
   const matched = findMatchedInterestTag(post.tags, interestTags);
-  if (matched) return { fill: interestTagColor(matched) ?? '#047857', border: '#FFFFFF', kind: 'interest' };
+  if (matched) return { fill: PIN_INTEREST, border: '#FFFFFF', kind: 'interest' };
   return { fill: PIN_GREEN, border: '#FFFFFF', kind: 'default' };
 };
 
@@ -200,7 +207,9 @@ export function DiscoveryMapScreen({
 
   // 地図に映っている範囲の文化遺産（同梱データから、その場で絞り込む）
   const [heritageSites, setHeritageSites] = useState<NearbyHeritageSite[]>([]);
-  const { showHeritagePins, setShowHeritagePins } = usePreferences();
+  const { showHeritagePins, setShowHeritagePins, onlyInterestTags } = usePreferences();
+  // 関心タグの色分けは、マイページの「関心タグ」がオンのときだけ（オフなら、関心タグを選んであっても色を付けない）
+  const activeInterestTags = onlyInterestTags ? interestTags : NO_TAGS;
   // 選んでいる文化遺産は、地図を動かして間引かれても消さない
   const selectedHeritageIdRef = useRef<string | null>(null);
 
@@ -337,7 +346,7 @@ export function DiscoveryMapScreen({
           {posts.map((post) => {
             const level = geoTagLevelFor(post.distanceM);
             const isSelected = selected != null && String(selected.id) === String(post.id);
-            const look = pinLookOf(post, isOwnPost(post), collectedIds.has(String(post.id)), interestTags);
+            const look = pinLookOf(post, isOwnPost(post), collectedIds.has(String(post.id)), activeInterestTags);
             const coordinate = { latitude: post.latitude, longitude: post.longitude };
             return (
               <React.Fragment key={String(post.id)}>
@@ -408,20 +417,22 @@ export function DiscoveryMapScreen({
           <View style={styles.legend} pointerEvents="none">
             <View style={styles.legendItem}>
               <View style={[styles.legendDot, { backgroundColor: PIN_GREEN }]} />
-              <Text style={styles.legendText}>まだ</Text>
+              <Text style={styles.legendText}>言葉</Text>
             </View>
-            <View style={styles.legendItem}>
-              <View style={[styles.legendDot, { backgroundColor: '#B45309' }]} />
-              <View style={[styles.legendDot, styles.legendDotStacked, { backgroundColor: '#4F46E5' }]} />
-              <Text style={styles.legendText}>関心タグ</Text>
-            </View>
+            {/* 関心タグがオンのときだけ */}
+            {activeInterestTags.length > 0 && (
+              <View style={styles.legendItem}>
+                <View style={[styles.legendDot, { backgroundColor: PIN_INTEREST }]} />
+                <Text style={styles.legendText}>関心タグの言葉</Text>
+              </View>
+            )}
             <View style={styles.legendItem}>
               <View style={[styles.legendDot, { backgroundColor: PIN_COLLECTED }]} />
-              <Text style={styles.legendText}>拾った</Text>
+              <Text style={styles.legendText}>拾った言葉</Text>
             </View>
             <View style={styles.legendItem}>
               <View style={[styles.legendDot, styles.legendDotOwn]} />
-              <Text style={styles.legendText}>自分</Text>
+              <Text style={styles.legendText}>自分の言葉</Text>
             </View>
           </View>
         )}
@@ -470,10 +481,11 @@ export function DiscoveryMapScreen({
               {heritageRelative != null ? `${directionText(heritageRelative)} ` : ''}
               {distanceText(selectedHeritage.distanceM)}
             </Text>
-            <Text style={styles.heritageDesc} numberOfLines={4}>
+            <Text style={styles.heritageDesc} numberOfLines={3}>
               {selectedHeritage.desc}
             </Text>
-            {/* 説明は Wikipedia（CC BY-SA 4.0）から。出典の表示はライセンスの条件 */}
+            <View style={styles.cardSpacer} />
+            {/* 説明は Wikipedia（CC BY-SA 4.0）から。出典の表示はライセンスの条件（カードを固定の高さにしても必ず見えるよう、いちばん下に置く） */}
             <TouchableOpacity
               onPress={() => Linking.openURL(heritageSourceUrl(selectedHeritage)).catch(() => {})}
               activeOpacity={0.6}
@@ -524,8 +536,13 @@ export function DiscoveryMapScreen({
             ) : (
               <Text style={styles.cardBodyMuted}>近づくと本文が読めます</Text>
             )}
-            {tagLine(selected.tags) !== '' && <Text style={styles.cardTags}>{tagLine(selected.tags)}</Text>}
+            {tagLine(selected.tags) !== '' && (
+              <Text style={styles.cardTags} numberOfLines={1}>
+                {tagLine(selected.tags)}
+              </Text>
+            )}
 
+            <View style={styles.cardSpacer} />
             <TouchableOpacity
               style={styles.arButton}
               activeOpacity={0.85}
@@ -535,7 +552,7 @@ export function DiscoveryMapScreen({
             </TouchableOpacity>
           </View>
         ) : (
-          <View style={styles.card}>
+          <View style={[styles.card, styles.cardEmpty]}>
             <Text style={styles.cardBodyMuted}>近くにメッセージが置かれると、ここに表示されます</Text>
           </View>
         )}
@@ -639,8 +656,7 @@ const styles = StyleSheet.create({
     position: 'absolute',
     left: 12,
     bottom: 14,
-    flexDirection: 'row',
-    gap: 10,
+    gap: 4,
     paddingVertical: 6,
     paddingHorizontal: 10,
     borderRadius: 14,
@@ -655,9 +671,6 @@ const styles = StyleSheet.create({
     height: 9,
     borderRadius: 5,
     marginRight: 4,
-  },
-  legendDotStacked: {
-    marginLeft: -7,
   },
   legendDotOwn: {
     backgroundColor: '#FFFFFF',
@@ -675,12 +688,25 @@ const styles = StyleSheet.create({
     paddingTop: 12,
     paddingBottom: 16,
   },
+  // 下のカードは、メッセージ・文化遺産・何も選んでいないときのどれも同じ高さ（押すたびに地図の大きさが変わらないように）。
+  // 高さは、メッセージのカードがいちばん長いとき（本文 3 行・タグ・ボタン）に合わせる
   card: {
+    height: CARD_HEIGHT,
+    overflow: 'hidden',
     backgroundColor: '#FFFFFF',
     borderRadius: 20,
     padding: 16,
     borderWidth: 1,
     borderColor: '#E2E8F0',
+  },
+  cardEmpty: {
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  // 中身が短いときに、ボタン・出典をカードのいちばん下に寄せる
+  cardSpacer: {
+    flex: 1,
+    minHeight: 8,
   },
   cardHeader: {
     flexDirection: 'row',
@@ -732,7 +758,6 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   arButton: {
-    marginTop: 14,
     backgroundColor: '#10B981',
     height: 46,
     borderRadius: 23,
@@ -847,13 +872,13 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   heritageDesc: {
+    flexShrink: 1,
     marginTop: 6,
     color: '#1E293B',
     fontSize: 14,
     lineHeight: 21,
   },
   heritageSource: {
-    marginTop: 10,
     color: '#94A3B8',
     fontSize: 11,
     textDecorationLine: 'underline',

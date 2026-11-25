@@ -1,7 +1,13 @@
 import React, { ReactNode } from 'react';
 import { Image, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Icons } from '../assets/icons';
-import { AVATAR_CANVAS_COLOR, avatarAnimalOf, avatarAttachmentsOf, avatarColorOf } from '../config/avatarColors';
+import {
+  avatarAnimalOf,
+  avatarAttachmentColorsOf,
+  avatarBackgroundOf,
+  avatarAttachmentsOf,
+  avatarColorOf,
+} from '../config/avatarColors';
 import { AnimalAvatarImage } from './AnimalAvatarImage';
 
 type Props = {
@@ -125,11 +131,13 @@ export function WordCardAvatar({
   const animal = avatarAnimalOf(icon);
   if (color && animal) {
     return (
-      <View style={[styles.avatar, { backgroundColor: AVATAR_CANVAS_COLOR }]}>
+      <View style={[styles.avatar, { backgroundColor: avatarBackgroundOf(icon) }]}>
         <AnimalAvatarImage
           animal={animal}
           color={color}
           attachments={avatarAttachmentsOf(icon)}
+          attachmentColors={avatarAttachmentColorsOf(icon)}
+          background={avatarBackgroundOf(icon)}
           style={styles.avatarAnimalImage}
         />
       </View>

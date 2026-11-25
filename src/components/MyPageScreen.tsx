@@ -24,9 +24,10 @@ import { deleteMyPost, fillPostPlaceName, updateMyPostsAuthor } from '../service
 import { usePreferences } from '../services/preferencesStore';
 import { displayNameOf } from '../services/authService';
 import {
-  AVATAR_CANVAS_COLOR,
-  avatarHandleFor,
+  avatarHandleOf,
   cleanAttachmentsByAnimal,
+  cleanAvatarBackground,
+  currentAttachmentColorsOf,
   currentAttachmentsOf,
   resolveAvatarAnimal,
   type AvatarConfig,
@@ -118,14 +119,16 @@ export function MyPageScreen({
     avatarColor,
     avatarAnimal: savedAvatarAnimal,
     avatarAttachments: savedAttachments,
+    avatarBackground: savedBackground,
     setAvatar,
   } = usePreferences();
   const avatarAnimal = resolveAvatarAnimal(savedAvatarAnimal, user?.id);
-  // アバターのデータ（キャラクター・色・キャラクターごとのアタッチメント）
+  // アバターのデータ（キャラクター・色・キャラクターごとのアタッチメント・背景色）
   const avatarConfig: AvatarConfig = {
     character: avatarAnimal,
     color: avatarColor,
     attachments: cleanAttachmentsByAnimal(savedAttachments),
+    background: cleanAvatarBackground(savedBackground),
   };
   const avatarAttachments = currentAttachmentsOf(avatarConfig);
 
@@ -211,18 +214,18 @@ export function MyPageScreen({
 
   // アバター（キャラクター・色・アタッチメント）の変更。ログイン情報にも短い値だけを入れる（別の端末でログインしたとき用）
   const handleSelectAvatar = async (config: AvatarConfig) => {
-    const { character: animal, color: hex } = config;
+    const { character: animal, color: hex, background } = config;
     const attachments = cleanAttachmentsByAnimal(config.attachments);
-    setAvatar(animal, hex, attachments);
+    setAvatar(animal, hex, attachments, background);
     setIsAvatarModalVisible(false);
     if (user) {
       try {
         await supabase.auth.updateUser({
-          data: { avatar_color: hex, avatar_animal: animal, avatar_attachments: attachments },
+          data: { avatar_color: hex, avatar_animal: animal, avatar_attachments: attachments, avatar_background: background },
         });
         // これまでに置いた言葉のアイコンも、新しいものにそろえる
         await updateMyPostsAuthor(user.id, {
-          handle: avatarHandleFor(hex, animal, currentAttachmentsOf({ ...config, attachments })),
+          handle: avatarHandleOf({ ...config, attachments }),
         });
       } catch (e) {
         console.warn('アバターアイコン保存エラー:', e);
@@ -405,11 +408,13 @@ export function MyPageScreen({
             onPress={() => setIsAvatarModalVisible(true)}
             activeOpacity={0.8}
           >
-            <View style={[styles.avatarCircle, { backgroundColor: AVATAR_CANVAS_COLOR, shadowColor: avatarColor }]}>
+            <View style={[styles.avatarCircle, { backgroundColor: avatarConfig.background, shadowColor: avatarColor }]}>
               <AnimalAvatarImage
                 animal={avatarAnimal}
                 color={avatarColor}
                 attachments={avatarAttachments}
+                attachmentColors={currentAttachmentColorsOf(avatarConfig)}
+                background={avatarConfig.background}
                 style={styles.avatarAnimalImage}
               />
             </View>
@@ -513,7 +518,7 @@ export function MyPageScreen({
                   onDelete={() => handleDeleteMemory(item.id, item.message)}
                   footer={
                     <>
-                      <WordCardAvatar name={displayName} icon={avatarHandleFor(avatarColor, avatarAnimal, avatarAttachments)} />
+                      <WordCardAvatar name={displayName} icon={avatarHandleOf(avatarConfig)} />
                       <WordCardDate date={item.placedAt} placeName={item.placeName} action="placed" />
                       {item.readCount > 0 && <WordCardReadCount count={item.readCount} />}
                     </>

@@ -1,15 +1,15 @@
 {
   "glasses_01" : {
     "box" : {
-      "height" : 124,
-      "width" : 254,
-      "x" : 129,
-      "y" : 194
+      "height" : 112,
+      "width" : 248,
+      "x" : 133,
+      "y" : 200
     },
     "imageSize" : 512,
     "lens" : {
-      "diameter" : 123,
-      "x" : 201.5,
+      "diameter" : 111,
+      "x" : 200.5,
       "y" : 255.5
     }
   },
@@ -43,16 +43,16 @@
   },
   "glasses_04" : {
     "box" : {
-      "height" : 119,
-      "width" : 268,
+      "height" : 118,
+      "width" : 266,
       "x" : 122,
       "y" : 197
     },
     "imageSize" : 512,
     "lens" : {
-      "diameter" : 118,
+      "diameter" : 117,
       "x" : 183,
-      "y" : 256
+      "y" : 255.5
     }
   },
   "hat_01" : {
@@ -94,8 +94,8 @@
   "ribbon_01" : {
     "box" : {
       "height" : 157,
-      "width" : 226,
-      "x" : 143,
+      "width" : 221,
+      "x" : 145,
       "y" : 178
     },
     "imageSize" : 512
@@ -103,8 +103,8 @@
   "ribbon_02" : {
     "box" : {
       "height" : 209,
-      "width" : 225,
-      "x" : 143,
+      "width" : 220,
+      "x" : 147,
       "y" : 152
     },
     "imageSize" : 512
@@ -112,8 +112,8 @@
   "ribbon_03" : {
     "box" : {
       "height" : 223,
-      "width" : 223,
-      "x" : 144,
+      "width" : 221,
+      "x" : 145,
       "y" : 145
     },
     "imageSize" : 512
@@ -121,8 +121,8 @@
   "ribbon_04" : {
     "box" : {
       "height" : 230,
-      "width" : 240,
-      "x" : 136,
+      "width" : 238,
+      "x" : 138,
       "y" : 141
     },
     "imageSize" : 512
