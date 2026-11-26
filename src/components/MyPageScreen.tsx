@@ -66,7 +66,6 @@ type CollectedWord = {
   message: string;
   /** 言葉のタグ（「#」付き）。空ならタグの欄を出さない */
   tags: string[];
-  stampIcon: string;
 };
 
 
@@ -194,7 +193,6 @@ export function MyPageScreen({
           handle: post.handle,
           message: post.message,
           tags: normalizeTags(post.tags),
-          stampIcon: 'herb',
         }))
       );
     } catch (e) {
@@ -566,7 +564,7 @@ export function MyPageScreen({
                   onDelete={() => handleUncollect(item.id, item.author)}
                   footer={
                     <>
-                      <WordCardAvatar name={item.author} icon={item.stampIcon || item.handle} />
+                      <WordCardAvatar name={item.author} icon={item.handle} />
                       <WordCardMeta>{item.author}さん</WordCardMeta>
                       <WordCardDate date={item.collectedAt} placeName={item.placeName} action="collected" />
                     </>

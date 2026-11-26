@@ -98,6 +98,8 @@ type TrackedCoords = LocationCoords & {
 const FOCUS_EXPIRE_MS = 30 * 60 * 1000;
 // 景色が見つからなかった地図を、もう一度選ぶまでの時間
 const FAILED_MAP_RETRY_MS = 3 * 60 * 1000;
+// 照合でカードが見つかった場所からこの距離（m）離れるまでは、別の地図に切り替えない（部屋を出て別の場所へ行ったら切り替える）
+const RELOCALIZE_STICK_M = DISTANCE_TIERS.preciseM;
 
 /**
  * 初めて開いたときは、説明（OnboardingScreen）だけを出す。見終わるまで AR は作らない
@@ -259,6 +261,11 @@ function MainApp(): React.JSX.Element {
   const isLocationActive = activeTab === 'home' || activeTab === 'radar';
   // 気配をタップしたときの案内（投稿者名と、置いたときの景色の写真）
   relocalizeTargetRef.current = relocalizeTarget;
+  const relocalizeCoordsRef = React.useRef<LocationCoords | null>(null);
+  relocalizeCoordsRef.current = relocalizeCoords;
+  // 照合でカードが見つかった地図と、見つかったときの位置。ここから RELOCALIZE_STICK_M 離れるまでは別の地図に切り替えない
+  // （切り替えるとセッションがやり直しになり、出ているカードが全部消えて、照合が最初からになる）
+  const foundMapRef = React.useRef<{ postId: string; latitude: number; longitude: number } | null>(null);
   const isRelocalizing = relocalizationPhase === 'downloading' || relocalizationPhase === 'relocalizing';
 
   useEffect(() => {
@@ -559,9 +566,19 @@ function MainApp(): React.JSX.Element {
         // いま読み込んでいる地図と同じなら読み直さない（読み直すと出ているカードが消える）。
         // 探している言葉が、いま読み込んでいる地図に入っているときも読み直さない
         const loadedId = relocalizeTargetRef.current?.postId;
+        // いまの地図でカードが見つかっていて、その場所からあまり離れていなければ、別の地図の方が多く入っていても切り替えない
+        // （GPS の揺れや少し歩いただけで地図が変わると、出ているカードが消えてしまう）。探している言葉があるときは除く
+        const found = foundMapRef.current;
+        const isStayingOnFoundMap =
+          !isFocusSearch &&
+          found != null &&
+          found.postId === loadedId &&
+          distanceInMeters(found.latitude, found.longitude, relocalizeCoords.latitude, relocalizeCoords.longitude) <
+            RELOCALIZE_STICK_M;
         const isAlreadyLoaded =
-          mapPost != null &&
-          (loadedId === String(mapPost.id) || (isFocusSearch && focusMaps.some((post) => String(post.id) === loadedId)));
+          isStayingOnFoundMap ||
+          (mapPost != null &&
+            (loadedId === String(mapPost.id) || (isFocusSearch && focusMaps.some((post) => String(post.id) === loadedId))));
         if (SHOW_AR_DEBUG && !cancelled) {
           setRelocalizeSearchDebug({
             radiusM,
@@ -692,6 +709,12 @@ function MainApp(): React.JSX.Element {
     if (event.phase === 'found') {
       // 照合で見つかっただけ（壁の向こうの部屋の分も一度に届く）。知らせるのは画面に現れたとき（seen）
       setRelocalizationPhase(null);
+      // この地図でカードが出たので、しばらくはこの地図のまま（別の地図に切り替えてカードを消さない）
+      const loadedId = relocalizeTargetRef.current?.postId;
+      const coords = relocalizeCoordsRef.current;
+      if (loadedId && coords && foundMapRef.current?.postId !== loadedId) {
+        foundMapRef.current = { postId: loadedId, latitude: coords.latitude, longitude: coords.longitude };
+      }
     } else if (event.phase === 'seen') {
       // 探していた言葉が現れた
       if (focusRef.current?.postId === event.postId) {

@@ -274,14 +274,12 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
     // 画面に現れたことを JS に知らせたか（拾った言葉の記録は 1 回だけ）
     var hasBeenSeen = false
     var distance: Float = 0
-    // 照合で届いた ARAnchor そのものに付けた RealityKit のアンカー。
-    // ARKit が座標を地図の座標に切り替えても、ARAnchor ごと正しい場所に付いていく
+    // 照合が終わってから（座標が地図の座標に切り替わったあとで）、カードの位置に作る、向きの無いワールドのアンカー
     let base: AnchorEntity
-    // カードを乗せている入れ物（base の子）。位置・向きはワールド座標で決め、
-    // 「ARAnchor の変換の逆 × 決めた変換」を base からの相対の変換として入れる（placeHolder）
+    // base を置いたワールド座標の位置（base は回さないので、base からの相対＝この位置からの差）
+    let basePosition: SIMD3<Float>
+    // カードを乗せている入れ物（base の子）。位置・向きは base からの相対の値だけで入れる（placeHolder）
     let holder: Entity
-    // 最後に分かった ARAnchor の変換（ワールド座標）
-    var anchorTransform: simd_float4x4
     // 入れ物のワールド座標での位置・向き（ARAnchor の位置へ毎フレーム滑らかに寄せる）
     var worldPosition: SIMD3<Float>
     var worldRotation: simd_quatf
@@ -2030,17 +2028,16 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
         startMapGrowth(for: target)
       }
       target.foundPostIds.insert(postId)
-      // カードは照合で届いた ARAnchor に付ける（AnchorEntity(anchor:)）。ARKit は座標を地図の座標に切り替えるとき
-      // ARAnchor も一緒に直すので、カードも正しい場所に付いていく。
-      // （以前は起動時に作った原点のアンカーの子にしていたが、照合の瞬間の座標の切り替えに付いていかず、
-      //   見つけた判定の場所とは全然違う所に描かれていた）
+      // 照合が終わってから、カードの位置に「位置だけ・向きの無い」ワールドのアンカーを作り、その子にカードを乗せる。
+      // - 起動時に作った原点のアンカーの子にすると、照合の瞬間の座標の切り替えに付いていかず、全然違う所に描かれた
+      // - 照合で届いた ARAnchor に付ける（AnchorEntity(anchor:)）と、地図から来たアンカーに結び付かず、原点（自分のいた所）に出た
+      // - 向き付きのアンカーを setOrientation(relativeTo: nil) で回すと、向きが二重にかかって 90° や 45° 斜めになった
+      // なので、向き・位置の補正は base からの相対の値だけで入れ、ワールド座標の報告には頼らない。
       // 向きはアンカーの向きを使わず、地面に対してまっすぐ立てて見ている人の方へ向ける（現れた瞬間に固定する）。
-      // アンカーの向きを使うと、置いた人とは別の方向から来たとき横を向いて見え、古い投稿では横倒しになることがある。
-      // 位置・向きはワールド座標で決め、アンカーの変換を打ち消して入れる（setOrientation(relativeTo: nil) は使わない。
-      // アンカーの変換と二重にかかって 90° や 45° 斜めに見えていた）
+      // アンカーの向きを使うと、置いた人とは別の方向から来たとき横を向いて見え、古い投稿では横倒しになることがある
       let position = Self.translation(of: anchor.transform)
       let cameraPosition = arView.session.currentFrame.map { Self.translation(of: $0.camera.transform) } ?? position
-      let base = AnchorEntity(anchor: anchor)
+      let base = AnchorEntity(world: Transform(scale: .one, rotation: simd_quatf(ix: 0, iy: 0, iz: 0, r: 1), translation: position).matrix)
       arView.scene.addAnchor(base)
       let holder = Entity()
       base.addChild(holder)
@@ -2065,8 +2062,8 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
         card: cardEntity,
         glow: glowEntity,
         base: base,
+        basePosition: position,
         holder: holder,
-        anchorTransform: anchor.transform,
         worldPosition: position,
         worldRotation: Self.yawFacing(from: position, toward: cameraPosition),
         anchorIdentifier: anchor.identifier
@@ -2428,10 +2425,10 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
   }
 
   /// 照合カードの入れ物を、ワールド座標の worldPosition・worldRotation に置く。
-  /// 入れ物は ARAnchor に付いた base の子なので、アンカーの変換の逆をかけた相対の変換を入れる
+  /// base は向きの無いアンカーなので、base からの相対は「位置の差」と「向きそのもの」になる
   private static func placeHolder(_ item: inout RevealCard) {
-    let desired = Transform(scale: .one, rotation: item.worldRotation, translation: item.worldPosition).matrix
-    item.holder.transform = Transform(matrix: item.anchorTransform.inverse * desired)
+    item.holder.transform = Transform(
+      scale: .one, rotation: item.worldRotation, translation: item.worldPosition - item.basePosition)
   }
 
   /// position に立てたカードの表（+Z）を target の方へ向けた向き（左右の向きだけ。地面に対してまっすぐ）
@@ -2519,7 +2516,6 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
         }
         var displayPos = targetPos
         displayPos.y += item.heightOffset
-        item.anchorTransform = liveAnchor.transform
 
         if simd_distance(item.worldPosition, displayPos) > 0.02 {
           item.worldPosition = simd_mix(item.worldPosition, displayPos, SIMD3<Float>(repeating: anchorFollow))

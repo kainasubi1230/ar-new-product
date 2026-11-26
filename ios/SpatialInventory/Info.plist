@@ -34,9 +34,13 @@
 		<true/>
 	</dict>
 	<key>NSCameraUsageDescription</key>
-	<string>AR表示のためにカメラを使用します</string>
+	<string>景色の中に言葉を表示したり、言葉を置く場所を認識したりするためにカメラを使用します。</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>ポケット通知をオンにすると、アプリを閉じているときも、関心タグに合う言葉の近くを通ったことをお知らせするために位置情報を使用します。</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>現在地に合わせてメッセージを表示・投稿するために位置情報を使用します</string>
+	<string>近くに置かれた言葉を探したり、言葉を置いた場所を記録したりするために位置情報を使用します。</string>
+	<key>NSMotionUsageDescription</key>
+	<string>言葉の方角を正しく表示するために、端末の向きや動きの情報を使用します。</string>
 	<key>RCTNewArchEnabled</key>
 	<true/>
 	<key>UIBackgroundModes</key>
