@@ -48,7 +48,7 @@ type Step = {
 const buildSteps = (isLoggedIn: boolean): Step[] => [
   {
     title: 'ホーム',
-    body: 'カメラに映る景色の中に、近くの言葉が現れます。やわらかい光が見えたら、そちらへスマホを向けてみよう。',
+    body: 'ここはカメラの画面です。近くに言葉があると、置いた人が見ていた景色の写真が出ます。同じ景色にカメラを向けると、言葉が現れます。',
     mode: 'next',
     placement: 'center',
     dim: 0.55,
@@ -122,12 +122,13 @@ const buildSteps = (isLoggedIn: boolean): Step[] => [
   },
   {
     title: '準備ができました',
-    body: '景色の中の言葉を、探しに出かけよう。',
+    // ログインしていなければ、終わったらアカウントの登録画面へ移る（App.tsx）
+    body: isLoggedIn ? '景色の中の言葉を、探しに出かけよう。' : 'アカウントをつくって、はじめよう。',
     note: '気になる言葉は、長押しで通報・ブロックできます',
     mode: 'next',
     placement: 'center',
     dim: 0.55,
-    buttonLabel: 'はじめる',
+    buttonLabel: isLoggedIn ? 'はじめる' : 'アカウントをつくる',
   },
 ];
 

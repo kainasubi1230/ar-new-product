@@ -158,7 +158,6 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
 
   private let arView = ARView(frame: .zero)
   private let coachingOverlay = ARCoachingOverlayView()
-  private var lastTapLocation: CGPoint?
   private var currentCardTitle: String = "Ken"
   private var currentCardDescription: String = "テスト2"
   private var currentCardColor: String = "#29B6F6"
@@ -532,7 +531,6 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
       updateGhostCardTexture()
     } else {
       previewAnchor.isEnabled = false
-      lastTapLocation = nil
       lastValidPreviewPosition = nil
       lastValidPreviewOrientation = nil
     }
@@ -823,7 +821,6 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
       spawnCardEntity(at: targetPos, exactOrientation: targetRot)
       lastValidPreviewPosition = nil
       lastValidPreviewOrientation = nil
-      lastTapLocation = nil
       previewAnchor.isEnabled = false
       return
     }
@@ -836,11 +833,6 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
     placeCard(atScreenPoint: targetPoint)
   }
 
-  func placeCardAtCenter() {
-    lastTapLocation = nil
-    placeCardAtTarget()
-  }
-
   @objc
   private func handleTap(_ recognizer: UITapGestureRecognizer) {
     // 配置プレビュー中は画面タップで余計な座標更新やモーダル発火を行わない
@@ -848,7 +840,6 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
       return
     }
     let location = recognizer.location(in: arView)
-    lastTapLocation = location
     // 照合で出した他の人のカードをタップしたら、投稿を始めずに「言葉を拾う」
     if let card = revealedCard(at: location) {
       pulse(card.card)
@@ -2311,11 +2302,6 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
   }
 
   private func applyWorldCorrection(_ delta: simd_float4x4) {
-    let transformPoint = { (p: SIMD3<Float>) -> SIMD3<Float> in
-      let v = delta * SIMD4<Float>(p.x, p.y, p.z, 1)
-      return SIMD3<Float>(v.x, v.y, v.z)
-    }
-
     // 北の向き：AR 座標のヨーが回った分だけ回す（測定値の平均も同じだけ回す）
     let deltaYaw = Self.yawChange(of: delta)
     let rotateNorth = { (v: SIMD2<Float>) -> SIMD2<Float> in
@@ -2708,15 +2694,18 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
     return count
   }
 
-  // 照合中の案内。スマホを振らせず、置いたときの写真を重ねて「この景色に合わせて」と伝える
+  // 照合中の案内。スマホを振らせず、置いたときの写真を重ねて「近くに言葉がある・同じ景色を映すと現れる」と伝える
+  // （「この景色に合わせてください」だけだと、初めての人には何のためか分からなかった）
   private func relocalizationGuide(postId: String) -> ARGuideHUDView.Guide {
     if let snapshots = relocalization?.loadedSnapshots, !snapshots.isEmpty {
       let current = snapshots[(relocalization?.snapshotIndex ?? 0) % snapshots.count]
       let message = relocalization?.cards[current.postId]?.description ?? ""
       return .init(
         symbol: nil,
-        title: snapshots.count > 1 ? "どれかの景色に合わせてください" : "この景色に合わせてください",
-        subtitle: message.isEmpty ? "置いたときの景色です。ゆっくり重ねるように向けてみてください" : "「\(message)」を置いたときの景色です",
+        title: "近くに言葉があります",
+        subtitle: snapshots.count > 1 || message.isEmpty
+          ? "写真と同じ景色にカメラを向けると、言葉が現れます"
+          : "「\(message)」が置かれた景色です。同じ景色にカメラを向けると、現れます",
         sways: false,
         image: current.image
       )
@@ -2725,8 +2714,10 @@ final class ARViewWrapper: UIView, ARCoachingOverlayViewDelegate, ARSessionDeleg
     // 写真の無い投稿（写真を撮る前に置かれたもの）
     return .init(
       symbol: "viewfinder",
-      title: "置いたときの景色を映してください",
-      subtitle: message.isEmpty ? nil : "「\(message)」を置いた場所の周りです",
+      title: "近くに言葉があります",
+      subtitle: message.isEmpty
+        ? "まわりの景色をゆっくり映すと、言葉が現れます"
+        : "「\(message)」が置かれた場所の周りを、ゆっくり映してください",
       sways: false
     )
   }
@@ -3138,7 +3129,6 @@ final class LocaPocket: RCTEventEmitter, CLLocationManagerDelegate, UNUserNotifi
   private var lastEmittedLocation: CLLocation?
   // 最後に届いた位置。対象の一覧が新しくなったとき、動いていなくてもすぐ判定するのに使う
   private var lastLocation: CLLocation?
-  private var isRunning = false
   private var hasListeners = false
   private static let notifiedKey = "loca.pocket.notified" // [postId: 通知した時刻]
   private static let historyKey = "loca.pocket.history" // 通知画面に出す履歴（新しい順、最大 50 件）
@@ -3196,7 +3186,6 @@ final class LocaPocket: RCTEventEmitter, CLLocationManagerDelegate, UNUserNotifi
       manager.showsBackgroundLocationIndicator = true
       manager.startUpdatingLocation()
       self.manager = manager
-      self.isRunning = true
     }
   }
 
@@ -3216,7 +3205,6 @@ final class LocaPocket: RCTEventEmitter, CLLocationManagerDelegate, UNUserNotifi
     DispatchQueue.main.async {
       self.manager?.stopUpdatingLocation()
       self.manager?.allowsBackgroundLocationUpdates = false
-      self.isRunning = false
     }
   }
 

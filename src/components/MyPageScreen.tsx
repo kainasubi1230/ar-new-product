@@ -82,6 +82,8 @@ type Props = {
   onNotice?: (message: string, options?: { symbol?: string; subtitle?: string }) => void;
   /** 使い方ツアーをもう一度見る（歯車のメニュー） */
   onReplayTour?: () => void;
+  /** 未ログインのときに最初に開くタブ（使い方ツアーのあとは「新規登録」） */
+  authInitialMode?: 'signin' | 'signup';
 };
 
 // 初期表示用（Supabaseから読み込むため初期値は空）
@@ -104,6 +106,7 @@ export function MyPageScreen({
   blockedUserIds = [],
   onUnblock,
   onReplayTour,
+  authInitialMode,
 }: Props): React.JSX.Element {
   const [activeTab, setActiveTab] = useState<'placed' | 'collected' | 'tags'>('placed');
 
@@ -314,7 +317,7 @@ export function MyPageScreen({
 
   // 1. 未ログインの場合：マイページ全体をログイン・新規登録画面にする
   if (!user) {
-    return <AuthForm />;
+    return <AuthForm initialMode={authInitialMode} />;
   }
 
   // 2. ログイン済みの場合：通常のマイページを表示

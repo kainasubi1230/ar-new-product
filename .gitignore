@@ -51,3 +51,6 @@ build/
 coverage/
 scripts/avatar-animals/out/
 scripts/avatar-attachments/out/
+
+# Python のキャッシュ
+__pycache__/

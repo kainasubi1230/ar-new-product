@@ -325,6 +325,8 @@ function MainApp(): React.JSX.Element {
 
   // 使い方ツアー（本物の画面の上で、光るところを押しながら一通り案内する）
   const [isTourVisible, setIsTourVisible] = useState(false);
+  // 未ログインのマイページで最初に開くタブ。ツアーのあとに登録画面へ移すときは「新規登録」
+  const [authInitialMode, setAuthInitialMode] = useState<'signin' | 'signup'>('signin');
   // ツアーをまだ最後まで見ていなければ始める（起動のロゴが消え、カメラ・位置の許可のダイアログに答えるころに）。
   // 途中でアプリを閉じたら、次に開いたときにもう一度
   useEffect(() => {
@@ -1228,6 +1230,7 @@ function MainApp(): React.JSX.Element {
               await deleteMyAccount();
               showToast('アカウントを削除しました');
             }}
+            authInitialMode={authInitialMode}
             onReplayTour={() => {
               setActiveTab('home');
               setIsTourVisible(true);
@@ -1263,7 +1266,14 @@ function MainApp(): React.JSX.Element {
         visible={isTourVisible}
         isLoggedIn={user != null}
         onSelectTab={setActiveTab}
-        onFinish={() => setIsTourVisible(false)}
+        onFinish={() => {
+          setIsTourVisible(false);
+          // ログインしていなければ、そのままアカウントの登録画面へ（スキップしたときも）
+          if (!user) {
+            setAuthInitialMode('signup');
+            setActiveTab('mypage');
+          }
+        }}
       />
     </SafeAreaView>
   );

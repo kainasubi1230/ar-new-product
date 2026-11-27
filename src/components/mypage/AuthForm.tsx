@@ -1,7 +1,8 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  AppState,
   Image,
   KeyboardAvoidingView,
   Platform,
@@ -18,14 +19,34 @@ import { NICKNAME_MAX_LENGTH, checkNickname } from '../../services/safetyFilter'
 import { styles } from './styles';
 
 /** 未ログインのときのマイページ：ログイン・新規登録 */
-export function AuthForm(): React.JSX.Element {
+export function AuthForm({ initialMode = 'signin' }: { initialMode?: 'signin' | 'signup' }): React.JSX.Element {
   // 未ログイン時の認証フォーム用ステート
-  const [authMode, setAuthMode] = useState<'signin' | 'signup'>('signin');
+  const [authMode, setAuthMode] = useState<'signin' | 'signup'>(initialMode);
   const [authEmail, setAuthEmail] = useState('');
   const [authPassword, setAuthPassword] = useState('');
   const [authUsername, setAuthUsername] = useState('');
   const [authLoading, setAuthLoading] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
+  // 確認メールを待っている間の入力。メールのリンクを開いてアプリに戻ってきたら、これで自動でログインする
+  // （端末のメモリにだけ持ち、保存はしない）
+  const pendingConfirmRef = useRef<{ email: string; password: string } | null>(null);
+
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (state) => {
+      const pending = pendingConfirmRef.current;
+      if (state !== 'active' || !pending) return;
+      signInWithEmail(pending.email, pending.password)
+        .then(() => {
+          // ログインできればマイページに切り替わる（このフォームは消える）
+          pendingConfirmRef.current = null;
+        })
+        .catch((err) => {
+          // まだリンクを開いていない（Email not confirmed）などは、黙って次に戻ってくるのを待つ
+          console.log('確認後の自動ログインはまだできません:', err?.message);
+        });
+    });
+    return () => sub.remove();
+  }, []);
 
   const handleAuthSubmit = async () => {
     if (!authEmail.trim() || !authPassword) {
@@ -52,9 +73,13 @@ export function AuthForm(): React.JSX.Element {
         if (result.session) {
           Alert.alert('登録完了', 'アカウントを登録し、ログインしました！');
         } else {
+          // リンクを開いたあとはブラウザに「サーバーに接続できません」と出ることがあるが、確認は済んでいる。
+          // アプリに戻れば自動でログインし、だめでも「ログイン」のタブからそのまま入れるようにしておく
+          pendingConfirmRef.current = { email: authEmail, password: authPassword };
+          setAuthMode('signin');
           Alert.alert(
-            '確認メールを送信しました',
-            'ご入力いただいたメールアドレスに確認用リンクを送信しました。メール内のリンクを開いて登録を完了してください。'
+            '確認メールを送りました',
+            '届いたメールの確認のリンク（Confirm …）を押したら、このアプリに戻ってください。自動でログインします。\n\nリンクを押したあと、ブラウザに「接続できません」と出ても確認は済んでいます。'
           );
         }
       } else {
@@ -62,7 +87,9 @@ export function AuthForm(): React.JSX.Element {
       }
     } catch (err: any) {
       let msg = err?.message || 'エラーが発生しました';
-      if (msg.includes('Invalid login credentials')) {
+      if (msg.includes('Email not confirmed')) {
+        msg = 'メールの確認がまだです。届いたメールのリンクを押してから、もう一度お試しください';
+      } else if (msg.includes('Invalid login credentials')) {
         msg = 'メールアドレスまたはパスワードが正しくありません';
       } else if (msg.includes('User already registered')) {
         msg = 'このメールアドレスは既に登録されています。ログインをお試しください';
